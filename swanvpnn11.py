@@ -20,6 +20,7 @@ from sqlalchemy import (
     create_engine,
     func,
     inspect,
+    select,
     or_,
     text,
 )
@@ -45,7 +46,7 @@ from aiogram.types import (
 
 # ---------------------------------------------------------------------------
 # تنظیمات اولیه
-# هیچ اطلاعات حساسی داخل کد نیست؛ همه از متغیرهای محیطی (Environment) خوانده میشوند:
+# هیچ اطلاعات حساسی داخل کد نیست؛ همه از متغیرهای محیطی (Environment) خوانده می‌شوند:
 #   BOT_TOKEN, ADMIN_ID            -> الزامی
 #   CARD_NUMBER, CARD_HOLDER       -> الزامی فقط برای اولین اجرا (بعدش از پنل ادمین قابل تغییر است)
 #   DATABASE_URL                   -> آدرس دیتابیس Postgres (اگر نباشد SQLite محلی)
@@ -83,11 +84,11 @@ SessionLocal = sessionmaker(bind=engine)
 dp = Dispatcher(storage=MemoryStorage())
 
 esc = html.escape
-ARROW = "⬅"  # جهت فلش: از قیمت اصلی به قیمت تخفیفخورده (متن راستبهچپ)
+ARROW = "⬅️"  # جهت فلش: از قیمت اصلی به قیمت تخفیف‌خورده (متن راست‌به‌چپ)
 
 BTN_BUY = "🛒 خرید سرویس"
-BTN_MY = "📦 سرویسهای من"
-BTN_TARIFFS = "📈 تعرفه سرویسها"
+BTN_MY = "📦 سرویس‌های من"
+BTN_TARIFFS = "📈 تعرفه سرویس‌ها"
 BTN_WALLET = "💳 شارژ کیف پول"
 BTN_ACCOUNT = "👤 حساب کاربری"
 BTN_SUPPORT = "🎧 پشتیبانی"
@@ -98,7 +99,7 @@ MAX_DISCOUNT = 90
 
 
 # ---------------------------------------------------------------------------
-# مدلهای دیتابیس
+# مدل‌های دیتابیس
 # ---------------------------------------------------------------------------
 class User(Base):
     __tablename__ = "users"
@@ -219,9 +220,9 @@ DEFAULT_PLANS = [
 
 DEFAULT_FAQ = (
     "❓ <b>سوالات متداول</b>\n\n"
-    "🔹 <b>چطور وصل شوم؟</b>\nسابلینک را در برنامه V2Box اضافه کنید (آموزش داخل کانال).\n\n"
-    "🔹 <b>سرویسها چند روزهاند؟</b>\nهر سرویس ۳۰ روزه است و قبل از پایان یادآوری میگیرید.\n\n"
-    "🔹 <b>چطور تمدید کنم؟</b>\nاز بخش «سرویسهای من» روی سرویس بزنید و دکمه تمدید را انتخاب کنید."
+    "🔹 <b>چطور وصل شوم؟</b>\nساب‌لینک را در برنامه V2Box اضافه کنید (آموزش داخل کانال).\n\n"
+    "🔹 <b>سرویس‌ها چند روزه‌اند؟</b>\nهر سرویس ۳۰ روزه است و قبل از پایان یادآوری می‌گیرید.\n\n"
+    "🔹 <b>چطور تمدید کنم؟</b>\nاز بخش «سرویس‌های من» روی سرویس بزنید و دکمه تمدید را انتخاب کنید."
 )
 
 # ---------------------------------------------------------------------------
@@ -256,7 +257,7 @@ DEFAULTS = {
     "sub_admins": "",
 }
 
-# متادیتای تنظیماتی که از منوی «تنظیمات ربات» ویرایش میشوند
+# متادیتای تنظیماتی که از منوی «تنظیمات ربات» ویرایش می‌شوند
 SETTINGS = {
     "discount_percent": dict(page="disc", type="num", label="تخفیف عمومی (٪)", min=0, max=MAX_DISCOUNT),
     "first_on": dict(page="disc", type="toggle", label="تخفیف خرید اول"),
@@ -269,10 +270,10 @@ SETTINGS = {
     "min_charge": dict(page="pay", type="num", label="حداقل مبلغ شارژ (تومان)", min=0, max=100000000),
     "maintenance_on": dict(page="maint", type="toggle", label="حالت تعمیر"),
     "maintenance_text": dict(page="maint", type="text", label="پیام حالت تعمیر"),
-    "welcome_text": dict(page="start", type="text", label="متن خوشآمدگویی ({name} = اسم کاربر)"),
+    "welcome_text": dict(page="start", type="text", label="متن خوش‌آمدگویی ({name} = اسم کاربر)"),
     "welcome_banner": dict(page="start", type="photo", label="بنر پیام شروع"),
     "channel_link": dict(page="start", type="text", label="لینک کانال"),
-    "sticker_welcome": dict(page="start", type="sticker", label="استیکر خوشآمدگویی"),
+    "sticker_welcome": dict(page="start", type="sticker", label="استیکر خوش‌آمدگویی"),
     "sticker_purchase": dict(page="start", type="sticker", label="استیکر ثبت سفارش"),
     "sticker_charge": dict(page="start", type="sticker", label="استیکر شارژ موفق"),
     "sticker_config": dict(page="start", type="sticker", label="استیکر تحویل کانفیگ"),
@@ -286,7 +287,7 @@ SETTINGS = {
 }
 
 SETTING_PAGES = {
-    "disc": "🏷 تخفیفها",
+    "disc": "🏷 تخفیف‌ها",
     "pay": "💳 پرداخت و شارژ",
     "maint": "🔧 حالت تعمیر",
     "start": "👋 پیام شروع و استیکرها",
@@ -403,7 +404,7 @@ def init_db():
 
 
 # ---------------------------------------------------------------------------
-# وضعیتهای FSM
+# وضعیت‌های FSM
 # ---------------------------------------------------------------------------
 class PaymentState(StatesGroup):
     waiting_for_receipt = State()
@@ -546,10 +547,10 @@ def is_banned(user_id):
 
 
 # ---------------------------------------------------------------------------
-# تخفیفها (جمعی) و قیمتگذاری
+# تخفیف‌ها (جمعی) و قیمت‌گذاری
 # ---------------------------------------------------------------------------
 def discount_breakdown(user_id):
-    """(درصد کل, [(درصد, توضیح), ...]) برای کاربر؛ تخفیفها جمع میشوند."""
+    """(درصد کل, [(درصد, توضیح), ...]) برای کاربر؛ تخفیف‌ها جمع می‌شوند."""
     with SessionLocal() as s:
         user = s.get(User, user_id)
         is_new = bool(user.is_new_user) if user else True
@@ -559,7 +560,7 @@ def discount_breakdown(user_id):
     loyal = get_int("loyalty_percent") if (get_bool("loyalty_on") and has_monthly) else 0
 
     parts = []
-    # مثل نسخه اصلی: «خرید اول» یا «وفاداری»؛ اگر هر دو بود، بزرگتر اعمال میشود
+    # مثل نسخه اصلی: «خرید اول» یا «وفاداری»؛ اگر هر دو بود، بزرگ‌تر اعمال می‌شود
     if first or loyal:
         if first >= loyal:
             parts.append((first, "تخفیف خرید اول"))
@@ -600,7 +601,6 @@ def validate_code(session, code_str, user_id):
     if not code_str:
         return None, "کد وارد نشده است."
     dc = session.query(DiscountCode).filter(DiscountCode.code == code_str).first()
-    dc = session.query(DiscountCode).filter(DiscountCode.code == code_str).first()
     if dc is None or not dc.is_active:
         return None, "کد تخفیف نامعتبر است."
     if dc.expires_at:
@@ -615,7 +615,7 @@ def validate_code(session, code_str, user_id):
         session.query(CodeUse).filter(CodeUse.code_id == dc.id, CodeUse.user_id == user_id).first()
     )
     if used:
-        return None, "شما قبلاً از این کد استفاده کردهاید."
+        return None, "شما قبلاً از این کد استفاده کرده‌اید."
     return dc, ""
 
 
@@ -637,10 +637,10 @@ def release_code(session, code_str, user_id):
     if use:
         session.delete(use)
         dc.used_count = max(0, (dc.used_count or 0) - 1)
-        print("done")
 
-# --------------------------------------------------------------------------
-# توابع کمکی پیامرسانی
+
+# ---------------------------------------------------------------------------
+# توابع کمکی پیام‌رسانی
 # ---------------------------------------------------------------------------
 async def edit_or_send(call: types.CallbackQuery, text_, markup=None):
     try:
@@ -649,10 +649,12 @@ async def edit_or_send(call: types.CallbackQuery, text_, markup=None):
         if "message is not modified" in str(e).lower():
             return
         await call.message.answer(text_, reply_markup=markup)
+    except AttributeError:  # پیام قدیمی/غیرقابل‌دسترس
+        await call.bot.send_message(chat_id=call.from_user.id, text=text_, reply_markup=markup)
 
 
 async def reply_to(target, text_, markup=None):
-    """پیام را برای Message ارسال یا برای CallbackQuery ویرایش میکند."""
+    """پیام را برای Message ارسال یا برای CallbackQuery ویرایش می‌کند."""
     if isinstance(target, types.CallbackQuery):
         await edit_or_send(target, text_, markup)
     else:
@@ -696,7 +698,7 @@ async def send_sticker(bot, chat_id, key):
 
 
 async def relay(bot, chat_id, message: types.Message, header, markup=None):
-    """متن یا عکس پیام را با یک سرتیتر برای chat_id میفرستد."""
+    """متن یا عکس پیام را با یک سرتیتر برای chat_id می‌فرستد."""
     body = message.caption if message.photo else message.text
     full = f"{header}{esc(body or '')}"
     if message.photo:
@@ -755,7 +757,7 @@ def get_admin_main_keyboard(user_id=None):
                     b(text="🟢 پاسخ داده نشده", callback_data="admin_unanswered"),
                     b(text="🔴 پاسخ داده شده", callback_data="admin_answered"),
                 ],
-                [b(text="🎫 تیکتها", callback_data="admin_tickets")],
+                [b(text="🎫 تیکت‌ها", callback_data="admin_tickets")],
             ]
         )
     return InlineKeyboardMarkup(
@@ -764,11 +766,11 @@ def get_admin_main_keyboard(user_id=None):
                 b(text="🟢 پاسخ داده نشده", callback_data="admin_unanswered"),
                 b(text="🔴 پاسخ داده شده", callback_data="admin_answered"),
             ],
-            [b(text="👥 مدیریت کاربران", callback_data="admin_users"), b(text="🎫 تیکتها", callback_data="admin_tickets")],
-            [b(text="📊 آمار کلی فروش", callback_data="admin_sales_stats"), b(text="🧾 لاگ فعالیتها", callback_data="admin_logs")],
-            [b(text="📦 مدیریت پلنها", callback_data="admin_plans"), b(text="🏷 کدهای تخفیف", callback_data="admin_codes")],
+            [b(text="👥 مدیریت کاربران", callback_data="admin_users"), b(text="🎫 تیکت‌ها", callback_data="admin_tickets")],
+            [b(text="📊 آمار کلی فروش", callback_data="admin_sales_stats"), b(text="🧾 لاگ فعالیت‌ها", callback_data="admin_logs")],
+            [b(text="📦 مدیریت پلن‌ها", callback_data="admin_plans"), b(text="🏷 کدهای تخفیف", callback_data="admin_codes")],
             [b(text="📢 پیام همگانی", callback_data="admin_broadcast_start"), b(text="🧰 بکاپ", callback_data="admin_backup")],
-            [b(text="⚙ تنظیمات ربات", callback_data="admin_settings")],
+            [b(text="⚙️ تنظیمات ربات", callback_data="admin_settings")],
         ]
     )
 
@@ -781,16 +783,16 @@ def admin_request_markup(req_id):
                 b(text="✅ تایید", callback_data=f"admin_confirm_{req_id}"),
                 b(text="❌ رد درخواست", callback_data=f"admin_reject_{req_id}"),
             ],
-            [b(text="⚙ پنل مدیریت", callback_data="admin_home")],
+            [b(text="⚙️ پنل مدیریت", callback_data="admin_home")],
         ]
     )
 
 
 # ---------------------------------------------------------------------------
-# میدلور: ثبت کاربر، مسدودسازی، حالت تعمیر، ریاکشن
+# میدل‌ور: ثبت کاربر، مسدودسازی، حالت تعمیر، ریاکشن
 # ---------------------------------------------------------------------------
 def touch_user(tg_user):
-    """کاربر را ثبت/بهروزرسانی میکند. اگر کاربر تازه ساخته شد True برمیگرداند."""
+    """کاربر را ثبت/به‌روزرسانی می‌کند. اگر کاربر تازه ساخته شد True برمی‌گرداند."""
     try:
         with SessionLocal() as s:
             created = s.get(User, tg_user.id) is None
@@ -839,7 +841,7 @@ class AccessMiddleware(BaseMiddleware):
                 if isinstance(event, types.CallbackQuery):
                     await event.answer(msg[:190], show_alert=True)
                 else:
-                    await event.answer(msg)
+                    await event.answer(esc(msg))
                 return None
             asyncio.create_task(_react(event))
         return await handler(event, data)
@@ -888,7 +890,7 @@ def build_welcome(user_id, first_name):
     else:
         body = (
             f"سلام {esc(name)} عزیز 👋\nخوش برگشتی!\n\n"
-            f"💳 موجودی: {balance:,} تومان\n📦 سرویسهای فعال: {active}"
+            f"💳 موجودی: {balance:,} تومان\n📦 سرویس‌های فعال: {active}"
         )
 
     total, parts = discount_breakdown(user_id)
@@ -897,9 +899,9 @@ def build_welcome(user_id, first_name):
 
     for cname, left in expiring[:3]:
         if left >= 0:
-            body += f"\n⏰ سرویس «{esc(cname or '')}» {left} روز دیگر تمام میشود."
+            body += f"\n⏰ سرویس «{esc(cname or '')}» {left} روز دیگر تمام می‌شود."
         else:
-            body += f"\n⚠ سرویس «{esc(cname or '')}» منقضی شده است."
+            body += f"\n⚠️ سرویس «{esc(cname or '')}» منقضی شده است."
 
     body += "\n\nبرای بازگشت به منوی اصلی، /start را بزنید."
     return body
@@ -951,21 +953,21 @@ async def main_menu_handler_call(call: types.CallbackQuery, state: FSMContext):
 
 
 # ---------------------------------------------------------------------------
-# تعرفهها
+# تعرفه‌ها
 # ---------------------------------------------------------------------------
 def render_tariffs(user_id):
     total, parts = discount_breakdown(user_id)
     with SessionLocal() as s:
         rows = [(r.category, r.name, r.price) for r in s.query(Service).order_by(Service.category, Service.id).all()]
 
-    out = "📊 <b>لیست تعرفه و قیمتهای ویژه شما:</b>\n"
+    out = "📊 <b>لیست تعرفه و قیمت‌های ویژه شما:</b>\n"
     if total > 0:
         out += "\n" + breakdown_text(total, parts) + "\n"
     current = None
     for cat, name, price in rows:
         if cat != current:
             current = cat
-            out += f"\n📂 <b>دستهبندی {esc(CATEGORY_LABELS.get(cat, cat))}:</b>\n"
+            out += f"\n📂 <b>دسته‌بندی {esc(CATEGORY_LABELS.get(cat, cat))}:</b>\n"
         out += price_line(name, price, price_with_percent(price, total))
     return out
 
@@ -988,11 +990,11 @@ async def tariffs_callback(call: types.CallbackQuery, state: FSMContext):
 # ---------------------------------------------------------------------------
 def buy_menu_text(user_id):
     total, parts = discount_breakdown(user_id)
-    out = "لطفاً دستهبندی مورد نظر را انتخاب کنید:"
+    out = "لطفاً دسته‌بندی مورد نظر را انتخاب کنید:"
     if total > 0:
         out += "\n\n" + breakdown_text(total, parts)
     if get_bool("loyalty_on"):
-        out += f"\n💎 با ۲ خرید در هر ماه، {get_int('loyalty_percent')}٪ تخفیف وفاداری برای ماه بعد فعال میشود."
+        out += f"\n💎 با ۲ خرید در هر ماه، {get_int('loyalty_percent')}٪ تخفیف وفاداری برای ماه بعد فعال می‌شود."
     return out
 
 
@@ -1001,7 +1003,7 @@ def buy_menu_markup():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [b(text="🌱 سرویس اقتصادی", callback_data="cat_economic")],
-            [b(text="💎 سرویس ویآیپی", callback_data="cat_vip")],
+            [b(text="💎 سرویس وی‌آی‌پی", callback_data="cat_vip")],
             [b(text="🎮 سرویس گیمینگ", callback_data="cat_gaming")],
             [b(text="🏠 بازگشت به منوی اصلی", callback_data="main_menu")],
         ]
@@ -1032,7 +1034,7 @@ async def category_handler(call: types.CallbackQuery):
             for r in s.query(Service).filter(Service.category == category).order_by(Service.id).all()
         ]
 
-    out = f"📊 لیست پلنهای {esc(CATEGORY_LABELS.get(category, category))}:\n"
+    out = f"📊 لیست پلن‌های {esc(CATEGORY_LABELS.get(category, category))}:\n"
     if total > 0:
         out += "\n" + breakdown_text(total, parts) + "\n"
     out += "\n"
@@ -1042,7 +1044,7 @@ async def category_handler(call: types.CallbackQuery):
         keyboard.append([InlineKeyboardButton(text=f"خرید {name}", callback_data=f"buy_{sid}")])
     if not services:
         out += "فعلاً پلنی در این دسته وجود ندارد."
-    keyboard.append([InlineKeyboardButton(text="⬅ برگشت به منوی خرید", callback_data="main_buy")])
+    keyboard.append([InlineKeyboardButton(text="⬅️ برگشت به منوی خرید", callback_data="main_buy")])
     await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 
@@ -1082,7 +1084,7 @@ def checkout_view(co):
         extra = f"{co['code_pct']}٪ کد تخفیف" if co["code"] else None
         out += breakdown_text(co["percent"], co["parts"], extra) + "\n"
     out += (
-        "\nشما میتوانید از طریق کارت یا موجودی کیف پول پرداخت کنید.\n\n"
+        "\nشما می‌توانید از طریق کارت یا موجودی کیف پول پرداخت کنید.\n\n"
         f"💳 شماره کارت جهت واریز:\n<code>{esc(st[0])}</code>\n"
         f"به نام: {esc(st[1])}\n\n"
         "پس از واریز فیش را ارسال کنید یا در صورت داشتن موجودی کافی از دکمه زیر استفاده کنید."
@@ -1098,7 +1100,7 @@ def checkout_view(co):
             [b(text="✅ ارسال رسید واریز", callback_data="confirm_payment")],
             [b(text="💳 پرداخت از کیف پول", callback_data="pay_with_wallet")],
             [code_btn],
-            [b(text="⬅ انصراف و بازگشت", callback_data="main_buy")],
+            [b(text="⬅️ انصراف و بازگشت", callback_data="main_buy")],
         ]
     )
     return out, markup
@@ -1162,7 +1164,7 @@ async def use_code_handler(call: types.CallbackQuery, state: FSMContext):
     await edit_or_send(call, "🏷 کد تخفیف خود را وارد کنید:")
 
 
-@dp.message(PaymentState.waiting_for_code)
+@dp.message(PaymentState.waiting_for_code, ~F.text.in_(MENU_TEXTS))
 async def code_entered_handler(message: types.Message, state: FSMContext):
     with SessionLocal() as s:
         dc, err = validate_code(s, message.text or "", message.from_user.id)
@@ -1253,7 +1255,7 @@ async def pay_with_wallet_handler(call: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "confirm_payment")
 async def confirm_payment_handler(call: types.CallbackQuery):
     await call.answer()
-    await edit_or_send(call, "لطفاً اسکرینشات یا عکس رسید واریزی خود را در چت بفرستید تا بررسی شود.")
+    await edit_or_send(call, "لطفاً اسکرین‌شات یا عکس رسید واریزی خود را در چت بفرستید تا بررسی شود.")
 
 
 @dp.message(PaymentState.waiting_for_receipt, F.photo)
@@ -1279,7 +1281,7 @@ async def receipt_handler(message: types.Message, state: FSMContext):
 
     await state.clear()
     await message.answer(
-        f"رسید شما در تاریخ {get_current_jalali()} دریافت شد و به زودی بررسی میشود. با تشکر از خرید شما! 🙏"
+        f"رسید شما در تاریخ {get_current_jalali()} دریافت شد و به زودی بررسی می‌شود. با تشکر از خرید شما! 🙏"
     )
     await send_sticker(message.bot, message.chat.id, "sticker_purchase")
     await notify_staff(
@@ -1288,13 +1290,13 @@ async def receipt_handler(message: types.Message, state: FSMContext):
     )
 
 
-@dp.message(PaymentState.waiting_for_receipt)
-@dp.message(PaymentState.waiting_for_charge_receipt)
+@dp.message(PaymentState.waiting_for_receipt, ~F.text.in_(MENU_TEXTS))
+@dp.message(PaymentState.waiting_for_charge_receipt, ~F.text.in_(MENU_TEXTS))
 async def receipt_not_photo(message: types.Message):
-    await message.answer("لطفاً رسید را به صورت عکس (اسکرینشات) ارسال کنید.")
+    await message.answer("لطفاً رسید را به صورت عکس (اسکرین‌شات) ارسال کنید.")
 
 
-#---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # کیف پول
 # ---------------------------------------------------------------------------
 def charge_amounts():
@@ -1318,7 +1320,7 @@ async def _render_wallet(target):
     amounts = [a for a in charge_amounts() if a >= get_int("min_charge")]
     buttons = [b(text=f"{a:,} تومان", callback_data=f"charge_{a}") for a in amounts]
     rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
-    rows.append([b(text="✍ مبلغ دلخواه", callback_data="charge_custom")])
+    rows.append([b(text="✍️ مبلغ دلخواه", callback_data="charge_custom")])
     rows.append([b(text="🏠 بازگشت به منوی اصلی", callback_data="main_menu")])
     await reply_to(target, out, InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -1361,11 +1363,11 @@ async def charge_custom_handler(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
     await state.set_state(PaymentState.waiting_for_custom_amount)
     await edit_or_send(
-        call, f"✍ مبلغ دلخواه را به تومان و به صورت عدد بفرستید (حداقل {get_int('min_charge'):,} تومان):"
+        call, f"✍️ مبلغ دلخواه را به تومان و به صورت عدد بفرستید (حداقل {get_int('min_charge'):,} تومان):"
     )
 
 
-@dp.message(PaymentState.waiting_for_custom_amount)
+@dp.message(PaymentState.waiting_for_custom_amount, ~F.text.in_(MENU_TEXTS))
 async def charge_custom_amount(message: types.Message, state: FSMContext):
     raw = (message.text or "").replace(",", "").replace("،", "").strip()
     if not raw.isdigit():
@@ -1381,11 +1383,11 @@ async def charge_custom_amount(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.regexp(r"^charge_\d+$"))
 async def select_charge_amount_handler(call: types.CallbackQuery, state: FSMContext):
-    await call.answer()
     amount = int(call.data.split("_")[1])
     if amount < get_int("min_charge"):
         await call.answer("این مبلغ کمتر از حداقل شارژ است.", show_alert=True)
         return
+    await call.answer()
     await send_charge_instructions(call, state, amount)
 
 
@@ -1397,7 +1399,7 @@ async def prompt_charge_receipt_handler(call: types.CallbackQuery, state: FSMCon
         await edit_or_send(call, "لطفاً ابتدا مبلغ شارژ را انتخاب کنید.", back_home_markup())
         return
     await state.set_state(PaymentState.waiting_for_charge_receipt)
-    await edit_or_send(call, "لطفاً اسکرینشات یا عکس رسید واریزی خود را در چت ارسال کنید:")
+    await edit_or_send(call, "لطفاً اسکرین‌شات یا عکس رسید واریزی خود را در چت ارسال کنید:")
 
 
 @dp.message(PaymentState.waiting_for_charge_receipt, F.photo)
@@ -1434,7 +1436,7 @@ async def process_charge_receipt_handler(message: types.Message, state: FSMConte
 
 
 # ---------------------------------------------------------------------------
-# سرویسهای من
+# سرویس‌های من
 # ---------------------------------------------------------------------------
 def _my_services_view(user_id):
     with SessionLocal() as s:
@@ -1458,7 +1460,7 @@ def _my_services_view(user_id):
     rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
     rows.append([InlineKeyboardButton(text="🏠 بازگشت به منوی اصلی", callback_data="main_menu")])
     return (
-        "📦 <b>سرویسهای فعال شما (برای مشاهده جزئیات انتخاب کنید):</b>",
+        "📦 <b>سرویس‌های فعال شما (برای مشاهده جزئیات انتخاب کنید):</b>",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
@@ -1496,7 +1498,7 @@ async def view_config_detail_handler(call: types.CallbackQuery):
     rows = []
     if sid:
         rows.append([b(text="🔄 تمدید این سرویس", callback_data=f"renew_{cfg_id}")])
-    rows.append([b(text="⬅ بازگشت به لیست سرویسها", callback_data="my_services_callback")])
+    rows.append([b(text="⬅️ بازگشت به لیست سرویس‌ها", callback_data="my_services_callback")])
     rows.append([b(text="🏠 بازگشت به منوی اصلی", callback_data="main_menu")])
     await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -1521,13 +1523,13 @@ def _account_view(user_id):
         "👤 <b>حساب کاربری</b>\n\n"
         f"🆔 آیدی عددی: <code>{user_id}</code>\n"
         f"💳 موجودی کیف پول: {balance:,} تومان\n"
-        f"🟢 تعداد سرویسهای فعال: {active_count}\n"
+        f"🟢 تعداد سرویس‌های فعال: {active_count}\n"
         f"🎁 وضعیت آفر وفاداری: {status_text}"
     )
     b = InlineKeyboardButton
     markup = InlineKeyboardMarkup(
         inline_keyboard=[
-            [b(text="📜 تاریخچه تراکنشها", callback_data="tx_history")],
+            [b(text="📜 تاریخچه تراکنش‌ها", callback_data="tx_history")],
             [b(text="🎁 دعوت دوستان", callback_data="referral_menu")],
             [b(text="🏠 بازگشت به منوی اصلی", callback_data="main_menu")],
         ]
@@ -1548,8 +1550,8 @@ async def back_to_account_handler(call: types.CallbackQuery, state: FSMContext):
     await state.clear()
     out, markup = _account_view(call.from_user.id)
     await edit_or_send(call, out, markup)
-    
-    
+
+
 TYPE_LABELS = {"buy": "خرید", "renew": "تمدید", "charge": "شارژ"}
 
 
@@ -1576,11 +1578,11 @@ async def transaction_history_handler(call: types.CallbackQuery):
         await call.answer("هیچ فاکتور یا درخواستی ثبت نشده است.", show_alert=True)
         return
     await call.answer()
-    out = "📜 <b>تاریخچه تراکنشها و درخواستهای شما:</b>\n\n" + "\n".join(lines)
+    out = "📜 <b>تاریخچه تراکنش‌ها و درخواست‌های شما:</b>\n\n" + "\n".join(lines)
     b = InlineKeyboardButton
     markup = InlineKeyboardMarkup(
         inline_keyboard=[
-            [b(text="⬅ برگشت به حساب کاربری", callback_data="back_to_account")],
+            [b(text="⬅️ برگشت به حساب کاربری", callback_data="back_to_account")],
             [b(text="🏠 بازگشت به منوی اصلی", callback_data="main_menu")],
         ]
     )
@@ -1603,14 +1605,14 @@ async def referral_menu_handler(call: types.CallbackQuery):
     out = (
         "🎁 <b>دعوت دوستان</b>\n\n"
         f"با هر دوستی که با لینک شما وارد شود و اولین خریدش تایید شود، "
-        f"<b>{get_int('referral_reward'):,} تومان</b> به کیف پول شما اضافه میشود.\n\n"
+        f"<b>{get_int('referral_reward'):,} تومان</b> به کیف پول شما اضافه می‌شود.\n\n"
         f"🔗 لینک اختصاصی شما:\n<code>{esc(link)}</code>\n\n"
-        f"👥 دعوتشدهها: {invited}\n✅ پاداش گرفتهشده: {rewarded}"
+        f"👥 دعوت‌شده‌ها: {invited}\n✅ پاداش گرفته‌شده: {rewarded}"
     )
     await edit_or_send(call, out, back_home_markup())
 
 
-#---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # پشتیبانی، سوالات متداول و تیکت (سمت کاربر)
 # ---------------------------------------------------------------------------
 def support_view():
@@ -1618,7 +1620,7 @@ def support_view():
     out = "🎧 <b>پشتیبانی Swan VPN</b>\n\n"
     if support:
         out += f"برای ارتباط مستقیم با ادمین به آیدی زیر پیام دهید:\n👉 {esc(support)}\n\n"
-    out += "یا از دکمه زیر تیکت بفرستید تا همینجا جواب بگیرید."
+    out += "یا از دکمه زیر تیکت بفرستید تا همین‌جا جواب بگیرید."
     b = InlineKeyboardButton
     markup = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -1652,11 +1654,11 @@ async def faq_show(call: types.CallbackQuery):
     markup = InlineKeyboardMarkup(
         inline_keyboard=[
             [b(text="🎫 ارسال تیکت", callback_data="ticket_new")],
-            [b(text="⬅ بازگشت", callback_data="support_menu")],
+            [b(text="⬅️ بازگشت", callback_data="support_menu")],
         ]
     )
     faq = get_setting("faq_text")
-    # متن پیشفرض HTML است؛ متن ساختهشده توسط ادمین escape میشود
+    # متن پیش‌فرض HTML است؛ متن ساخته‌شده توسط ادمین escape می‌شود
     await edit_or_send(call, faq if faq == DEFAULT_FAQ else esc(faq), markup)
 
 
@@ -1674,7 +1676,7 @@ async def ticket_new(call: types.CallbackQuery, state: FSMContext):
         return
     await state.set_state(PaymentState.ticket_waiting_text)
     await state.update_data(ticket_id=None)
-    await edit_or_send(call, "✍ پیام یا مشکل خود را بنویسید (میتوانید عکس هم بفرستید):")
+    await edit_or_send(call, "✍️ پیام یا مشکل خود را بنویسید (می‌توانید عکس هم بفرستید):")
 
 
 @dp.callback_query(F.data.startswith("ticket_ureply_"))
@@ -1687,7 +1689,8 @@ async def ticket_user_reply(call: types.CallbackQuery, state: FSMContext):
             return
     await state.set_state(PaymentState.ticket_waiting_text)
     await state.update_data(ticket_id=tid)
-    await call.message.answer(f"✍ پاسخ شما برای تیکت #{tid} را بنویسید:")
+    await call.message.answer(f"✍️ پاسخ شما برای تیکت #{tid} را بنویسید:")
+
 
 @dp.message(PaymentState.ticket_waiting_text)
 async def ticket_text_received(message: types.Message, state: FSMContext):
@@ -1714,7 +1717,7 @@ async def ticket_text_received(message: types.Message, state: FSMContext):
         s.commit()
 
     await state.clear()
-    await message.answer(f"✅ تیکت #{tid} ثبت شد. پاسخ پشتیبانی همینجا برایتان ارسال میشود.")
+    await message.answer(f"✅ تیکت #{tid} ثبت شد. پاسخ پشتیبانی همین‌جا برایتان ارسال می‌شود.")
 
     b = InlineKeyboardButton
     markup = InlineKeyboardMarkup(
@@ -1731,3 +1734,1721 @@ async def ticket_text_received(message: types.Message, state: FSMContext):
             await relay(message.bot, cid, message, header, markup)
         except Exception as e:  # noqa: BLE001
             logging.warning("ticket notify failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# پنل ادمین: ورود
+# ---------------------------------------------------------------------------
+@dp.message(Command("admin"), Staff())
+async def admin_panel_cmd(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "⚙️ <b>پنل مدیریت:</b>", reply_markup=get_admin_main_keyboard(message.from_user.id)
+    )
+
+
+@dp.callback_query(F.data == "admin_home", Staff())
+async def admin_home_callback(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    markup = get_admin_main_keyboard(call.from_user.id)
+    try:
+        await call.message.edit_text("⚙️ <b>پنل مدیریت:</b>", reply_markup=markup)
+    except TelegramBadRequest:
+        await call.message.answer("⚙️ <b>پنل مدیریت:</b>", reply_markup=markup)
+
+
+# ---------------------------------------------------------------------------
+# پنل ادمین: صف درخواست‌ها
+# ---------------------------------------------------------------------------
+@dp.callback_query(F.data == "admin_unanswered", Staff())
+async def admin_unanswered_handler(call: types.CallbackQuery):
+    with SessionLocal() as s:
+        reqs = [
+            (r.id, r.user_id, r.req_type, r.plan_name, r.created_at)
+            for r in s.query(Request).filter(Request.status == "unanswered").order_by(Request.id).limit(15).all()
+        ]
+    if not reqs:
+        await call.answer("درخواست پاسخ‌داده‌نشده‌ای وجود ندارد.", show_alert=True)
+        return
+
+    await call.answer()
+    out = "🔴 <b>درخواست‌های در انتظار پاسخ:</b>\n\n"
+    keyboard = []
+    for req_id, u_id, rtype, plan, created in reqs:
+        out += (
+            f"🆔 #{req_id} | {TYPE_LABELS.get(rtype, rtype or '')} | کاربر: {u_id}\n"
+            f"📦 {esc(plan or '')} | {created}\n-----------------------------------\n"
+        )
+        keyboard.append(
+            [InlineKeyboardButton(text=f"💬 بررسی درخواست #{req_id}", callback_data=f"admin_detail_{req_id}")]
+        )
+    keyboard.append([InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data="admin_home")])
+    await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+
+@dp.callback_query(F.data == "admin_answered", Staff())
+async def admin_answered_handler(call: types.CallbackQuery):
+    with SessionLocal() as s:
+        reqs = [
+            (r.id, r.user_id, r.req_type, r.plan_name, r.created_at, r.answered_at)
+            for r in s.query(Request).filter(Request.status != "unanswered").order_by(Request.id.desc()).limit(10).all()
+        ]
+    if not reqs:
+        await call.answer("درخواست پاسخ‌داده‌شده‌ای یافت نشد.", show_alert=True)
+        return
+
+    await call.answer()
+    out = "🟢 <b>آخرین درخواست‌های بررسی‌شده:</b>\n\n"
+    for req_id, u_id, rtype, plan, created, answered in reqs:
+        out += (
+            f"🆔 #{req_id} | {TYPE_LABELS.get(rtype, rtype or '')} | کاربر: {u_id}\n"
+            f"📦 {esc(plan or '')}\n⏱ ثبت: {created}\n✅ بررسی: {answered}\n"
+            "-----------------------------------\n"
+        )
+    buttons = [InlineKeyboardButton(text=f"💬 #{r[0]}", callback_data=f"admin_detail_{r[0]}") for r in reqs]
+    rows = [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data="admin_home")])
+    await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@dp.callback_query(F.data.startswith("admin_detail_"), Staff())
+async def admin_detail_handler(call: types.CallbackQuery):
+    req_id = int(call.data.split("_")[2])
+    with SessionLocal() as s:
+        r = s.get(Request, req_id)
+        if r is None:
+            await call.answer("درخواست یافت نشد.", show_alert=True)
+            return
+        u_id, r_type, plan = r.user_id, r.req_type, r.plan_name
+        status, created, answered = r.status, r.created_at, r.answered_at
+        receipt_id, price, code = r.receipt_file_id, r.price or 0, r.discount_code
+
+    await call.answer()
+    status_text = {"answered": "پاسخ داده شده 🟢", "rejected": "رد شده ❌"}.get(status, "در انتظار بررسی 🔴")
+    out = (
+        f"📋 <b>جزئیات کامل درخواست #{req_id}</b>\n\n"
+        f"👤 آیدی کاربر: <code>{u_id}</code>\n"
+        f"📦 نوع: {TYPE_LABELS.get(r_type, r_type or '')} - {esc(plan or '')}\n"
+        f"💰 مبلغ: {price:,} تومان\n"
+    )
+    if code:
+        out += f"🏷 کد تخفیف: {esc(code)}\n"
+    out += f"📌 وضعیت: {status_text}\n⏱ زمان ثبت: {created}\n"
+    if answered:
+        out += f"✅ زمان بررسی: {answered}\n"
+
+    b = InlineKeyboardButton
+    back_cb = "admin_unanswered" if status == "unanswered" else "admin_answered"
+    keyboard = [
+        [b(text="⬅️ بازگشت به لیست", callback_data=back_cb)],
+        [b(text="🏠 پنل اصلی", callback_data="admin_home")],
+    ]
+    if status == "unanswered":
+        keyboard.insert(
+            0,
+            [
+                b(text="✅ تایید", callback_data=f"admin_confirm_{req_id}"),
+                b(text="❌ رد درخواست", callback_data=f"admin_reject_{req_id}"),
+            ],
+        )
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    try:
+        if receipt_id and receipt_id != "None":
+            try:
+                await call.message.delete()
+            except Exception:  # noqa: BLE001
+                pass
+            await call.bot.send_photo(chat_id=call.message.chat.id, photo=receipt_id, caption=out, reply_markup=markup)
+        else:
+            await edit_or_send(call, out, markup)
+    except Exception as e:  # noqa: BLE001
+        logging.error("Error showing request details: %s", e)
+
+
+def register_purchase(s, user_id):
+    """شمارنده خرید/وفاداری/دعوت را به‌روز می‌کند. (پیام وفاداری؟, (آیدی معرف, مبلغ) | None)"""
+    user = get_or_create_user(s, user_id)
+    current_month = jalali_today().strftime("%Y/%m")
+    prev_has_monthly = bool(user.has_monthly_discount)
+    was_new = bool(user.is_new_user)
+    count = user.purchase_count_current_month or 0
+    new_count = (count + 1) if user.last_purchase_month == current_month else 1
+    user.is_new_user = False
+    user.purchase_count_current_month = new_count
+    user.last_purchase_month = current_month
+    user.has_monthly_discount = new_count >= 2
+    monthly_notif = bool(user.has_monthly_discount and not prev_has_monthly)
+
+    reward = None
+    if was_new and user.referred_by and not user.referral_rewarded and get_bool("referral_on"):
+        amount = get_int("referral_reward")
+        ref = s.get(User, user.referred_by)
+        if ref is not None and amount > 0:
+            ref.balance = (ref.balance or 0) + amount
+            user.referral_rewarded = True
+            reward = (ref.user_id, amount)
+    return monthly_notif, reward
+
+
+async def post_purchase_notifications(bot, user_id, monthly_notif, reward):
+    if monthly_notif:
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text=f"🔥 <b>تبریک! شما در این ماه ۲ خرید ثبت کردید و {get_int('loyalty_percent')}٪ تخفیف وفاداری "
+                "برای ماه آینده برای شما فعال شد.</b>",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    if reward:
+        try:
+            await bot.send_message(
+                chat_id=reward[0],
+                text=f"🎉 دوست دعوت‌شده شما اولین خریدش را انجام داد و {reward[1]:,} تومان به کیف پول شما اضافه شد!",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@dp.callback_query(F.data.startswith("admin_confirm_"), Staff())
+async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
+    req_id = int(call.data.split("_")[2])
+    result = None  # برای شارژ و تمدید
+    with SessionLocal() as s:
+        r = s.get(Request, req_id)
+        if r is None:
+            await call.answer("درخواست یافت نشد.", show_alert=True)
+            return
+        if r.status != "unanswered":
+            await call.answer("این درخواست قبلاً بررسی شده است.", show_alert=True)
+            return
+        rtype, uid, plan, price = r.req_type, r.user_id, r.plan_name, r.price or 0
+
+        if rtype == "charge":
+            user = get_or_create_user(s, uid)
+            user.balance = (user.balance or 0) + price
+            r.status = "answered"
+            r.answered_at = get_current_jalali()
+            s.commit()
+            result = ("charge", uid, price, None, None)
+
+        elif rtype == "renew":
+            cfg = s.get(UserConfig, r.config_id) if r.config_id else None
+            if cfg is None:
+                await call.answer("سرویس مربوط به این تمدید پیدا نشد. درخواست را رد کنید.", show_alert=True)
+                return
+            try:
+                current = date.fromisoformat(cfg.expires_at) if cfg.expires_at else today_iran()
+            except ValueError:
+                current = today_iran()
+            new_exp = max(current, today_iran()) + timedelta(days=30)
+            cfg.expires_at = new_exp.isoformat()
+            cfg.reminded = False
+            r.status = "answered"
+            r.answered_at = get_current_jalali()
+            monthly_notif, reward = register_purchase(s, uid)
+            s.commit()
+            result = ("renew", uid, plan, new_exp.isoformat(), (monthly_notif, reward))
+        else:
+            sid = r.service_id
+
+    await call.answer()
+    markup = get_admin_main_keyboard(call.from_user.id)
+
+    if result is None:  # خرید جدید: متن کانفیگ را از ادمین می‌گیریم
+        await state.update_data(target_user_id=uid, plan_name=plan, req_id=req_id, service_id=sid)
+        await state.set_state(PaymentState.waiting_for_admin_config)
+        await append_status(
+            call, "✅ درخواست تایید شد. لطفاً متن کانفیگ یا ساب‌لینک را برای ارسال به کاربر وارد کنید:", markup
+        )
+        return
+
+    kind, uid, a, b_, extra = result
+    log_action(call.from_user.id, f"تایید درخواست #{req_id} ({kind})")
+    if kind == "charge":
+        await append_status(call, "✅ وضعیت: واریز تایید شد و حساب کاربر شارژ گردید.", markup)
+        try:
+            await call.bot.send_message(
+                chat_id=uid, text=f"🎉 تبریک!\n\nمبلغ {a:,} تومان با موفقیت به موجودی کیف پول شما اضافه شد."
+            )
+            await send_sticker(call.bot, uid, "sticker_charge")
+        except Exception as e:  # noqa: BLE001
+            logging.error("notify charge failed: %s", e)
+    else:
+        await append_status(call, "✅ وضعیت: تمدید انجام شد.", markup)
+        try:
+            await call.bot.send_message(
+                chat_id=uid,
+                text=f"✅ سرویس <b>{esc(a or '')}</b> با موفقیت تمدید شد.\n📅 تاریخ پایان جدید: {jalali_from_iso(b_)}",
+            )
+            await send_sticker(call.bot, uid, "sticker_config")
+        except Exception as e:  # noqa: BLE001
+            logging.error("notify renew failed: %s", e)
+        await post_purchase_notifications(call.bot, uid, extra[0], extra[1])
+
+
+@dp.callback_query(F.data.startswith("admin_reject_"), Staff())
+async def admin_reject_action(call: types.CallbackQuery):
+    req_id = int(call.data.split("_")[2])
+    refunded = 0
+    with SessionLocal() as s:
+        r = s.get(Request, req_id)
+        if r is None:
+            await call.answer("درخواست یافت نشد.", show_alert=True)
+            return
+        if r.status != "unanswered":
+            await call.answer("این درخواست قبلاً بررسی شده است.", show_alert=True)
+            return
+        r.status = "rejected"
+        r.answered_at = get_current_jalali()
+        target_user = r.user_id
+        if r.paid_wallet and (r.price or 0) > 0:
+            user = get_or_create_user(s, target_user)
+            user.balance = (user.balance or 0) + r.price
+            refunded = r.price
+        release_code(s, r.discount_code, target_user)
+        s.commit()
+
+    await call.answer("درخواست رد شد.")
+    log_action(call.from_user.id, f"رد درخواست #{req_id}")
+    await append_status(call, "❌ وضعیت: درخواست رد شد.", get_admin_main_keyboard(call.from_user.id))
+    msg = "⚠️ متأسفانه پرداخت/درخواست شما توسط ادمین تایید نشد."
+    if refunded:
+        msg += f"\n💰 مبلغ {refunded:,} تومان به کیف پول شما برگشت داده شد."
+    try:
+        await call.bot.send_message(chat_id=target_user, text=msg)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@dp.message(PaymentState.waiting_for_admin_config, Staff())
+async def process_admin_config(message: types.Message, state: FSMContext):
+    if not message.text:
+        await message.answer("لطفاً کانفیگ را به صورت متن ارسال کنید.")
+        return
+
+    data = await state.get_data()
+    req_id = data.get("req_id")
+    target_user_id = data.get("target_user_id")
+    plan_name = data.get("plan_name")
+    service_id = data.get("service_id")
+
+    start_date = today_iran()
+    end_date = start_date + timedelta(days=30)
+
+    with SessionLocal() as s:
+        r = s.get(Request, req_id) if req_id else None
+        if r is None or r.status != "unanswered":
+            await state.clear()
+            await message.answer("این درخواست قبلاً بررسی شده است.")
+            return
+        r.status = "answered"
+        r.answered_at = get_current_jalali()
+        s.add(
+            UserConfig(
+                user_id=target_user_id, config_name=plan_name, config_details=message.text,
+                service_id=service_id, expires_at=end_date.isoformat(), reminded=False,
+            )
+        )
+        monthly_notif, reward = register_purchase(s, target_user_id)
+        s.commit()
+
+    await state.clear()
+    log_action(message.from_user.id, f"ارسال کانفیگ برای درخواست #{req_id}")
+    await message.answer(
+        f"✅ کانفیگ با موفقیت برای کاربر {target_user_id} ارسال و ثبت شد.",
+        reply_markup=get_admin_main_keyboard(message.from_user.id),
+    )
+
+    try:
+        notify = (
+            "🎉 <b>سفارش شما تایید و آماده شد!</b>\n\n"
+            f"📦 سرویس: {esc(plan_name or '')}\n"
+            f"📅 تاریخ شروع: {jalali_from_iso(start_date.isoformat())}\n"
+            f"📅 تاریخ پایان: {jalali_from_iso(end_date.isoformat())} (۳۰ روزه)\n\n"
+            f"📋 جزئیات/کانفیگ:\n\n<code>{esc(message.text)}</code>\n\n"
+            "لطفاً ساب‌لینک خود را طبق آموزش داخل کانال وارد برنامه V2Box کنید.\n"
+            "با تشکر از خرید شما. 🙏"
+        )
+        await message.bot.send_message(chat_id=target_user_id, text=notify)
+        await send_sticker(message.bot, target_user_id, "sticker_config")
+    except Exception as e:  # noqa: BLE001
+        logging.error("Error notifying user about config delivery: %s", e)
+    await post_purchase_notifications(message.bot, target_user_id, monthly_notif, reward)
+
+
+# ---------------------------------------------------------------------------
+# پنل ادمین: مدیریت کاربران
+# ---------------------------------------------------------------------------
+USERS_PER_PAGE = 10
+
+
+def users_filter_row(current):
+    b = InlineKeyboardButton
+    names = [("all", "همه"), ("banned", "🛑 مسدودها"), ("svc", "📦 دارای سرویس")]
+    return [
+        b(text=("• " if k == current else "") + label, callback_data=f"ausers_{k}_1")
+        for k, label in names
+    ]
+
+
+@dp.callback_query(F.data == "admin_users", MainAdmin())
+@dp.callback_query(F.data.startswith("ausers_"), MainAdmin())
+async def admin_users_list_handler(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    flt, page = "all", 1
+    if call.data.startswith("ausers_"):
+        _, flt, p = call.data.split("_")
+        page = max(1, int(p))
+    offset = (page - 1) * USERS_PER_PAGE
+
+    with SessionLocal() as s:
+        q = s.query(User)
+        if flt == "banned":
+            q = q.filter(User.is_banned.is_(True))
+        elif flt == "svc":
+            q = q.filter(User.user_id.in_(select(UserConfig.user_id)))
+        total = q.count()
+        users = q.order_by(User.user_id).offset(offset).limit(USERS_PER_PAGE).all()
+        rows = [(u.user_id, user_display(u), u.balance or 0, bool(u.is_banned)) for u in users]
+
+    out = f"👥 <b>کاربران ({total} نفر) - صفحه {page}:</b>\n\n"
+    keyboard = [users_filter_row(flt)]
+    for u_id, name, bal, banned in rows:
+        icon = "🛑" if banned else "🟢"
+        out += f"{icon} <code>{u_id}</code> | {esc(name)} | {bal:,}\n"
+        keyboard.append(
+            [InlineKeyboardButton(text=f"👤 {name[:28]}", callback_data=f"manage_user_{u_id}")]
+        )
+    if not rows:
+        out += "کاربری یافت نشد."
+
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="⬅️ قبلی", callback_data=f"ausers_{flt}_{page - 1}"))
+    if offset + USERS_PER_PAGE < total:
+        nav.append(InlineKeyboardButton(text="بعدی ➡️", callback_data=f"ausers_{flt}_{page + 1}"))
+    if nav:
+        keyboard.append(nav)
+    keyboard.append([InlineKeyboardButton(text="🔎 جستجوی کاربر", callback_data="admin_user_search")])
+    keyboard.append([InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data="admin_home")])
+    await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+
+@dp.callback_query(F.data == "admin_user_search", MainAdmin())
+async def admin_user_search_start(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.set_state(PaymentState.searching_user)
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data="admin_users")]]
+    )
+    await edit_or_send(call, "🔎 آیدی عددی، یوزرنیم یا بخشی از اسم کاربر را بفرستید:", markup)
+
+
+@dp.message(PaymentState.searching_user, MainAdmin())
+async def admin_user_search_result(message: types.Message, state: FSMContext):
+    q = (message.text or "").strip().lstrip("@")
+    if not q:
+        await message.answer("متن جستجو را بفرستید.")
+        return
+    with SessionLocal() as s:
+        query = s.query(User)
+        if q.isdigit():
+            query = query.filter(User.user_id == int(q))
+        else:
+            like = f"%{q}%"
+            query = query.filter(or_(User.username.ilike(like), User.first_name.ilike(like)))
+        rows = [(u.user_id, user_display(u), u.balance or 0) for u in query.limit(10).all()]
+    await state.clear()
+
+    keyboard = []
+    out = f"🔎 نتیجه جستجو برای «{esc(q)}»:\n\n"
+    for u_id, name, bal in rows:
+        out += f"<code>{u_id}</code> | {esc(name)} | {bal:,}\n"
+        keyboard.append([InlineKeyboardButton(text=f"👤 {name[:28]}", callback_data=f"manage_user_{u_id}")])
+    if not rows:
+        out += "کاربری پیدا نشد."
+    keyboard.append([InlineKeyboardButton(text="🔙 لیست کاربران", callback_data="admin_users")])
+    await message.answer(out, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+
+async def _render_user_management(target, user_id: int):
+    with SessionLocal() as s:
+        user = s.get(User, user_id)
+        if user is None:
+            await reply_to(target, "کاربر یافت نشد.", None)
+            return
+        name = user_display(user)
+        balance = user.balance or 0
+        banned = bool(user.is_banned)
+        count = user.purchase_count_current_month or 0
+        has_monthly = bool(user.has_monthly_discount)
+        note = user.note or ""
+        referred_by = user.referred_by
+        configs = [
+            (c.id, c.config_name, c.expires_at)
+            for c in s.query(UserConfig).filter(UserConfig.user_id == user_id).all()
+        ]
+
+    status_text = "✅ فعال" if has_monthly else f"⏳ {count} خرید این ماه"
+    out = (
+        f"⚙️ <b>مدیریت کاربر <code>{user_id}</code></b>\n"
+        f"👤 {esc(name)}\n\n"
+        f"💳 موجودی فعلی: {balance:,} تومان\n"
+        f"📋 وضعیت دسترسی: {'🔴 مسدود (بن)' if banned else '🟢 باز'}\n"
+        f"🎁 آفر وفاداری: {status_text}\n"
+    )
+    if referred_by:
+        out += f"🔗 دعوت‌شده توسط: <code>{referred_by}</code>\n"
+    if note:
+        out += f"📝 یادداشت: {esc(note)}\n"
+    out += "\n📦 <b>کانفیگ‌های فعال کاربر:</b>\n"
+
+    keyboard = []
+    for cfg_id, cfg_name, exp in configs:
+        exp_txt = f" - تا {jalali_from_iso(exp)}" if exp else ""
+        out += f"🔹 {esc(cfg_name or '')}{exp_txt} (ID: {cfg_id})\n"
+        keyboard.append(
+            [InlineKeyboardButton(text=f"🗑 حذف کانفیگ #{cfg_id}", callback_data=f"del_cfg_user_{cfg_id}_{user_id}")]
+        )
+    if not configs:
+        out += "هیچ کانفیگ فعالی ندارد.\n"
+
+    b = InlineKeyboardButton
+    keyboard.extend(
+        [
+            [
+                b(text="✉️ پیام خصوصی", callback_data=f"pm_{user_id}"),
+                b(text="💵 موجودی", callback_data=f"balmenu_{user_id}"),
+            ],
+            [
+                b(text="📝 یادداشت", callback_data=f"note_{user_id}"),
+                b(text="📜 تاریخچه", callback_data=f"uhist_{user_id}"),
+            ],
+            [
+                b(
+                    text="🔓 آزاد سازی کاربر" if banned else "🚫 مسدود کردن (بن) کاربر",
+                    callback_data=f"toggle_ban_{user_id}",
+                )
+            ],
+            [b(text="🔙 بازگشت به لیست کاربران", callback_data="admin_users")],
+        ]
+    )
+    await reply_to(target, out, InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+
+@dp.callback_query(F.data.startswith("manage_user_"), MainAdmin())
+async def admin_user_management_handler(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    await _render_user_management(call, int(call.data.split("_")[2]))
+
+
+@dp.callback_query(F.data.startswith("toggle_ban_"), MainAdmin())
+async def toggle_ban_action(call: types.CallbackQuery):
+    user_id = int(call.data.split("_")[2])
+    with SessionLocal() as s:
+        user = get_or_create_user(s, user_id)
+        user.is_banned = not bool(user.is_banned)
+        new_state = user.is_banned
+        s.commit()
+    log_action(call.from_user.id, f"{'بن' if new_state else 'آزادسازی'} کاربر {user_id}")
+    await call.answer("وضعیت کاربر تغییر یافت.", show_alert=True)
+    await _render_user_management(call, user_id)
+
+
+@dp.callback_query(F.data.startswith("del_cfg_user_"), MainAdmin())
+async def delete_config_user_action(call: types.CallbackQuery):
+    parts = call.data.split("_")
+    cfg_id, target_user_id = int(parts[3]), int(parts[4])
+    with SessionLocal() as s:
+        cfg = s.get(UserConfig, cfg_id)
+        if cfg is not None:
+            s.delete(cfg)
+            s.commit()
+    log_action(call.from_user.id, f"حذف کانفیگ {cfg_id} کاربر {target_user_id}")
+    await call.answer("کانفیگ کاربر حذف شد.", show_alert=True)
+    try:
+        await call.bot.send_message(chat_id=target_user_id, text="⚠️ یکی از سرویس‌های شما توسط ادمین حذف شد.")
+    except Exception:  # noqa: BLE001
+        pass
+    await _render_user_management(call, target_user_id)
+
+
+@dp.callback_query(F.data.startswith("uhist_"), MainAdmin())
+async def admin_user_history(call: types.CallbackQuery):
+    uid = int(call.data.split("_")[1])
+    lines = render_history(uid, 15)
+    if not lines:
+        await call.answer("این کاربر تراکنشی ندارد.", show_alert=True)
+        return
+    await call.answer()
+    out = f"📜 <b>تاریخچه کاربر <code>{uid}</code>:</b>\n\n" + "\n".join(lines)
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"manage_user_{uid}")]]
+    )
+    await edit_or_send(call, out, markup)
+
+
+# --- موجودی ---
+@dp.callback_query(F.data.startswith("balmenu_"), MainAdmin())
+async def balance_menu(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    uid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        user = s.get(User, uid)
+        balance = (user.balance if user else 0) or 0
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [b(text="➕ افزایش", callback_data=f"baladd_{uid}"), b(text="➖ کاهش", callback_data=f"balsub_{uid}")],
+            [b(text="🎯 تنظیم مبلغ دقیق", callback_data=f"balset_{uid}")],
+            [b(text="🔙 بازگشت", callback_data=f"manage_user_{uid}")],
+        ]
+    )
+    await edit_or_send(call, f"💵 موجودی فعلی کاربر <code>{uid}</code>: {balance:,} تومان\nچه کاری انجام شود؟", markup)
+
+
+@dp.callback_query(F.data.regexp(r"^bal(add|sub|set)_\d+$"), MainAdmin())
+async def balance_mode(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    mode, uid = call.data[:6], int(call.data.split("_")[1])
+    mode = mode.rstrip("_")
+    await state.set_state(PaymentState.adjusting_balance)
+    await state.update_data(target_adjust_user=uid, mode=mode)
+    label = {"baladd": "افزایش", "balsub": "کاهش", "balset": "تنظیم دقیق"}[mode]
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data=f"manage_user_{uid}")]]
+    )
+    await edit_or_send(call, f"💵 مبلغ ({label}) را برای کاربر <code>{uid}</code> به عدد وارد کنید:", markup)
+
+
+@dp.message(PaymentState.adjusting_balance, MainAdmin())
+async def process_balance_adjustment(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    uid, mode = data.get("target_adjust_user"), data.get("mode")
+    raw = (message.text or "").replace(",", "").strip()
+    if not uid or not raw.isdigit():
+        await message.answer("مقدار وارد شده نامعتبر است. لطفاً فقط عدد وارد کنید.")
+        return
+    amount = int(raw)
+
+    with SessionLocal() as s:
+        user = get_or_create_user(s, uid)
+        current = user.balance or 0
+        if mode == "baladd":
+            new_balance = current + amount
+        elif mode == "balsub":
+            if amount > current:
+                await message.answer(f"مبلغ بیشتر از موجودی فعلی ({current:,}) است.")
+                return
+            new_balance = current - amount
+        else:
+            new_balance = amount
+        user.balance = new_balance
+        s.commit()
+
+    await state.clear()
+    log_action(message.from_user.id, f"تغییر موجودی کاربر {uid}: {current:,} -> {new_balance:,}")
+    await message.answer(
+        f"✅ موجودی کاربر <code>{uid}</code> از {current:,} به {new_balance:,} تغییر یافت.",
+        reply_markup=get_admin_main_keyboard(message.from_user.id),
+    )
+    try:
+        await message.bot.send_message(
+            chat_id=uid, text=f"💰 موجودی کیف پول شما توسط پشتیبانی تغییر کرد.\nموجودی فعلی: {new_balance:,} تومان"
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# --- پیام خصوصی و یادداشت ---
+@dp.callback_query(F.data.startswith("pm_"), MainAdmin())
+async def private_message_start(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    uid = int(call.data.split("_")[1])
+    await state.set_state(PaymentState.private_message)
+    await state.update_data(pm_target=uid)
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data=f"manage_user_{uid}")]]
+    )
+    await edit_or_send(call, f"✉️ پیامی که می‌خواهید از طرف ربات برای کاربر <code>{uid}</code> ارسال شود را بفرستید:", markup)
+
+
+@dp.message(PaymentState.private_message, MainAdmin())
+async def private_message_send(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    uid = data.get("pm_target")
+    await state.clear()
+    try:
+        await message.copy_to(chat_id=uid)
+        await message.answer("✅ پیام ارسال شد.", reply_markup=get_admin_main_keyboard(message.from_user.id))
+        log_action(message.from_user.id, f"پیام خصوصی به کاربر {uid}")
+    except Exception as e:  # noqa: BLE001
+        await message.answer(f"❌ ارسال ناموفق بود: {esc(str(e))}")
+
+
+@dp.callback_query(F.data.startswith("note_"), MainAdmin())
+async def note_start(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    uid = int(call.data.split("_")[1])
+    await state.set_state(PaymentState.editing_note)
+    await state.update_data(note_target=uid)
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data=f"manage_user_{uid}")]]
+    )
+    await edit_or_send(call, "📝 یادداشت خصوصی را بفرستید (فقط ادمین می‌بیند). برای پاک کردن، - بفرستید:", markup)
+
+
+@dp.message(PaymentState.editing_note, MainAdmin())
+async def note_save(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    uid = data.get("note_target")
+    value = (message.text or "").strip()
+    with SessionLocal() as s:
+        user = get_or_create_user(s, uid)
+        user.note = "" if value == "-" else value
+        s.commit()
+    await state.clear()
+    await message.answer("✅ یادداشت ذخیره شد.", reply_markup=get_admin_main_keyboard(message.from_user.id))
+
+
+# ---------------------------------------------------------------------------
+# پنل ادمین: مدیریت پلن‌ها
+# ---------------------------------------------------------------------------
+@dp.callback_query(F.data == "admin_plans", MainAdmin())
+async def admin_plans_list(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    with SessionLocal() as s:
+        rows = [(r.id, r.category, r.name, r.price) for r in s.query(Service).order_by(Service.category, Service.id).all()]
+    out = "📦 <b>مدیریت پلن‌ها</b>\n\nروی پلن بزنید تا ویرایش یا حذف شود:\n"
+    keyboard = []
+    for sid, cat, name, price in rows:
+        keyboard.append(
+            [InlineKeyboardButton(
+                text=f"{CATEGORY_LABELS.get(cat, cat)} | {name} | {price:,}", callback_data=f"plan_{sid}"
+            )]
+        )
+    keyboard.append([InlineKeyboardButton(text="➕ افزودن پلن", callback_data="plan_add")])
+    keyboard.append([InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data="admin_home")])
+    await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+
+@dp.callback_query(F.data.regexp(r"^plan_\d+$"), MainAdmin())
+async def admin_plan_view(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    sid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        svc = s.get(Service, sid)
+        if svc is None:
+            await edit_or_send(call, "پلن یافت نشد.")
+            return
+        cat, name, price = svc.category, svc.name, svc.price
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [b(text="💰 تغییر قیمت", callback_data=f"planprice_{sid}"), b(text="✏️ تغییر نام", callback_data=f"planname_{sid}")],
+            [b(text="🗑 حذف پلن", callback_data=f"plandel_{sid}")],
+            [b(text="🔙 بازگشت", callback_data="admin_plans")],
+        ]
+    )
+    await edit_or_send(
+        call,
+        f"📦 <b>{esc(name)}</b>\nدسته: {esc(CATEGORY_LABELS.get(cat, cat))}\nقیمت: {price:,} تومان",
+        markup,
+    )
+
+
+@dp.callback_query(F.data.startswith("planprice_"), MainAdmin())
+async def plan_price_start(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    sid = int(call.data.split("_")[1])
+    await state.set_state(PaymentState.editing_plan_price)
+    await state.update_data(plan_id=sid)
+    await edit_or_send(call, "قیمت جدید را به تومان و به عدد بفرستید:")
+
+
+@dp.message(PaymentState.editing_plan_price, MainAdmin())
+async def plan_price_save(message: types.Message, state: FSMContext):
+    raw = (message.text or "").replace(",", "").strip()
+    if not raw.isdigit() or int(raw) <= 0:
+        await message.answer("عدد معتبر بفرستید.")
+        return
+    data = await state.get_data()
+    with SessionLocal() as s:
+        svc = s.get(Service, data.get("plan_id"))
+        if svc is None:
+            await state.clear()
+            await message.answer("پلن یافت نشد.")
+            return
+        old = svc.price
+        svc.price = int(raw)
+        name = svc.name
+        s.commit()
+    await state.clear()
+    log_action(message.from_user.id, f"قیمت پلن {name}: {old:,} -> {int(raw):,}")
+    await message.answer("✅ قیمت به‌روز شد.", reply_markup=get_admin_main_keyboard(message.from_user.id))
+
+
+@dp.callback_query(F.data.startswith("planname_"), MainAdmin())
+async def plan_name_start(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    sid = int(call.data.split("_")[1])
+    await state.set_state(PaymentState.editing_plan_name)
+    await state.update_data(plan_id=sid)
+    await edit_or_send(call, "نام جدید پلن را بفرستید:")
+
+
+@dp.message(PaymentState.editing_plan_name, MainAdmin())
+async def plan_name_save(message: types.Message, state: FSMContext):
+    name = (message.text or "").strip()
+    if not name or len(name) > 60:
+        await message.answer("نام معتبر (حداکثر ۶۰ کاراکتر) بفرستید.")
+        return
+    data = await state.get_data()
+    with SessionLocal() as s:
+        svc = s.get(Service, data.get("plan_id"))
+        if svc is None:
+            await state.clear()
+            await message.answer("پلن یافت نشد.")
+            return
+        svc.name = name
+        s.commit()
+    await state.clear()
+    log_action(message.from_user.id, f"تغییر نام پلن به {name}")
+    await message.answer("✅ نام پلن به‌روز شد.", reply_markup=get_admin_main_keyboard(message.from_user.id))
+
+
+@dp.callback_query(F.data.startswith("plandel_"), MainAdmin())
+async def plan_delete_ask(call: types.CallbackQuery):
+    await call.answer()
+    sid = int(call.data.split("_")[1])
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [b(text="✅ بله، حذف شود", callback_data=f"plandelok_{sid}"), b(text="انصراف", callback_data=f"plan_{sid}")]
+        ]
+    )
+    await edit_or_send(call, "⚠️ مطمئنید این پلن حذف شود؟ (کانفیگ‌های قبلی کاربران حفظ می‌شوند)", markup)
+
+
+@dp.callback_query(F.data.startswith("plandelok_"), MainAdmin())
+async def plan_delete_do(call: types.CallbackQuery):
+    sid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        svc = s.get(Service, sid)
+        name = svc.name if svc else str(sid)
+        if svc is not None:
+            s.delete(svc)
+            s.commit()
+    log_action(call.from_user.id, f"حذف پلن {name}")
+    await admin_plans_list(call, _NoState())
+
+
+class _NoState:
+    """جایگزین سبک برای فراخوانی داخلی admin_plans_list بدون FSM."""
+
+    async def clear(self):
+        return None
+
+
+@dp.callback_query(F.data == "plan_add", MainAdmin())
+async def plan_add_start(call: types.CallbackQuery):
+    await call.answer()
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [b(text="🌱 اقتصادی", callback_data="planaddcat_economic")],
+            [b(text="💎 VIP", callback_data="planaddcat_vip")],
+            [b(text="🎮 گیمینگ", callback_data="planaddcat_gaming")],
+            [b(text="🔙 بازگشت", callback_data="admin_plans")],
+        ]
+    )
+    await edit_or_send(call, "دسته‌بندی پلن جدید را انتخاب کنید:", markup)
+
+
+@dp.callback_query(F.data.startswith("planaddcat_"), MainAdmin())
+async def plan_add_cat(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    cat = call.data.split("_", 1)[1]
+    await state.set_state(PaymentState.adding_plan)
+    await state.update_data(category=cat)
+    await edit_or_send(
+        call, "نام و قیمت پلن را در دو خط بفرستید:\n\n<code>50 گیگ - ۳۰ روزه\n790000</code>"
+    )
+
+
+@dp.message(PaymentState.adding_plan, MainAdmin())
+async def plan_add_save(message: types.Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    name, price = None, None
+    if "|" in raw:
+        n, _, p = raw.rpartition("|")
+        name, price = n.strip(), p.replace(",", "").strip()
+    else:
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        if len(lines) >= 2:
+            name, price = " ".join(lines[:-1]), lines[-1].replace(",", "")
+    if not name or not price or not price.isdigit() or int(price) <= 0 or len(name) > 60:
+        await message.answer("فرمت نادرست است. نام در یک خط و قیمت (عدد) در خط بعد.")
+        return
+    data = await state.get_data()
+    with SessionLocal() as s:
+        s.add(Service(category=data.get("category"), name=name, price=int(price)))
+        s.commit()
+    await state.clear()
+    log_action(message.from_user.id, f"افزودن پلن {name} ({int(price):,})")
+    await message.answer("✅ پلن اضافه شد.", reply_markup=get_admin_main_keyboard(message.from_user.id))
+
+
+# ---------------------------------------------------------------------------
+# پنل ادمین: کدهای تخفیف
+# ---------------------------------------------------------------------------
+@dp.callback_query(F.data == "admin_codes", MainAdmin())
+async def admin_codes_list(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    with SessionLocal() as s:
+        rows = [
+            (c.id, c.code, c.percent, c.expires_at, c.max_uses, c.used_count, bool(c.is_active))
+            for c in s.query(DiscountCode).order_by(DiscountCode.id.desc()).limit(20).all()
+        ]
+    out = "🏷 <b>کدهای تخفیف</b>\n\n"
+    keyboard = []
+    for cid, code, pct, exp, mx, used, active in rows:
+        exp_txt = jalali_from_iso(exp) if exp else "بدون انقضا"
+        mx_txt = str(mx) if mx else "نامحدود"
+        out += f"{'🟢' if active else '⚪️'} <code>{esc(code)}</code> | {pct}٪ | {exp_txt} | {used}/{mx_txt}\n"
+        keyboard.append([InlineKeyboardButton(text=f"⚙️ {code}", callback_data=f"code_{cid}")])
+    if not rows:
+        out += "هنوز کدی ساخته نشده است.\n"
+    keyboard.append([InlineKeyboardButton(text="➕ ساخت کد جدید", callback_data="code_add")])
+    keyboard.append([InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data="admin_home")])
+    await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+
+@dp.callback_query(F.data.regexp(r"^code_\d+$"), MainAdmin())
+async def admin_code_view(call: types.CallbackQuery):
+    await call.answer()
+    cid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        c = s.get(DiscountCode, cid)
+        if c is None:
+            await edit_or_send(call, "کد یافت نشد.")
+            return
+        code, active = c.code, bool(c.is_active)
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [b(text="🔴 غیرفعال کن" if active else "🟢 فعال کن", callback_data=f"codetoggle_{cid}")],
+            [b(text="🗑 حذف کد", callback_data=f"codedel_{cid}")],
+            [b(text="🔙 بازگشت", callback_data="admin_codes")],
+        ]
+    )
+    await edit_or_send(call, f"کد <code>{esc(code)}</code> - وضعیت: {'فعال' if active else 'غیرفعال'}", markup)
+
+
+@dp.callback_query(F.data.startswith("codetoggle_"), MainAdmin())
+async def admin_code_toggle(call: types.CallbackQuery):
+    cid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        c = s.get(DiscountCode, cid)
+        if c is not None:
+            c.is_active = not bool(c.is_active)
+            s.commit()
+    await admin_code_view(call)
+
+
+@dp.callback_query(F.data.startswith("codedel_"), MainAdmin())
+async def admin_code_delete(call: types.CallbackQuery):
+    cid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        c = s.get(DiscountCode, cid)
+        code = c.code if c else str(cid)
+        if c is not None:
+            s.query(CodeUse).filter(CodeUse.code_id == cid).delete()
+            s.delete(c)
+            s.commit()
+    log_action(call.from_user.id, f"حذف کد تخفیف {code}")
+    await admin_codes_list(call, _NoState())
+
+
+@dp.callback_query(F.data == "code_add", MainAdmin())
+async def admin_code_add_start(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.set_state(PaymentState.creating_code)
+    await edit_or_send(
+        call,
+        "کد جدید را به این شکل بفرستید:\n\n<code>کد درصد [تعداد روز اعتبار] [حداکثر استفاده]</code>\n\n"
+        "مثال: <code>SWAN20 20 30 100</code>\n(۰ برای روز یا تعداد یعنی بدون محدودیت)",
+    )
+
+
+@dp.message(PaymentState.creating_code, MainAdmin())
+async def admin_code_add_save(message: types.Message, state: FSMContext):
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not re.fullmatch(r"[A-Za-z0-9_\-]{3,20}", parts[0]) or not parts[1].isdigit():
+        await message.answer("فرمت نادرست است. مثال: SWAN20 20 30 100")
+        return
+    code, pct = parts[0].upper(), int(parts[1])
+    days = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+    max_uses = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+    if not (1 <= pct <= MAX_DISCOUNT):
+        await message.answer(f"درصد باید بین ۱ تا {MAX_DISCOUNT} باشد.")
+        return
+    with SessionLocal() as s:
+        if s.query(DiscountCode).filter(DiscountCode.code == code).first():
+            await message.answer("این کد قبلاً ساخته شده است.")
+            return
+        exp = (today_iran() + timedelta(days=days)).isoformat() if days > 0 else None
+        s.add(DiscountCode(code=code, percent=pct, expires_at=exp, max_uses=max_uses, used_count=0, is_active=True))
+        s.commit()
+    await state.clear()
+    log_action(message.from_user.id, f"ساخت کد تخفیف {code} ({pct}٪)")
+    await message.answer(f"✅ کد <code>{esc(code)}</code> ساخته شد.", reply_markup=get_admin_main_keyboard(message.from_user.id))
+
+
+# ---------------------------------------------------------------------------
+# پنل ادمین: تیکت‌ها (سمت پشتیبان)
+# ---------------------------------------------------------------------------
+@dp.callback_query(F.data == "admin_tickets", Staff())
+async def admin_tickets_list(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    with SessionLocal() as s:
+        rows = [
+            (t.id, t.user_id, t.created_at)
+            for t in s.query(Ticket).filter(Ticket.status == "open").order_by(Ticket.id.desc()).limit(15).all()
+        ]
+    out = "🎫 <b>تیکت‌های باز:</b>\n\n"
+    keyboard = []
+    for tid, uid, created in rows:
+        out += f"#{tid} | کاربر {uid} | {created}\n"
+        keyboard.append([InlineKeyboardButton(text=f"💬 مشاهده تیکت #{tid}", callback_data=f"ticket_view_{tid}")])
+    if not rows:
+        out += "تیکت بازی وجود ندارد."
+    keyboard.append([InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data="admin_home")])
+    await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+
+@dp.callback_query(F.data.startswith("ticket_view_"), Staff())
+async def admin_ticket_view(call: types.CallbackQuery):
+    await call.answer()
+    tid = int(call.data.split("_")[2])
+    with SessionLocal() as s:
+        t = s.get(Ticket, tid)
+        if t is None:
+            await edit_or_send(call, "تیکت یافت نشد.")
+            return
+        uid, status = t.user_id, t.status
+        msgs = [
+            (m.sender, m.text, m.photo_id, m.created_at)
+            for m in s.query(TicketMessage).filter(TicketMessage.ticket_id == tid).order_by(TicketMessage.id.desc()).limit(8).all()
+        ]
+    msgs.reverse()
+    out = f"🎫 <b>تیکت #{tid}</b> | کاربر <code>{uid}</code> | {'باز' if status == 'open' else 'بسته'}\n\n"
+    for sender, body, photo, created in msgs:
+        who = "👤 کاربر" if sender == "user" else "🎧 پشتیبان"
+        out += f"{who} ({created}):\n{esc(body or '')}{' 📷' if photo else ''}\n\n"
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [b(text="💬 پاسخ", callback_data=f"ticket_reply_{tid}"), b(text="✅ بستن", callback_data=f"ticket_close_{tid}")],
+            [b(text="🔙 لیست تیکت‌ها", callback_data="admin_tickets")],
+        ]
+    )
+    await edit_or_send(call, out[:4000], markup)
+
+
+@dp.callback_query(F.data.startswith("ticket_reply_"), Staff())
+async def ticket_staff_reply_start(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    tid = int(call.data.split("_")[2])
+    await state.set_state(PaymentState.ticket_staff_reply)
+    await state.update_data(ticket_id=tid)
+    await call.message.answer(f"✍️ پاسخ خود را برای تیکت #{tid} بنویسید (متن یا عکس):")
+
+
+@dp.message(PaymentState.ticket_staff_reply, Staff())
+async def ticket_staff_reply_send(message: types.Message, state: FSMContext):
+    body = message.caption if message.photo else message.text
+    if not body and not message.photo:
+        await message.answer("لطفاً متن یا عکس بفرستید.")
+        return
+    data = await state.get_data()
+    tid = data.get("ticket_id")
+    with SessionLocal() as s:
+        t = s.get(Ticket, tid)
+        if t is None:
+            await state.clear()
+            await message.answer("تیکت یافت نشد.")
+            return
+        uid = t.user_id
+        s.add(
+            TicketMessage(
+                ticket_id=tid, sender="staff", text=body or "",
+                photo_id=message.photo[-1].file_id if message.photo else None, created_at=get_current_jalali(),
+            )
+        )
+        s.commit()
+    await state.clear()
+
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[b(text="↩️ پاسخ به پشتیبانی", callback_data=f"ticket_ureply_{tid}")]]
+    )
+    try:
+        await relay(message.bot, uid, message, f"💬 پاسخ پشتیبانی به تیکت #{tid}:\n\n", markup)
+        await message.answer("✅ پاسخ ارسال شد.", reply_markup=get_admin_main_keyboard(message.from_user.id))
+        log_action(message.from_user.id, f"پاسخ به تیکت #{tid}")
+    except Exception as e:  # noqa: BLE001
+        await message.answer(f"❌ ارسال به کاربر ناموفق بود: {esc(str(e))}")
+
+
+@dp.callback_query(F.data.startswith("ticket_close_"), Staff())
+async def ticket_close(call: types.CallbackQuery):
+    tid = int(call.data.split("_")[2])
+    with SessionLocal() as s:
+        t = s.get(Ticket, tid)
+        if t is None:
+            await call.answer("تیکت یافت نشد.", show_alert=True)
+            return
+        t.status = "closed"
+        uid = t.user_id
+        s.commit()
+    await call.answer("تیکت بسته شد.")
+    log_action(call.from_user.id, f"بستن تیکت #{tid}")
+    await append_status(call, f"✅ تیکت #{tid} بسته شد.", get_admin_main_keyboard(call.from_user.id))
+    try:
+        await call.bot.send_message(chat_id=uid, text=f"✅ تیکت #{tid} شما بسته شد. در صورت نیاز تیکت جدید ثبت کنید.")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ---------------------------------------------------------------------------
+# پنل ادمین: آمار، گزارش روزانه، لاگ
+# ---------------------------------------------------------------------------
+def stats_numbers():
+    today = jalali_today().strftime("%Y/%m/%d")
+    month = jalali_today().strftime("%Y/%m")
+    sale_types = ["buy", "renew"]
+    with SessionLocal() as s:
+        def revenue(*extra):
+            q = s.query(func.coalesce(func.sum(Request.price), 0)).filter(
+                Request.status == "answered", Request.req_type.in_(sale_types), *extra
+            )
+            return int(q.scalar() or 0)
+
+        def sales_count(*extra):
+            q = s.query(func.count(Request.id)).filter(
+                Request.status == "answered", Request.req_type.in_(sale_types), *extra
+            )
+            return int(q.scalar() or 0)
+
+        charged_today = int(
+            s.query(func.coalesce(func.sum(Request.price), 0))
+            .filter(Request.status == "answered", Request.req_type == "charge", Request.answered_at.like(f"{today}%"))
+            .scalar() or 0
+        )
+        return dict(
+            today=today, month=month,
+            total_users=s.query(func.count(User.user_id)).scalar(),
+            new_today=s.query(func.count(User.user_id)).filter(User.joined_at == today_iran().isoformat()).scalar(),
+            configs=s.query(func.count(UserConfig.id)).scalar(),
+            total_rev=revenue(), month_rev=revenue(Request.answered_at.like(f"{month}%")),
+            day_rev=revenue(Request.answered_at.like(f"{today}%")),
+            day_sales=sales_count(Request.answered_at.like(f"{today}%")),
+            charged_today=charged_today,
+            unanswered=s.query(func.count(Request.id)).filter(Request.status == "unanswered").scalar(),
+            processed=s.query(func.count(Request.id)).filter(Request.status != "unanswered").scalar(),
+            open_tickets=s.query(func.count(Ticket.id)).filter(Ticket.status == "open").scalar(),
+        )
+
+
+@dp.callback_query(F.data == "admin_sales_stats", MainAdmin())
+async def admin_sales_stats_handler(call: types.CallbackQuery):
+    await call.answer()
+    n = stats_numbers()
+    out = (
+        "📊 <b>آمار جامع و وضعیت درخواست‌ها:</b>\n\n"
+        f"👥 کل کاربران: {n['total_users']} (امروز جدید: {n['new_today']})\n"
+        f"📦 کل سرویس‌های فعال: {n['configs']}\n"
+        f"💰 درآمد کل: {n['total_rev']:,} تومان\n\n"
+        f"📅 <b>ماه جاری ({n['month']}):</b> {n['month_rev']:,} تومان\n"
+        f"☀️ <b>امروز ({n['today']}):</b> {n['day_rev']:,} تومان در {n['day_sales']} فروش\n\n"
+        f"🔴 در انتظار پاسخ: {n['unanswered']}\n"
+        f"🟢 بررسی‌شده: {n['processed']}\n"
+        f"🎫 تیکت باز: {n['open_tickets']}"
+    )
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data="admin_home")]]
+    )
+    await edit_or_send(call, out, markup)
+
+
+def daily_report_text():
+    n = stats_numbers()
+    return (
+        f"📋 <b>گزارش روزانه {n['today']}</b>\n\n"
+        f"💰 فروش امروز: {n['day_sales']} سفارش | {n['day_rev']:,} تومان\n"
+        f"💳 شارژ کیف پول امروز: {n['charged_today']:,} تومان\n"
+        f"👥 کاربر جدید: {n['new_today']} | کل کاربران: {n['total_users']}\n"
+        f"🔴 درخواست در انتظار: {n['unanswered']}\n"
+        f"🎫 تیکت باز: {n['open_tickets']}"
+    )
+
+
+@dp.callback_query(F.data == "admin_logs", MainAdmin())
+async def admin_logs_handler(call: types.CallbackQuery):
+    await call.answer()
+    with SessionLocal() as s:
+        rows = [(r.admin_id, r.action, r.created_at) for r in s.query(AdminLog).order_by(AdminLog.id.desc()).limit(20).all()]
+    out = "🧾 <b>آخرین فعالیت‌های ادمین‌ها:</b>\n\n"
+    for admin_id, action, created in rows:
+        out += f"• {created} | <code>{admin_id}</code>\n  {esc(action or '')}\n"
+    if not rows:
+        out += "هنوز لاگی ثبت نشده است."
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data="admin_home")]]
+    )
+    await edit_or_send(call, out[:4000], markup)
+
+
+# ---------------------------------------------------------------------------
+# پنل ادمین: پیام همگانی
+# ---------------------------------------------------------------------------
+@dp.callback_query(F.data == "admin_broadcast_start", MainAdmin())
+async def admin_broadcast_start_handler(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.set_state(PaymentState.broadcasting)
+    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data="admin_home")]])
+    await edit_or_send(
+        call, "📢 پیام، متن یا رسانه مورد نظر را برای ارسال همگانی به تمام کاربران بفرستید:", markup
+    )
+
+
+@dp.message(PaymentState.broadcasting, MainAdmin())
+async def process_broadcast_handler(message: types.Message, state: FSMContext):
+    await state.clear()
+    with SessionLocal() as s:
+        user_ids = [u[0] for u in s.query(User.user_id).filter(or_(User.is_banned.is_(None), User.is_banned.is_(False))).all()]
+
+    await message.answer("⏳ عملیات ارسال پیام همگانی آغاز شد... لطفاً منتظر بمانید.")
+    sent = blocked = failed = 0
+    for u_id in user_ids:
+        try:
+            await message.copy_to(chat_id=u_id)
+            sent += 1
+        except TelegramForbiddenError:
+            blocked += 1
+        except Exception:  # noqa: BLE001
+            failed += 1
+        await asyncio.sleep(0.05)
+
+    log_action(message.from_user.id, f"پیام همگانی: {sent} موفق")
+    await message.answer(
+        "✅ پیام همگانی ارسال شد!\n\n"
+        f"📨 ارسال‌شده به: {sent} کاربر\n🚫 مسدود شده توسط کاربر: {blocked}\n⚠️ ناموفق: {failed}",
+        reply_markup=get_admin_main_keyboard(message.from_user.id),
+    )
+
+
+# ---------------------------------------------------------------------------
+# پنل ادمین: تنظیمات ربات (عمومی و داده‌محور)
+# ---------------------------------------------------------------------------
+def setting_display(key):
+    meta, value = SETTINGS[key], get_setting(key)
+    t = meta["type"]
+    if t == "toggle":
+        return "✅ روشن" if value in ("1", "true", "True") else "⬜ خاموش"
+    if t in ("photo", "sticker"):
+        return "✅ تنظیم شده" if value else "—"
+    if not value:
+        return "—"
+    return esc(value if len(value) <= 40 else value[:40] + "…")
+
+
+def render_settings_page(page):
+    out = f"<b>{SETTING_PAGES[page]}</b>\n\n"
+    keyboard = []
+    for key, meta in SETTINGS.items():
+        if meta["page"] != page:
+            continue
+        out += f"• {meta['label']}: {setting_display(key)}\n"
+        if meta["type"] == "toggle":
+            label = ("🔴 خاموش: " if get_bool(key) else "🟢 روشن: ") + meta["label"]
+        else:
+            label = "✏️ " + meta["label"]
+        keyboard.append([InlineKeyboardButton(text=label[:60], callback_data=f"sedit_{key}")])
+    keyboard.append([InlineKeyboardButton(text="🔙 بازگشت به تنظیمات", callback_data="admin_settings")])
+    return out, InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+@dp.callback_query(F.data == "admin_settings", MainAdmin())
+async def admin_settings_menu(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    keyboard = [[InlineKeyboardButton(text=title, callback_data=f"spage_{page}")] for page, title in SETTING_PAGES.items()]
+    keyboard.append([InlineKeyboardButton(text="👮 مدیریت ادمین‌ها", callback_data="sadmins")])
+    keyboard.append([InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data="admin_home")])
+    await edit_or_send(call, "⚙️ <b>تنظیمات ربات</b>\nیک بخش را انتخاب کنید:", InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+
+@dp.callback_query(F.data.startswith("spage_"), MainAdmin())
+async def admin_settings_page(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    page = call.data.split("_", 1)[1]
+    if page not in SETTING_PAGES:
+        return
+    out, markup = render_settings_page(page)
+    await edit_or_send(call, out, markup)
+
+
+@dp.callback_query(F.data.startswith("sedit_"), MainAdmin())
+async def admin_setting_edit(call: types.CallbackQuery, state: FSMContext):
+    key = call.data[len("sedit_"):]
+    meta = SETTINGS.get(key)
+    if meta is None:
+        await call.answer()
+        return
+    await call.answer()
+    if meta["type"] == "toggle":
+        new_value = "0" if get_bool(key) else "1"
+        set_setting(key, new_value)
+        log_action(call.from_user.id, f"تنظیم {key} = {new_value}")
+        out, markup = render_settings_page(meta["page"])
+        await edit_or_send(call, out, markup)
+        return
+
+    hints = {
+        "num": f"یک عدد بین {meta.get('min', 0)} تا {meta.get('max', 0)} بفرستید.",
+        "text": "متن جدید را بفرستید. برای پاک کردن، - بفرستید.",
+        "photo": "یک عکس بفرستید. برای حذف، - بفرستید.",
+        "sticker": "یک استیکر بفرستید. برای حذف، - بفرستید.",
+    }
+    await state.set_state(PaymentState.editing_setting)
+    await state.update_data(setting_key=key)
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data=f"spage_{meta['page']}")]]
+    )
+    await edit_or_send(call, f"✏️ <b>{meta['label']}</b>\n\n{hints[meta['type']]}", markup)
+
+
+@dp.message(PaymentState.editing_setting, MainAdmin())
+async def admin_setting_save(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    key = data.get("setting_key")
+    meta = SETTINGS.get(key)
+    if meta is None:
+        await state.clear()
+        return
+
+    t, value = meta["type"], None
+    text_in = (message.text or "").strip()
+    if t == "num":
+        raw = text_in.replace(",", "")
+        if not raw.isdigit() or not (meta["min"] <= int(raw) <= meta["max"]):
+            await message.answer(f"عدد معتبر بین {meta['min']} تا {meta['max']} بفرستید.")
+            return
+        value = str(int(raw))
+    elif t == "text":
+        if not text_in:
+            await message.answer("لطفاً متن بفرستید.")
+            return
+        value = "" if text_in == "-" else text_in
+        if key == "charge_amounts" and value:
+            nums = [p for p in re.split(r"[,\s،]+", value) if p.isdigit() and int(p) > 0]
+            if not nums or len(nums) > 12:
+                await message.answer("چند عدد (حداکثر ۱۲ تا) با کاما جدا کنید. مثال: 200000,400000")
+                return
+            value = ",".join(nums)
+        if key in ("card_number", "card_holder") and not value:
+            await message.answer("این مورد نمی‌تواند خالی باشد.")
+            return
+    elif t == "photo":
+        if message.photo:
+            value = message.photo[-1].file_id
+        elif text_in == "-":
+            value = ""
+        else:
+            await message.answer("لطفاً یک عکس بفرستید یا - برای حذف.")
+            return
+    elif t == "sticker":
+        if message.sticker:
+            value = message.sticker.file_id
+        elif text_in == "-":
+            value = ""
+        else:
+            await message.answer("لطفاً یک استیکر بفرستید یا - برای حذف.")
+            return
+
+    set_setting(key, value)
+    await state.clear()
+    log_action(message.from_user.id, f"ویرایش تنظیم {key}")
+    out, markup = render_settings_page(meta["page"])
+    await message.answer("✅ ذخیره شد.\n\n" + out, reply_markup=markup)
+
+
+# --- مدیریت ادمین‌ها ---
+async def _render_subadmins(call):
+    ids = sub_admins()
+    out = (
+        "👮 <b>مدیریت ادمین‌ها</b>\n\n"
+        "ادمین‌های فرعی فقط می‌توانند درخواست‌ها (رسید و شارژ) و تیکت‌ها را مدیریت کنند؛ "
+        "به تنظیمات، کاربران و موجودی دسترسی ندارند.\n\n"
+        f"ادمین اصلی: <code>{ADMIN_ID}</code>\n"
+    )
+    keyboard = []
+    for i in ids:
+        out += f"• <code>{i}</code>\n"
+        keyboard.append([InlineKeyboardButton(text=f"🗑 حذف {i}", callback_data=f"sadmindel_{i}")])
+    if not ids:
+        out += "• ادمین فرعی ثبت نشده است.\n"
+    keyboard.append([InlineKeyboardButton(text="➕ افزودن ادمین", callback_data="sadmin_add")])
+    keyboard.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin_settings")])
+    await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+
+@dp.callback_query(F.data == "sadmins", MainAdmin())
+async def sadmins_menu(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    await _render_subadmins(call)
+
+
+@dp.callback_query(F.data == "sadmin_add", MainAdmin())
+async def sadmin_add_start(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.set_state(PaymentState.adding_subadmin)
+    await edit_or_send(call, "آیدی عددی تلگرام ادمین جدید را بفرستید (او باید قبلاً ربات را استارت کرده باشد):")
+
+
+@dp.message(PaymentState.adding_subadmin, MainAdmin())
+async def sadmin_add_save(message: types.Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    if not raw.isdigit():
+        await message.answer("آیدی عددی معتبر بفرستید.")
+        return
+    new_id = int(raw)
+    ids = sub_admins()
+    if new_id != ADMIN_ID and new_id not in ids:
+        ids.append(new_id)
+        set_setting("sub_admins", ",".join(str(i) for i in ids))
+        log_action(message.from_user.id, f"افزودن ادمین فرعی {new_id}")
+    await state.clear()
+    await message.answer("✅ ادمین فرعی ثبت شد.", reply_markup=get_admin_main_keyboard(message.from_user.id))
+
+
+@dp.callback_query(F.data.startswith("sadmindel_"), MainAdmin())
+async def sadmin_delete(call: types.CallbackQuery):
+    await call.answer()
+    rm = int(call.data.split("_")[1])
+    ids = [i for i in sub_admins() if i != rm]
+    set_setting("sub_admins", ",".join(str(i) for i in ids))
+    log_action(call.from_user.id, f"حذف ادمین فرعی {rm}")
+    await _render_subadmins(call)
+
+
+# ---------------------------------------------------------------------------
+# بکاپ و بازیابی
+# ---------------------------------------------------------------------------
+def build_backup_bytes():
+    payload = {"version": 1, "created_at": get_current_jalali(), "tables": {}}
+    with engine.connect() as conn:
+        for table in Base.metadata.sorted_tables:
+            rows = conn.execute(table.select()).mappings().all()
+            payload["tables"][table.name] = [dict(r) for r in rows]
+    return json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+
+
+def parse_backup(raw_bytes):
+    payload = json.loads(raw_bytes.decode("utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("tables"), dict):
+        raise ValueError("ساختار فایل بکاپ معتبر نیست.")
+    names = {t.name for t in Base.metadata.sorted_tables}
+    tables = payload["tables"]
+    if not set(tables.keys()) <= names or not isinstance(tables.get("users"), list):
+        raise ValueError("این فایل بکاپ ربات Swan VPN نیست.")
+    for rows in tables.values():
+        if not isinstance(rows, list) or any(not isinstance(r, dict) for r in rows):
+            raise ValueError("ساختار جدول‌ها در فایل بکاپ معتبر نیست.")
+    return payload
+
+
+def apply_backup(payload):
+    tables = payload["tables"]
+    ordered = list(Base.metadata.sorted_tables)
+    with engine.begin() as conn:
+        for t in reversed(ordered):
+            conn.execute(t.delete())
+        for t in ordered:
+            rows = tables.get(t.name, [])
+            cols = list(t.c.keys())
+            clean = [{c: row.get(c) for c in cols} for row in rows]
+            if clean:
+                conn.execute(t.insert(), clean)
+        if engine.dialect.name == "postgresql":
+            for t in ordered:
+                if "id" in t.c:
+                    try:
+                        with conn.begin_nested():
+                            conn.execute(
+                                text(
+                                    f"SELECT setval(pg_get_serial_sequence('{t.name}', 'id'), "
+                                    f"COALESCE((SELECT MAX(id) FROM {t.name}), 1), "
+                                    f"(SELECT MAX(id) FROM {t.name}) IS NOT NULL)"
+                                )
+                            )
+                    except Exception as e:  # noqa: BLE001
+                        logging.warning("sequence reset skipped for %s: %s", t.name, e)
+    _cache.clear()
+
+
+async def send_backup(bot, chat_id, caption):
+    data = build_backup_bytes()
+    name = f"swan_backup_{now_iran().strftime('%Y%m%d_%H%M')}.json"
+    await bot.send_document(chat_id=chat_id, document=BufferedInputFile(data, filename=name), caption=caption)
+
+
+@dp.callback_query(F.data == "admin_backup", MainAdmin())
+async def admin_backup_menu(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [b(text="📤 دریافت بکاپ همین الان", callback_data="backup_now")],
+            [b(text="📥 بازیابی از فایل بکاپ", callback_data="backup_restore")],
+            [b(text="🔙 بازگشت به پنل", callback_data="admin_home")],
+        ]
+    )
+    await edit_or_send(
+        call,
+        "🧰 <b>بکاپ دیتابیس</b>\n\nبکاپ شامل کاربران، موجودی‌ها، سرویس‌ها، درخواست‌ها و تنظیمات است. "
+        "فایل را جای امنی نگه دارید.",
+        markup,
+    )
+
+
+@dp.callback_query(F.data == "backup_now", MainAdmin())
+async def backup_now(call: types.CallbackQuery):
+    await call.answer("در حال ساخت بکاپ...")
+    try:
+        await send_backup(call.bot, call.message.chat.id, f"🧰 بکاپ دستی - {get_current_jalali()}")
+        log_action(call.from_user.id, "دریافت بکاپ دستی")
+    except Exception as e:  # noqa: BLE001
+        await call.message.answer(f"❌ ساخت بکاپ ناموفق بود: {esc(str(e))}")
+
+
+@dp.callback_query(F.data == "backup_restore", MainAdmin())
+async def backup_restore_start(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.set_state(PaymentState.restore_wait_file)
+    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data="admin_backup")]])
+    await edit_or_send(
+        call,
+        "📥 فایل بکاپ (.json) را همین‌جا بفرستید.\n"
+        "⚠️ با بازیابی، اطلاعات فعلی دیتابیس با محتوای فایل جایگزین می‌شود.",
+        markup,
+    )
+
+
+@dp.message(PaymentState.restore_wait_file, MainAdmin(), F.document)
+async def backup_restore_file(message: types.Message, state: FSMContext):
+    buf = io.BytesIO()
+    try:
+        await message.bot.download(message.document.file_id, destination=buf)
+        payload = parse_backup(buf.getvalue())
+    except Exception as e:  # noqa: BLE001
+        await message.answer(f"❌ فایل نامعتبر است: {esc(str(e))}")
+        return
+
+    summary = "\n".join(f"• {name}: {len(rows)}" for name, rows in payload["tables"].items())
+    await state.update_data(restore_file_id=message.document.file_id)
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [b(text="✅ بله، بازیابی کن", callback_data="restore_confirm")],
+            [b(text="انصراف", callback_data="admin_backup")],
+        ]
+    )
+    await message.answer(
+        f"فایل بکاپ ({esc(str(payload.get('created_at', '')))}) خوانده شد:\n{summary}\n\n"
+        "⚠️ مطمئنید که اطلاعات فعلی با این بکاپ جایگزین شود؟",
+        reply_markup=markup,
+    )
+
+
+@dp.message(PaymentState.restore_wait_file, MainAdmin())
+async def backup_restore_not_file(message: types.Message):
+    await message.answer("لطفاً فایل بکاپ را به صورت فایل (document) بفرستید.")
+
+
+@dp.callback_query(F.data == "restore_confirm", MainAdmin())
+async def backup_restore_confirm(call: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    file_id = data.get("restore_file_id")
+    if not file_id:
+        await call.answer("درخواست منقضی شده است.", show_alert=True)
+        return
+    await call.answer("در حال بازیابی...")
+    try:
+        buf = io.BytesIO()
+        await call.bot.download(file_id, destination=buf)
+        payload = parse_backup(buf.getvalue())
+        apply_backup(payload)
+    except Exception as e:  # noqa: BLE001
+        await call.message.answer(f"❌ بازیابی ناموفق بود (اطلاعات قبلی دست‌نخورده ماند): {esc(str(e))}")
+        return
+    await state.clear()
+    log_action(call.from_user.id, "بازیابی دیتابیس از بکاپ")
+    await call.message.answer("✅ بازیابی با موفقیت انجام شد.", reply_markup=get_admin_main_keyboard(call.from_user.id))
+
+
+# ---------------------------------------------------------------------------
+# کارهای زمان‌بندی‌شده: یادآوری تمدید، گزارش روزانه، بکاپ شبانه
+# ---------------------------------------------------------------------------
+async def job_reminders(bot):
+    days = get_int("reminder_days")
+    todo = []
+    with SessionLocal() as s:
+        rows = (
+            s.query(UserConfig)
+            .filter(UserConfig.expires_at.isnot(None), or_(UserConfig.reminded.is_(None), UserConfig.reminded.is_(False)))
+            .all()
+        )
+        for c in rows:
+            try:
+                left = (date.fromisoformat(c.expires_at) - today_iran()).days
+            except (TypeError, ValueError):
+                continue
+            if left <= days:
+                todo.append((c.id, c.user_id, c.config_name, left, c.service_id))
+                c.reminded = True
+        s.commit()
+
+    for cfg_id, uid, name, left, sid in todo:
+        if left >= 0:
+            msg = f"⏰ سرویس «{esc(name or '')}» شما {left} روز دیگر تمام می‌شود. برای تمدید روی دکمه زیر بزنید."
+        else:
+            msg = f"⚠️ سرویس «{esc(name or '')}» شما منقضی شده است. برای تمدید روی دکمه زیر بزنید."
+        markup = None
+        if sid:
+            markup = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🔄 تمدید سرویس", callback_data=f"renew_{cfg_id}")]]
+            )
+        try:
+            await bot.send_message(chat_id=uid, text=msg, reply_markup=markup)
+        except Exception as e:  # noqa: BLE001
+            logging.info("reminder to %s failed: %s", uid, e)
+        await asyncio.sleep(0.05)
+
+
+async def job_report(bot):
+    if get_bool("report_on"):
+        await bot.send_message(chat_id=ADMIN_ID, text=daily_report_text())
+
+
+async def job_backup(bot):
+    if get_bool("backup_on"):
+        await send_backup(bot, ADMIN_ID, f"🧰 بکاپ شبانه خودکار - {get_current_jalali()}")
+
+
+JOBS = [("backup", 3, 0, job_backup), ("reminders", 10, 0, job_reminders), ("report", 23, 30, job_report)]
+
+
+async def run_jobs(bot):
+    now = now_iran()
+    today = now.date().isoformat()
+    for name, hour, minute, func_ in JOBS:
+        if (now.hour, now.minute) < (hour, minute):
+            continue
+        if get_setting(f"last_{name}") == today:
+            continue
+        set_setting(f"last_{name}", today)
+        try:
+            await func_(bot)
+        except Exception as e:  # noqa: BLE001
+            logging.error("job %s failed: %s", name, e)
+
+
+async def scheduler(bot):
+    while True:
+        try:
+            await run_jobs(bot)
+        except Exception as e:  # noqa: BLE001
+            logging.error("scheduler error: %s", e)
+        await asyncio.sleep(60)
+
+
+async def keepalive():
+    """جلوگیری از خوابیدن سرویس رایگان Render با پینگ آدرس عمومی خودش."""
+    url = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
+    if not url:
+        return
+    async with ClientSession(timeout=ClientTimeout(total=20)) as session:
+        while True:
+            await asyncio.sleep(600)
+            try:
+                async with session.get(url) as resp:
+                    await resp.read()
+            except Exception as e:  # noqa: BLE001
+                logging.info("keepalive ping failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# وب‌سرور سلامت و اجرای ربات
+# ---------------------------------------------------------------------------
+async def health_check(request):
+    return web.Response(text="Bot is running", status=200)
+
+
+async def update_bot_commands(bot):
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description="منوی اصلی"),
+            BotCommand(command="admin", description="پنل ادمین"),
+        ]
+    )
+
+
+async def run_web_server(app, port):
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+
+async def main():
+    global BOT_USERNAME
+    init_db()
+    bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    me = await bot.get_me()
+    BOT_USERNAME = me.username or ""
+    await bot.delete_webhook(drop_pending_updates=True)
+    await update_bot_commands(bot)
+
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    port = int(os.environ.get("PORT", 8080))
+    await run_web_server(app, port)
+
+    background = [asyncio.create_task(scheduler(bot)), asyncio.create_task(keepalive())]
+    logging.info("Bot @%s is running; web server on port %s", BOT_USERNAME, port)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        for task in background:
+            task.cancel()
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(main())
