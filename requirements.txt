@@ -4,3 +4,4 @@ sqlalchemy>=2.0
 psycopg2-binary
 jdatetime
 qrcode[pil]
+psycopg[binary]
