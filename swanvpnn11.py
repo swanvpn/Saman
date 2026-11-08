@@ -29,7 +29,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import BaseFilter, Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -204,6 +204,38 @@ class AdminLog(Base):
     created_at = Column(String)
 
 
+class Rating(Base):
+    __tablename__ = "ratings"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger)
+    request_id = Column(Integer)
+    score = Column(Integer)
+    created_at = Column(String)
+
+
+class ReceiptHash(Base):
+    __tablename__ = "receipt_hashes"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sha256 = Column(String)
+    unique_id = Column(String)
+    user_id = Column(BigInteger)
+    request_id = Column(Integer)
+    created_at = Column(String)
+
+
+class ScheduledBroadcast(Base):
+    __tablename__ = "scheduled_broadcasts"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    segment = Column(String, default="all")
+    chat_id = Column(BigInteger)  # چتی که پیام اصلی در آن است (ادمین)
+    message_id = Column(BigInteger)
+    run_at = Column(String)  # YYYY-MM-DDTHH:MM به وقت ایران
+    status = Column(String, default="pending")  # pending | sending | sent | cancelled
+    created_by = Column(BigInteger)
+    created_at = Column(String)
+    result = Column(String)
+
+
 DEFAULT_PLANS = [
     ("economic", "100 گیگ - ۲ کاربر", 298000),
     ("economic", "100 گیگ - نامحدود", 398000),
@@ -236,7 +268,21 @@ DEFAULTS = {
     "first_on": "1",
     "first_percent": "10",
     "loyalty_on": "1",
-    "loyalty_percent": "10",
+    "loyalty_bronze_percent": "5",
+    "loyalty_silver_percent": "10",
+    "loyalty_gold_percent": "15",
+    "rating_on": "1",
+    "rating_low_max": "2",
+    "monitor_on": "0",
+    "monitor_urls": "",
+    "monitor_fails": "3",
+    "monitor_notify_users": "1",
+    "outage_text": "⚠️ در حال حاضر یکی از سرورهای ما مشکل دارد و تیم فنی در حال رفع آن است. به‌محض برطرف شدن اطلاع می‌دهیم. از صبر شما سپاسگزاریم 🙏",
+    "recovery_text": "✅ مشکل سرور برطرف شد و سرویس‌ها به حالت عادی برگشتند. ممنون از صبوری شما 🙏",
+    "post_on": "0",
+    "post_channel": "",
+    "post_times": "10:00,20:00",
+    "post_title": "",
     "maintenance_on": "0",
     "maintenance_text": "🔧 ربات در حال بروزرسانی است. لطفاً کمی بعد دوباره تلاش کنید.",
     "welcome_text": "",
@@ -263,7 +309,21 @@ SETTINGS = {
     "first_on": dict(page="disc", type="toggle", label="تخفیف خرید اول"),
     "first_percent": dict(page="disc", type="num", label="درصد تخفیف خرید اول", min=0, max=50),
     "loyalty_on": dict(page="disc", type="toggle", label="تخفیف وفاداری"),
-    "loyalty_percent": dict(page="disc", type="num", label="درصد تخفیف وفاداری", min=0, max=50),
+    "loyalty_bronze_percent": dict(page="disc", type="num", label="🥉 برنزی (۲ خرید در ماه) ٪", min=0, max=50),
+    "loyalty_silver_percent": dict(page="disc", type="num", label="🥈 نقره‌ای (۴ خرید در ماه) ٪", min=0, max=50),
+    "loyalty_gold_percent": dict(page="disc", type="num", label="🥇 طلایی (۶ خرید در ماه) ٪", min=0, max=50),
+    "rating_on": dict(page="auto", type="toggle", label="نظرسنجی بعد از تحویل"),
+    "rating_low_max": dict(page="auto", type="num", label="ارسال به ادمین اگر امتیاز ≤", min=1, max=4),
+    "monitor_on": dict(page="mon", type="toggle", label="مانیتور خودکار سرور"),
+    "monitor_urls": dict(page="mon", type="text", label="آدرس‌های مانیتور (http/https، با کاما جدا کنید)"),
+    "monitor_fails": dict(page="mon", type="num", label="تعداد خطای پشت‌سرهم تا اعلان قطعی", min=1, max=20),
+    "monitor_notify_users": dict(page="mon", type="toggle", label="اعلان قطعی/وصلی برای همه کاربران"),
+    "outage_text": dict(page="mon", type="text", label="متن اعلان قطعی"),
+    "recovery_text": dict(page="mon", type="text", label="متن اعلان وصل شدن"),
+    "post_on": dict(page="chpost", type="toggle", label="پست خودکار تعرفه در کانال"),
+    "post_channel": dict(page="chpost", type="text", label="کانال (@username یا آیدی عددی -100...)"),
+    "post_times": dict(page="chpost", type="text", label="ساعت‌های پست (مثلاً 10:00,20:00)"),
+    "post_title": dict(page="chpost", type="text", label="عنوان پست (اختیاری)"),
     "card_number": dict(page="pay", type="text", label="شماره کارت"),
     "card_holder": dict(page="pay", type="text", label="نام صاحب کارت"),
     "charge_amounts": dict(page="pay", type="text", label="مبالغ شارژ (با کاما جدا کنید)"),
@@ -293,7 +353,9 @@ SETTING_PAGES = {
     "start": "👋 پیام شروع و استیکرها",
     "support": "🎧 پشتیبانی و سوالات متداول",
     "ref": "🎁 دعوت دوستان",
-    "auto": "🔔 یادآوری و گزارش خودکار",
+    "auto": "🔔 یادآوری، گزارش و نظرسنجی",
+    "mon": "📡 مانیتور سرور و اعلان قطعی",
+    "chpost": "📣 پست خودکار کانال",
 }
 
 _cache = {}
@@ -416,6 +478,7 @@ class PaymentState(StatesGroup):
     adjusting_balance = State()
     editing_setting = State()
     editing_card_pair = State()
+    broadcast_time = State()
     private_message = State()
     editing_note = State()
     searching_user = State()
@@ -549,23 +612,43 @@ def is_banned(user_id):
 # ---------------------------------------------------------------------------
 # تخفیف‌ها (جمعی) و قیمت‌گذاری
 # ---------------------------------------------------------------------------
+# سطح‌های وفاداری بر اساس تعداد خرید در ماه (از بالا به پایین)
+LOYALTY_TIERS = [
+    (6, "gold", "🥇 طلایی"),
+    (4, "silver", "🥈 نقره‌ای"),
+    (2, "bronze", "🥉 برنزی"),
+]
+TIER_RANK = {"bronze": 1, "silver": 2, "gold": 3}
+
+
+def tier_for_count(count):
+    """(کلید, برچسب, درصد) سطح مربوط به تعداد خرید ماه، یا None."""
+    for need, key, label in LOYALTY_TIERS:
+        if (count or 0) >= need:
+            return key, label, get_int(f"loyalty_{key}_percent")
+    return None
+
+
 def discount_breakdown(user_id):
     """(درصد کل, [(درصد, توضیح), ...]) برای کاربر؛ تخفیف‌ها جمع می‌شوند."""
     with SessionLocal() as s:
         user = s.get(User, user_id)
         is_new = bool(user.is_new_user) if user else True
         has_monthly = bool(user.has_monthly_discount) if user else False
+        month_count = (user.purchase_count_current_month or 0) if user else 0
 
     first = get_int("first_percent") if (get_bool("first_on") and is_new) else 0
-    loyal = get_int("loyalty_percent") if (get_bool("loyalty_on") and has_monthly) else 0
+    tier = tier_for_count(month_count) if (get_bool("loyalty_on") and has_monthly) else None
+    loyal = tier[2] if tier else 0
+    loyal_label = f"تخفیف وفاداری {tier[1]}" if tier else "تخفیف وفاداری"
 
     parts = []
-    # مثل نسخه اصلی: «خرید اول» یا «وفاداری»؛ اگر هر دو بود، بزرگ‌تر اعمال می‌شود
+    # «خرید اول» یا «وفاداری»؛ اگر هر دو بود، بزرگ‌تر اعمال می‌شود
     if first or loyal:
         if first >= loyal:
             parts.append((first, "تخفیف خرید اول"))
         else:
-            parts.append((loyal, "تخفیف وفاداری"))
+            parts.append((loyal, loyal_label))
     general = get_int("discount_percent")
     if general > 0:
         parts.append((general, "تخفیف ویژه"))
@@ -994,7 +1077,12 @@ def buy_menu_text(user_id):
     if total > 0:
         out += "\n\n" + breakdown_text(total, parts)
     if get_bool("loyalty_on"):
-        out += f"\n💎 با ۲ خرید در هر ماه، {get_int('loyalty_percent')}٪ تخفیف وفاداری برای ماه بعد فعال می‌شود."
+        out += (
+            "\n💎 باشگاه وفاداری (خرید در هر ماه): "
+            f"۲ خرید 🥉 {get_int('loyalty_bronze_percent')}٪ | "
+            f"۴ خرید 🥈 {get_int('loyalty_silver_percent')}٪ | "
+            f"۶ خرید 🥇 {get_int('loyalty_gold_percent')}٪"
+        )
     return out
 
 
@@ -1258,6 +1346,59 @@ async def confirm_payment_handler(call: types.CallbackQuery):
     await edit_or_send(call, "لطفاً اسکرین‌شات یا عکس رسید واریزی خود را در چت بفرستید تا بررسی شود.")
 
 
+async def receipt_fingerprint(bot, photo):
+    """(file_unique_id, sha256 محتوای عکس) برای تشخیص رسید تکراری."""
+    uniq = photo.file_unique_id
+    digest = None
+    try:
+        import hashlib
+
+        buf = io.BytesIO()
+        await bot.download(photo.file_id, destination=buf)
+        digest = hashlib.sha256(buf.getvalue()).hexdigest()
+    except Exception as e:  # noqa: BLE001
+        logging.warning("receipt hash failed: %s", e)
+    return uniq, digest
+
+
+def find_duplicate_receipt(session, uniq, digest):
+    """(شماره درخواست قبلی, آیدی کاربر قبلی) اگر همین رسید قبلاً ثبت شده و رد نشده باشد."""
+    conds = []
+    if uniq:
+        conds.append(ReceiptHash.unique_id == uniq)
+    if digest:
+        conds.append(ReceiptHash.sha256 == digest)
+    if not conds:
+        return None
+    for rh in session.query(ReceiptHash).filter(or_(*conds)).all():
+        prev = session.get(Request, rh.request_id)
+        if prev is not None and prev.status != "rejected":
+            return prev.id, prev.user_id
+    return None
+
+
+def save_receipt_fingerprint(session, uniq, digest, user_id, req_id):
+    session.add(
+        ReceiptHash(
+            sha256=digest, unique_id=uniq, user_id=user_id, request_id=req_id, created_at=get_current_jalali()
+        )
+    )
+
+
+async def handle_duplicate_receipt(message: types.Message, dup):
+    prev_req, prev_user = dup
+    await message.answer(
+        "⚠️ این رسید قبلاً در سیستم ثبت شده است و نمی‌توان دوباره از آن استفاده کرد.\n"
+        "اگر رسید جدیدی دارید همان را بفرستید؛ در صورت اشتباه از بخش پشتیبانی تیکت بزنید."
+    )
+    await notify_staff(
+        message.bot,
+        "🚫 <b>تلاش برای ارسال رسید تکراری</b>\n"
+        f"👤 کاربر: {user_label(message.from_user)} (<code>{message.from_user.id}</code>)\n"
+        f"🔁 رسید قبلاً برای درخواست #{prev_req} (کاربر <code>{prev_user}</code>) ثبت شده بود.",
+    )
+
+
 @dp.message(PaymentState.waiting_for_receipt, F.photo)
 async def receipt_handler(message: types.Message, state: FSMContext):
     data = await state.get_data()
@@ -1269,15 +1410,23 @@ async def receipt_handler(message: types.Message, state: FSMContext):
 
     user_id = message.from_user.id
     photo_id = message.photo[-1].file_id
+    uniq, digest = await receipt_fingerprint(message.bot, message.photo[-1])
+    dup = None
     with SessionLocal() as s:
         get_or_create_user(s, user_id)
-        try:
-            req = build_request(s, user_id, co, False, photo_id)
-        except ValueError as e:
-            await message.answer(f"❌ {e}")
-            return
-        req_id, req_type = req.id, req.req_type
-        s.commit()
+        dup = find_duplicate_receipt(s, uniq, digest)
+        if dup is None:
+            try:
+                req = build_request(s, user_id, co, False, photo_id)
+            except ValueError as e:
+                await message.answer(f"❌ {e}")
+                return
+            save_receipt_fingerprint(s, uniq, digest, user_id, req.id)
+            req_id, req_type = req.id, req.req_type
+            s.commit()
+    if dup is not None:
+        await handle_duplicate_receipt(message, dup)
+        return
 
     await state.clear()
     await message.answer(
@@ -1413,16 +1562,24 @@ async def process_charge_receipt_handler(message: types.Message, state: FSMConte
 
     user_id = message.from_user.id
     photo_id = message.photo[-1].file_id
+    uniq, digest = await receipt_fingerprint(message.bot, message.photo[-1])
+    dup = None
     with SessionLocal() as s:
         get_or_create_user(s, user_id)
-        req = Request(
-            user_id=user_id, req_type="charge", plan_name="شارژ کیف پول", status="unanswered",
-            created_at=get_current_jalali(), receipt_file_id=photo_id, price=amount, paid_wallet=False,
-        )
-        s.add(req)
-        s.flush()
-        req_id = req.id
-        s.commit()
+        dup = find_duplicate_receipt(s, uniq, digest)
+        if dup is None:
+            req = Request(
+                user_id=user_id, req_type="charge", plan_name="شارژ کیف پول", status="unanswered",
+                created_at=get_current_jalali(), receipt_file_id=photo_id, price=amount, paid_wallet=False,
+            )
+            s.add(req)
+            s.flush()
+            save_receipt_fingerprint(s, uniq, digest, user_id, req.id)
+            req_id = req.id
+            s.commit()
+    if dup is not None:
+        await handle_duplicate_receipt(message, dup)
+        return
 
     await state.clear()
     await message.answer("🙏 رسید شما دریافت شد و در انتظار بررسی و تایید ادمین است. از صبر شما سپاسگزاریم.")
@@ -1514,10 +1671,14 @@ def _account_view(user_id):
         has_monthly = bool(user and user.has_monthly_discount)
         active_count = s.query(func.count(UserConfig.id)).filter(UserConfig.user_id == user_id).scalar()
 
-    if has_monthly:
-        status_text = f"✅ فعال ({get_int('loyalty_percent')}٪ تخفیف)"
+    tier = tier_for_count(count) if has_monthly else None
+    next_need = next((n for n, _k, _l in reversed(LOYALTY_TIERS) if n > count), None)
+    if tier:
+        status_text = f"سطح {tier[1]} ({tier[2]}٪ تخفیف)"
+        if next_need:
+            status_text += f" - تا سطح بعد {next_need - count} خرید دیگر"
     else:
-        status_text = f"⏳ در حال حاضر {count} خرید در این ماه (نیاز به ۲ خرید)"
+        status_text = f"⏳ {count} خرید در این ماه (برای سطح برنزی ۲ خرید لازم است)"
 
     out = (
         "👤 <b>حساب کاربری</b>\n\n"
@@ -1871,15 +2032,20 @@ def register_purchase(s, user_id):
     """شمارنده خرید/وفاداری/دعوت را به‌روز می‌کند. (پیام وفاداری؟, (آیدی معرف, مبلغ) | None)"""
     user = get_or_create_user(s, user_id)
     current_month = jalali_today().strftime("%Y/%m")
-    prev_has_monthly = bool(user.has_monthly_discount)
     was_new = bool(user.is_new_user)
     count = user.purchase_count_current_month or 0
-    new_count = (count + 1) if user.last_purchase_month == current_month else 1
+    same_month = user.last_purchase_month == current_month
+    prev_tier = tier_for_count(count) if same_month else None
+    new_count = (count + 1) if same_month else 1
     user.is_new_user = False
     user.purchase_count_current_month = new_count
     user.last_purchase_month = current_month
     user.has_monthly_discount = new_count >= 2
-    monthly_notif = bool(user.has_monthly_discount and not prev_has_monthly)
+    new_tier = tier_for_count(new_count)
+    monthly_notif = None
+    if new_tier and get_bool("loyalty_on"):
+        if prev_tier is None or TIER_RANK[new_tier[0]] > TIER_RANK[prev_tier[0]]:
+            monthly_notif = new_tier
 
     reward = None
     if was_new and user.referred_by and not user.referral_rewarded and get_bool("referral_on"):
@@ -1897,8 +2063,8 @@ async def post_purchase_notifications(bot, user_id, monthly_notif, reward):
         try:
             await bot.send_message(
                 chat_id=user_id,
-                text=f"🔥 <b>تبریک! شما در این ماه ۲ خرید ثبت کردید و {get_int('loyalty_percent')}٪ تخفیف وفاداری "
-                "برای ماه آینده برای شما فعال شد.</b>",
+                text=f"🔥 <b>تبریک! به سطح {monthly_notif[1]} باشگاه وفاداری رسیدید و "
+                f"{monthly_notif[2]}٪ تخفیف وفاداری برای خریدهای بعدی شما فعال شد.</b>",
             )
         except Exception:  # noqa: BLE001
             pass
@@ -1910,6 +2076,77 @@ async def post_purchase_notifications(bot, user_id, monthly_notif, reward):
             )
         except Exception:  # noqa: BLE001
             pass
+
+
+async def send_rating_request(bot, user_id, req_id):
+    """نظرسنجی ۱ تا ۵ بعد از تحویل سرویس."""
+    if not get_bool("rating_on"):
+        return
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[b(text=f"{n} ⭐", callback_data=f"rate_{req_id}_{n}") for n in range(1, 6)]]
+    )
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text="⭐ <b>نظر شما برای ما مهم است!</b>\nاز ۱ تا ۵ به تجربه خرید و تحویل سرویس امتیاز بدهید:",
+            reply_markup=markup,
+        )
+    except Exception as e:  # noqa: BLE001
+        logging.info("rating request to %s failed: %s", user_id, e)
+
+
+@dp.callback_query(F.data.regexp(r"^rate_\d+_[1-5]$"))
+async def rating_handler(call: types.CallbackQuery):
+    _, req_id_s, score_s = call.data.split("_")
+    req_id, score = int(req_id_s), int(score_s)
+    uid = call.from_user.id
+    with SessionLocal() as s:
+        r = s.get(Request, req_id)
+        if r is None or r.user_id != uid:
+            await call.answer("سفارش یافت نشد.", show_alert=True)
+            return
+        if s.query(Rating).filter(Rating.request_id == req_id).first():
+            await call.answer("امتیاز این سفارش قبلاً ثبت شده است.", show_alert=True)
+            return
+        s.add(Rating(user_id=uid, request_id=req_id, score=score, created_at=get_current_jalali()))
+        plan = r.plan_name
+        s.commit()
+
+    await call.answer()
+    low = score <= get_int("rating_low_max")
+    if low:
+        b = InlineKeyboardButton
+        markup = InlineKeyboardMarkup(inline_keyboard=[[b(text="🎫 ارسال تیکت", callback_data="ticket_new")]])
+        await edit_or_send(
+            call,
+            f"🙏 ممنون از امتیاز شما ({score} ⭐). متأسفیم که تجربه خوبی نداشتید؛ "
+            "اگر مشکلی هست از طریق تیکت بگویید تا سریع بررسی کنیم.",
+            markup,
+        )
+        text_ = (
+            f"⚠️ <b>امتیاز پایین: {score}/5</b>\n"
+            f"👤 کاربر: {user_label(call.from_user)} (<code>{uid}</code>)\n"
+            f"📦 سفارش #{req_id}: {esc(plan or '')}\n"
+            f"⏱ {get_current_jalali()}"
+        )
+        for cid in staff_ids():
+            markup_admin = None
+            if is_main(cid):
+                markup_admin = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(text="✉️ پیام به کاربر", callback_data=f"pm_{uid}"),
+                            InlineKeyboardButton(text="👤 مدیریت کاربر", callback_data=f"manage_user_{uid}"),
+                        ]
+                    ]
+                )
+            try:
+                await call.bot.send_message(chat_id=cid, text=text_, reply_markup=markup_admin)
+            except Exception as e:  # noqa: BLE001
+                logging.warning("low rating notify failed for %s: %s", cid, e)
+    else:
+        await edit_or_send(call, f"🙏 ممنون از امتیاز شما ({score} ⭐)!")
 
 
 @dp.callback_query(F.data.startswith("admin_confirm_"), Staff())
@@ -1987,6 +2224,7 @@ async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
         except Exception as e:  # noqa: BLE001
             logging.error("notify renew failed: %s", e)
         await post_purchase_notifications(call.bot, uid, extra[0], extra[1])
+        await send_rating_request(call.bot, uid, req_id)
 
 
 @dp.callback_query(F.data.startswith("admin_reject_"), Staff())
@@ -2077,6 +2315,7 @@ async def process_admin_config(message: types.Message, state: FSMContext):
     except Exception as e:  # noqa: BLE001
         logging.error("Error notifying user about config delivery: %s", e)
     await post_purchase_notifications(message.bot, target_user_id, monthly_notif, reward)
+    await send_rating_request(message.bot, target_user_id, req_id)
 
 
 # ---------------------------------------------------------------------------
@@ -2868,6 +3107,8 @@ def stats_numbers():
             unanswered=s.query(func.count(Request.id)).filter(Request.status == "unanswered").scalar(),
             processed=s.query(func.count(Request.id)).filter(Request.status != "unanswered").scalar(),
             open_tickets=s.query(func.count(Ticket.id)).filter(Ticket.status == "open").scalar(),
+            avg_rating=float(s.query(func.avg(Rating.score)).scalar() or 0),
+            rating_count=int(s.query(func.count(Rating.id)).scalar() or 0),
         )
 
 
@@ -2884,12 +3125,115 @@ async def admin_sales_stats_handler(call: types.CallbackQuery):
         f"☀️ <b>امروز ({n['today']}):</b> {n['day_rev']:,} تومان در {n['day_sales']} فروش\n\n"
         f"🔴 در انتظار پاسخ: {n['unanswered']}\n"
         f"🟢 بررسی‌شده: {n['processed']}\n"
-        f"🎫 تیکت باز: {n['open_tickets']}"
+        f"🎫 تیکت باز: {n['open_tickets']}\n"
+        f"⭐ میانگین امتیاز: {n['avg_rating']:.2f} ({n['rating_count']} نظر)"
     )
+    b = InlineKeyboardButton
     markup = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data="admin_home")]]
+        inline_keyboard=[
+            [
+                b(text="📈 نمودار هفتگی", callback_data="sreport_week"),
+                b(text="📈 نمودار ماهانه", callback_data="sreport_month"),
+            ],
+            [b(text="🔙 بازگشت به پنل", callback_data="admin_home")],
+        ]
     )
     await edit_or_send(call, out, markup)
+
+
+SALE_TYPES = ["buy", "renew"]
+
+
+def _rev_for_prefixes(s, prefixes):
+    conds = [Request.answered_at.like(f"{p}%") for p in prefixes]
+    total, cnt = (
+        s.query(func.coalesce(func.sum(Request.price), 0), func.count(Request.id))
+        .filter(Request.status == "answered", Request.req_type.in_(SALE_TYPES), or_(*conds))
+        .one()
+    )
+    return int(total or 0), int(cnt or 0)
+
+
+def _bar(value, maxv, width=12):
+    if maxv <= 0 or value <= 0:
+        return "▫️"
+    return "█" * max(1, round(value / maxv * width))
+
+
+def build_sales_report(period):
+    today = jalali_today()
+    if period == "week":
+        title = "۷ روز اخیر"
+        buckets = []
+        for i in range(6, -1, -1):
+            d = jdatetime.date.fromgregorian(date=today_iran() - timedelta(days=i))
+            buckets.append((d.strftime("%m/%d"), [d.strftime("%Y/%m/%d")]))
+        rank_prefixes = [p for _label, ps in buckets for p in ps]
+    else:
+        title = "۶ ماه اخیر"
+        buckets = []
+        idx = today.year * 12 + today.month - 1
+        for i in range(5, -1, -1):
+            y, m0 = divmod(idx - i, 12)
+            buckets.append((f"{y}/{m0 + 1:02d}", [f"{y}/{m0 + 1:02d}"]))
+        rank_prefixes = buckets[-1][1]
+
+    with SessionLocal() as s:
+        series = []
+        for label, ps in buckets:
+            total, cnt = _rev_for_prefixes(s, ps)
+            series.append((label, total, cnt))
+        cond = or_(*[Request.answered_at.like(f"{p}%") for p in rank_prefixes])
+        base = (Request.status == "answered", Request.req_type.in_(SALE_TYPES), cond)
+        plans = (
+            s.query(Request.plan_name, func.count(Request.id), func.coalesce(func.sum(Request.price), 0))
+            .filter(*base).group_by(Request.plan_name)
+            .order_by(func.sum(Request.price).desc()).limit(5).all()
+        )
+        custs = (
+            s.query(Request.user_id, func.count(Request.id), func.coalesce(func.sum(Request.price), 0))
+            .filter(*base).group_by(Request.user_id)
+            .order_by(func.sum(Request.price).desc()).limit(5).all()
+        )
+        names = {}
+        if custs:
+            for u in s.query(User).filter(User.user_id.in_([c[0] for c in custs])).all():
+                names[u.user_id] = user_display(u)
+
+    maxv = max([v for _l, v, _c in series] + [0])
+    out = f"📈 <b>نمودار فروش {title}</b>\n\n"
+    for label, v, c in series:
+        out += f"<code>{label}</code> {_bar(v, maxv)} {v:,} ({c})\n"
+    out += f"\n💰 جمع: {sum(v for _l, v, _c in series):,} تومان | 🧾 {sum(c for _l, _v, c in series)} فروش\n"
+    scope = "۷ روز اخیر" if period == "week" else "ماه جاری"
+    out += f"\n🏆 <b>پرفروش‌ترین پلن‌ها ({scope}):</b>\n"
+    for i, (name, c, total) in enumerate(plans, 1):
+        out += f"{i}. {esc(name or '')} — {c} فروش | {int(total):,}\n"
+    if not plans:
+        out += "—\n"
+    out += f"\n👑 <b>بهترین مشتری‌ها ({scope}):</b>\n"
+    for i, (uid, c, total) in enumerate(custs, 1):
+        out += f"{i}. {esc(names.get(uid, str(uid)))} (<code>{uid}</code>) — {c} خرید | {int(total):,}\n"
+    if not custs:
+        out += "—\n"
+    return out
+
+
+@dp.callback_query(F.data.in_({"sreport_week", "sreport_month"}), MainAdmin())
+async def admin_sales_report(call: types.CallbackQuery):
+    await call.answer()
+    period = "week" if call.data == "sreport_week" else "month"
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                b(text=("• " if period == "week" else "") + "هفتگی", callback_data="sreport_week"),
+                b(text=("• " if period == "month" else "") + "ماهانه", callback_data="sreport_month"),
+            ],
+            [b(text="🔙 آمار کلی", callback_data="admin_sales_stats")],
+        ]
+    )
+    await edit_or_send(call, build_sales_report(period), markup)
 
 
 def daily_report_text():
@@ -2923,40 +3267,259 @@ async def admin_logs_handler(call: types.CallbackQuery):
 # ---------------------------------------------------------------------------
 # پنل ادمین: پیام همگانی
 # ---------------------------------------------------------------------------
+BC_SEGMENTS = {
+    "all": "👥 همه کاربران",
+    "expired": "⌛ سرویس‌شان تمام شده",
+    "nobuy": "🆕 بدون هیچ خرید",
+    "active": "🟢 دارای سرویس فعال",
+}
+DIGITS_FA = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+def segment_user_ids(s, seg):
+    ok = or_(User.is_banned.is_(None), User.is_banned.is_(False))
+    base = {r[0] for r in s.query(User.user_id).filter(ok).all()}
+    if seg == "all":
+        return sorted(base)
+    today_iso = today_iran().isoformat()
+    active = {
+        r[0]
+        for r in s.query(UserConfig.user_id)
+        .filter(or_(UserConfig.expires_at.is_(None), UserConfig.expires_at >= today_iso))
+        .all()
+    }
+    if seg == "active":
+        return sorted(base & active)
+    if seg == "expired":
+        expired = {
+            r[0] for r in s.query(UserConfig.user_id).filter(UserConfig.expires_at < today_iso).all()
+        }
+        return sorted((base & expired) - active)
+    if seg == "nobuy":
+        buyers = {
+            r[0]
+            for r in s.query(Request.user_id)
+            .filter(Request.status == "answered", Request.req_type.in_(SALE_TYPES))
+            .all()
+        }
+        return sorted(base - buyers)
+    return []
+
+
+async def run_broadcast(bot, from_chat, message_id, seg):
+    """پیام را با copy_message برای بخش انتخابی می‌فرستد؛ (موفق, بلاک, ناموفق)."""
+    with SessionLocal() as s:
+        ids = segment_user_ids(s, seg)
+    sent = blocked = failed = 0
+    for u_id in ids:
+        try:
+            await bot.copy_message(chat_id=u_id, from_chat_id=from_chat, message_id=message_id)
+            sent += 1
+        except TelegramForbiddenError:
+            blocked += 1
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+            try:
+                await bot.copy_message(chat_id=u_id, from_chat_id=from_chat, message_id=message_id)
+                sent += 1
+            except Exception:  # noqa: BLE001
+                failed += 1
+        except Exception:  # noqa: BLE001
+            failed += 1
+        await asyncio.sleep(0.05)
+    return sent, blocked, failed
+
+
+async def _broadcast_and_report(bot, report_chat, from_chat, message_id, seg, admin_id, prefix=""):
+    sent, blocked, failed = await run_broadcast(bot, from_chat, message_id, seg)
+    log_action(admin_id, f"پیام همگانی ({BC_SEGMENTS.get(seg, seg)}): {sent} موفق")
+    try:
+        await bot.send_message(
+            chat_id=report_chat,
+            text=(
+                f"{prefix}✅ پیام همگانی ({esc(BC_SEGMENTS.get(seg, seg))}) ارسال شد!\n\n"
+                f"📨 ارسال‌شده به: {sent} کاربر\n🚫 مسدود شده توسط کاربر: {blocked}\n⚠️ ناموفق: {failed}"
+            ),
+            reply_markup=get_admin_main_keyboard(admin_id),
+        )
+    except Exception as e:  # noqa: BLE001
+        logging.warning("broadcast report failed: %s", e)
+    return f"{sent} موفق / {blocked} بلاک / {failed} ناموفق"
+
+
+def parse_run_time(raw):
+    """'HH:MM' (نزدیک‌ترین زمان آینده) یا 'YYYY/MM/DD HH:MM' شمسی. خروجی: datetime ساده به وقت ایران یا None."""
+    t = (raw or "").strip().translate(DIGITS_FA)
+    now = now_iran().replace(tzinfo=None)
+    try:
+        m = re.fullmatch(r"(\d{1,2}):(\d{2})", t)
+        if m:
+            cand = now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+            if cand <= now:
+                cand += timedelta(days=1)
+            return cand
+        m = re.fullmatch(r"(\d{4})/(\d{1,2})/(\d{1,2})\s+(\d{1,2}):(\d{2})", t)
+        if m:
+            g = jdatetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3))).togregorian()
+            cand = datetime(g.year, g.month, g.day, int(m.group(4)), int(m.group(5)))
+            return cand if cand > now else None
+    except (ValueError, OverflowError):
+        return None
+    return None
+
+
 @dp.callback_query(F.data == "admin_broadcast_start", MainAdmin())
 async def admin_broadcast_start_handler(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
-    await state.set_state(PaymentState.broadcasting)
-    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data="admin_home")]])
+    await state.clear()
+    b = InlineKeyboardButton
+    with SessionLocal() as s:
+        counts = {k: len(segment_user_ids(s, k)) for k in BC_SEGMENTS}
+    rows = [[b(text=f"{label} ({counts[k]})", callback_data=f"bcseg_{k}")] for k, label in BC_SEGMENTS.items()]
+    rows.append([b(text="⏰ پیام‌های زمان‌بندی‌شده", callback_data="bc_scheduled")])
+    rows.append([b(text="🔙 بازگشت به پنل", callback_data="admin_home")])
     await edit_or_send(
-        call, "📢 پیام، متن یا رسانه مورد نظر را برای ارسال همگانی به تمام کاربران بفرستید:", markup
+        call, "📢 <b>پیام همگانی</b>\n\nگروه مخاطب را انتخاب کنید:", InlineKeyboardMarkup(inline_keyboard=rows)
+    )
+
+
+@dp.callback_query(F.data.startswith("bcseg_"), MainAdmin())
+async def admin_broadcast_segment(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    seg = call.data.split("_", 1)[1]
+    if seg not in BC_SEGMENTS:
+        return
+    await state.set_state(PaymentState.broadcasting)
+    await state.update_data(bc_seg=seg)
+    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data="admin_broadcast_start")]])
+    await edit_or_send(
+        call,
+        f"📢 گروه: <b>{esc(BC_SEGMENTS[seg])}</b>\n\nپیام، متن یا رسانه مورد نظر را بفرستید:",
+        markup,
     )
 
 
 @dp.message(PaymentState.broadcasting, MainAdmin())
 async def process_broadcast_handler(message: types.Message, state: FSMContext):
-    await state.clear()
+    data = await state.get_data()
+    seg = data.get("bc_seg", "all")
+    await state.set_state(None)
+    await state.update_data(bc_chat=message.chat.id, bc_msg=message.message_id, bc_seg=seg)
     with SessionLocal() as s:
-        user_ids = [u[0] for u in s.query(User.user_id).filter(or_(User.is_banned.is_(None), User.is_banned.is_(False))).all()]
-
-    await message.answer("⏳ عملیات ارسال پیام همگانی آغاز شد... لطفاً منتظر بمانید.")
-    sent = blocked = failed = 0
-    for u_id in user_ids:
-        try:
-            await message.copy_to(chat_id=u_id)
-            sent += 1
-        except TelegramForbiddenError:
-            blocked += 1
-        except Exception:  # noqa: BLE001
-            failed += 1
-        await asyncio.sleep(0.05)
-
-    log_action(message.from_user.id, f"پیام همگانی: {sent} موفق")
+        count = len(segment_user_ids(s, seg))
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [b(text="📤 ارسال همین الان", callback_data="bc_now")],
+            [b(text="⏰ زمان‌بندی ارسال", callback_data="bc_sched")],
+            [b(text="❌ انصراف", callback_data="admin_broadcast_start")],
+        ]
+    )
     await message.answer(
-        "✅ پیام همگانی ارسال شد!\n\n"
-        f"📨 ارسال‌شده به: {sent} کاربر\n🚫 مسدود شده توسط کاربر: {blocked}\n⚠️ ناموفق: {failed}",
+        f"پیام دریافت شد. مخاطب: <b>{esc(BC_SEGMENTS.get(seg, seg))}</b> ({count} نفر)\nچطور ارسال شود؟",
+        reply_markup=markup,
+    )
+
+
+@dp.callback_query(F.data == "bc_now", MainAdmin())
+async def broadcast_now(call: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("bc_msg"):
+        await call.answer("درخواست منقضی شده است.", show_alert=True)
+        return
+    await call.answer()
+    await state.clear()
+    await edit_or_send(call, "⏳ ارسال پیام همگانی آغاز شد؛ پس از اتمام گزارش می‌آید.")
+    asyncio.create_task(
+        _broadcast_and_report(
+            call.bot, call.message.chat.id, data["bc_chat"], data["bc_msg"], data.get("bc_seg", "all"),
+            call.from_user.id,
+        )
+    )
+
+
+@dp.callback_query(F.data == "bc_sched", MainAdmin())
+async def broadcast_schedule_start(call: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("bc_msg"):
+        await call.answer("درخواست منقضی شده است.", show_alert=True)
+        return
+    await call.answer()
+    await state.set_state(PaymentState.broadcast_time)
+    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data="admin_broadcast_start")]])
+    await edit_or_send(
+        call,
+        "⏰ زمان ارسال را بفرستید (به وقت ایران):\n\n"
+        "• فقط ساعت، مثلاً <code>18:30</code> (نزدیک‌ترین زمان آینده)\n"
+        "• یا تاریخ شمسی کامل، مثلاً <code>1405/08/20 18:30</code>\n\n"
+        "⚠️ پیام اصلی را از چت خود پاک نکنید، چون ربات در زمان مقرر از روی آن کپی می‌کند.",
+        markup,
+    )
+
+
+@dp.message(PaymentState.broadcast_time, MainAdmin())
+async def broadcast_schedule_save(message: types.Message, state: FSMContext):
+    when = parse_run_time(message.text or "")
+    if when is None:
+        await message.answer("زمان نامعتبر یا گذشته است. مثال: 18:30 یا 1405/08/20 18:30")
+        return
+    data = await state.get_data()
+    seg = data.get("bc_seg", "all")
+    with SessionLocal() as s:
+        s.add(
+            ScheduledBroadcast(
+                segment=seg, chat_id=data["bc_chat"], message_id=data["bc_msg"],
+                run_at=when.strftime("%Y-%m-%dT%H:%M"), status="pending",
+                created_by=message.from_user.id, created_at=get_current_jalali(),
+            )
+        )
+        s.commit()
+    await state.clear()
+    jwhen = jdatetime.datetime.fromgregorian(datetime=when).strftime("%Y/%m/%d %H:%M")
+    log_action(message.from_user.id, f"زمان‌بندی پیام همگانی برای {jwhen}")
+    await message.answer(
+        f"✅ پیام برای <b>{jwhen}</b> زمان‌بندی شد (گروه: {esc(BC_SEGMENTS.get(seg, seg))}).",
         reply_markup=get_admin_main_keyboard(message.from_user.id),
     )
+
+
+@dp.callback_query(F.data == "bc_scheduled", MainAdmin())
+async def broadcast_scheduled_list(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    with SessionLocal() as s:
+        rows = [
+            (x.id, x.segment, x.run_at)
+            for x in s.query(ScheduledBroadcast)
+            .filter(ScheduledBroadcast.status == "pending").order_by(ScheduledBroadcast.run_at).limit(20).all()
+        ]
+    out = "⏰ <b>پیام‌های زمان‌بندی‌شده:</b>\n\n"
+    keyboard = []
+    for bid, seg, run_at in rows:
+        try:
+            jw = jdatetime.datetime.fromgregorian(datetime=datetime.strptime(run_at, "%Y-%m-%dT%H:%M")).strftime(
+                "%Y/%m/%d %H:%M"
+            )
+        except ValueError:
+            jw = run_at
+        out += f"#{bid} | {jw} | {esc(BC_SEGMENTS.get(seg, seg))}\n"
+        keyboard.append([InlineKeyboardButton(text=f"🗑 لغو #{bid}", callback_data=f"bcdel_{bid}")])
+    if not rows:
+        out += "موردی وجود ندارد."
+    keyboard.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin_broadcast_start")])
+    await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+
+@dp.callback_query(F.data.startswith("bcdel_"), MainAdmin())
+async def broadcast_scheduled_cancel(call: types.CallbackQuery, state: FSMContext):
+    bid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        x = s.get(ScheduledBroadcast, bid)
+        if x is not None and x.status == "pending":
+            x.status = "cancelled"
+            s.commit()
+    log_action(call.from_user.id, f"لغو پیام زمان‌بندی‌شده #{bid}")
+    await broadcast_scheduled_list(call, state)
 
 
 # ---------------------------------------------------------------------------
@@ -2986,8 +3549,34 @@ def render_settings_page(page):
         else:
             label = "✏️ " + meta["label"]
         keyboard.append([InlineKeyboardButton(text=label[:60], callback_data=f"sedit_{key}")])
+    if page == "chpost":
+        keyboard.append([InlineKeyboardButton(text="📤 ارسال همین الان به کانال", callback_data="chpost_now")])
+    if page == "mon":
+        keyboard.append(
+            [
+                InlineKeyboardButton(text="📣 ارسال اعلان قطعی", callback_data="outage_send"),
+                InlineKeyboardButton(text="✅ ارسال اعلان وصل شدن", callback_data="recovery_send"),
+            ]
+        )
     keyboard.append([InlineKeyboardButton(text="🔙 بازگشت به تنظیمات", callback_data="admin_settings")])
     return out, InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+@dp.callback_query(F.data == "chpost_now", MainAdmin())
+async def chpost_now(call: types.CallbackQuery):
+    try:
+        await post_to_channel(call.bot)
+        await call.answer("✅ در کانال ارسال شد.", show_alert=True)
+    except Exception as e:  # noqa: BLE001
+        await call.answer(f"ناموفق: {e}"[:190], show_alert=True)
+
+
+@dp.callback_query(F.data.in_({"outage_send", "recovery_send"}), MainAdmin())
+async def manual_outage_send(call: types.CallbackQuery):
+    down = call.data == "outage_send"
+    asyncio.create_task(broadcast_text(call.bot, outage_message(down)))
+    log_action(call.from_user.id, "ارسال دستی اعلان " + ("قطعی" if down else "وصل شدن"))
+    await call.answer("ارسال برای همه کاربران آغاز شد.", show_alert=True)
 
 
 @dp.callback_query(F.data == "admin_settings", MainAdmin())
@@ -3069,6 +3658,18 @@ async def admin_setting_save(message: types.Message, state: FSMContext):
                 await message.answer("چند عدد (حداکثر ۱۲ تا) با کاما جدا کنید. مثال: 200000,400000")
                 return
             value = ",".join(nums)
+        if key == "post_times" and value:
+            times = parse_times(value)
+            if not times:
+                await message.answer("ساعت نامعتبر است. مثال: 10:00,20:00")
+                return
+            value = ",".join(times)
+        if key == "monitor_urls" and value:
+            urls = parse_urls(value)
+            if not urls:
+                await message.answer("آدرس معتبر http/https بفرستید. مثال: https://example.com")
+                return
+            value = ",".join(urls)
         if key in ("card_number", "card_holder") and not value:
             await message.answer("این مورد نمی‌تواند خالی باشد.")
             return
@@ -3361,6 +3962,186 @@ async def job_backup(bot):
         await send_backup(bot, ADMIN_ID, f"🧰 بکاپ شبانه خودکار - {get_current_jalali()}")
 
 
+# ---------------------------------------------------------------------------
+# مانیتور سرور و اعلان قطعی
+# ---------------------------------------------------------------------------
+_monitor = {"fails": {}, "down": False}
+
+
+def parse_urls(raw):
+    out = []
+    for part in re.split(r"[,\s،]+", raw or ""):
+        part = part.strip()
+        if re.match(r"^https?://\S+$", part) and part not in out:
+            out.append(part)
+    return out
+
+
+async def check_url(session, url):
+    try:
+        async with session.get(url, allow_redirects=True) as resp:
+            return resp.status < 500
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def broadcast_text(bot, text_):
+    with SessionLocal() as s:
+        ids = segment_user_ids(s, "all")
+    for uid in ids:
+        try:
+            await bot.send_message(chat_id=uid, text=text_)
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+        except Exception:  # noqa: BLE001
+            pass
+        await asyncio.sleep(0.05)
+
+
+def outage_message(down):
+    key = "outage_text" if down else "recovery_text"
+    return esc(get_setting(key).strip() or DEFAULTS[key])
+
+
+async def announce_outage(bot, down, bad_urls=None):
+    if down:
+        detail = "\n".join(f"• {esc(u)}" for u in (bad_urls or []))
+        await notify_staff(bot, f"🔴 <b>مانیتور: قطعی تشخیص داده شد</b>\n{detail}")
+    else:
+        await notify_staff(bot, "🟢 <b>مانیتور: سرورها دوباره در دسترس‌اند.</b>")
+    if get_bool("monitor_notify_users"):
+        asyncio.create_task(broadcast_text(bot, outage_message(down)))
+
+
+async def monitor_loop(bot):
+    async with ClientSession(timeout=ClientTimeout(total=10)) as session:
+        while True:
+            await asyncio.sleep(60)
+            try:
+                if not get_bool("monitor_on"):
+                    continue
+                urls = parse_urls(get_setting("monitor_urls"))
+                if not urls:
+                    continue
+                results = await asyncio.gather(*(check_url(session, u) for u in urls))
+                for u, ok in zip(urls, results):
+                    _monitor["fails"][u] = 0 if ok else _monitor["fails"].get(u, 0) + 1
+                threshold = max(1, get_int("monitor_fails"))
+                bad = [u for u in urls if _monitor["fails"].get(u, 0) >= threshold]
+                if bad and not _monitor["down"]:
+                    _monitor["down"] = True
+                    await announce_outage(bot, True, bad)
+                elif not bad and _monitor["down"]:
+                    _monitor["down"] = False
+                    await announce_outage(bot, False)
+            except Exception as e:  # noqa: BLE001
+                logging.error("monitor error: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# پست خودکار لیست تعرفه در کانال
+# ---------------------------------------------------------------------------
+def parse_times(raw):
+    out = []
+    for part in re.split(r"[,\s،]+", (raw or "").translate(DIGITS_FA)):
+        m = re.fullmatch(r"(\d{1,2}):(\d{2})", part)
+        if m and int(m.group(1)) < 24 and int(m.group(2)) < 60:
+            t = f"{int(m.group(1)):02d}:{m.group(2)}"
+            if t not in out:
+                out.append(t)
+    return out
+
+
+def channel_post_text():
+    general = get_int("discount_percent")
+    with SessionLocal() as s:
+        rows = [(r.category, r.name, r.price) for r in s.query(Service).order_by(Service.category, Service.id).all()]
+    title = get_setting("post_title").strip() or "📊 لیست تعرفه Swan VPN"
+    out = f"<b>{esc(title)}</b>\n"
+    if general > 0:
+        out += f"\n🎁 تخفیف ویژه {general}٪ فعال است!\n"
+    current = None
+    for cat, name, price in rows:
+        if cat != current:
+            current = cat
+            out += f"\n📂 <b>{esc(CATEGORY_LABELS.get(cat, cat))}:</b>\n"
+        out += price_line(name, price, price_with_percent(price, general))
+    out += f"\n🤖 برای خرید: @{BOT_USERNAME}"
+    return out
+
+
+def channel_chat_id():
+    ch = get_setting("post_channel").strip()
+    if not ch:
+        raise ValueError("کانال تنظیم نشده است.")
+    for prefix in ("https://t.me/", "http://t.me/", "t.me/"):
+        if ch.startswith(prefix):
+            ch = "@" + ch[len(prefix):].strip("/")
+    if re.fullmatch(r"-?\d+", ch):
+        return int(ch)
+    return ch if ch.startswith("@") else "@" + ch
+
+
+async def post_to_channel(bot):
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🛒 شروع خرید", url=f"https://t.me/{BOT_USERNAME}")]]
+    )
+    await bot.send_message(chat_id=channel_chat_id(), text=channel_post_text(), reply_markup=markup)
+
+
+async def job_channel_posts(bot):
+    if not get_bool("post_on") or not get_setting("post_channel").strip():
+        return
+    now = now_iran()
+    today = now.date().isoformat()
+    for t in parse_times(get_setting("post_times")):
+        h, m = (int(x) for x in t.split(":"))
+        diff = (now.hour * 60 + now.minute) - (h * 60 + m)
+        if 0 <= diff <= 10 and get_setting(f"last_post_{t}") != today:
+            set_setting(f"last_post_{t}", today)
+            try:
+                await post_to_channel(bot)
+            except Exception as e:  # noqa: BLE001
+                logging.error("channel post failed: %s", e)
+                try:
+                    await bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=f"❌ پست خودکار کانال ناموفق بود: {esc(str(e))}\n"
+                        "مطمئن شوید ربات در کانال ادمین است و اجازه ارسال پیام دارد.",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+
+# ---------------------------------------------------------------------------
+# اجرای پیام‌های همگانی زمان‌بندی‌شده
+# ---------------------------------------------------------------------------
+async def _run_scheduled_broadcast(bot, bid, seg, chat_id, msg_id, admin_id):
+    result = await _broadcast_and_report(
+        bot, admin_id, chat_id, msg_id, seg, admin_id, prefix=f"⏰ (زمان‌بندی #{bid}) "
+    )
+    with SessionLocal() as s:
+        x = s.get(ScheduledBroadcast, bid)
+        if x is not None:
+            x.status = "sent"
+            x.result = result
+            s.commit()
+
+
+async def job_scheduled_broadcasts(bot):
+    now_s = now_iran().strftime("%Y-%m-%dT%H:%M")
+    due = []
+    with SessionLocal() as s:
+        for x in s.query(ScheduledBroadcast).filter(
+            ScheduledBroadcast.status == "pending", ScheduledBroadcast.run_at <= now_s
+        ).all():
+            x.status = "sending"
+            due.append((x.id, x.segment, x.chat_id, x.message_id, x.created_by))
+        s.commit()
+    for bid, seg, chat_id, msg_id, admin_id in due:
+        asyncio.create_task(_run_scheduled_broadcast(bot, bid, seg, chat_id, msg_id, admin_id))
+
+
 JOBS = [("backup", 3, 0, job_backup), ("reminders", 10, 0, job_reminders), ("report", 23, 30, job_report)]
 
 
@@ -3383,6 +4164,8 @@ async def scheduler(bot):
     while True:
         try:
             await run_jobs(bot)
+            await job_scheduled_broadcasts(bot)
+            await job_channel_posts(bot)
         except Exception as e:  # noqa: BLE001
             logging.error("scheduler error: %s", e)
         await asyncio.sleep(60)
@@ -3440,7 +4223,11 @@ async def main():
     port = int(os.environ.get("PORT", 8080))
     await run_web_server(app, port)
 
-    background = [asyncio.create_task(scheduler(bot)), asyncio.create_task(keepalive())]
+    background = [
+        asyncio.create_task(scheduler(bot)),
+        asyncio.create_task(keepalive()),
+        asyncio.create_task(monitor_loop(bot)),
+    ]
     logging.info("Bot @%s is running; web server on port %s", BOT_USERNAME, port)
     try:
         await dp.start_polling(bot)
