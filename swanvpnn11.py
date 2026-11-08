@@ -156,6 +156,7 @@ class Request(Base):
     created_iso = Column(String)  # YYYY-MM-DDTHH:MM به وقت ایران (برای یادآوری ادمین)
     last_remind_iso = Column(String)
     remind_count = Column(Integer, default=0)
+    custom_days = Column(Integer)  # مدت پلن دلخواه (روز)
 
 
 class KV(Base):
@@ -252,6 +253,25 @@ class Category(Base):
     is_active = Column(Boolean, default=True)
 
 
+class CustomButton(Base):
+    """دکمه‌های شیشه‌ای دلخواه که ادمین از «دکمه‌ساز» می‌سازد (درختی و چندمرحله‌ای).
+
+    parent_id = 0 یعنی دکمه زیر منوی اصلی؛ در غیر این صورت دکمه‌ای در «مرحله بعدِ» دکمه‌ی والد.
+    kind: msg = نمایش پیام (+عکس) و دکمه‌های مرحله بعد | url = باز کردن لینک
+    """
+
+    __tablename__ = "custom_buttons"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    parent_id = Column(Integer, default=0)
+    kind = Column(String, default="msg")
+    label = Column(String)
+    text = Column(Text)
+    photo_id = Column(String)
+    url = Column(String)
+    sort_order = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+
+
 DEFAULT_CATEGORIES = [
     ("economic", "اقتصادی", "🌱"),
     ("vip", "VIP", "💎"),
@@ -332,6 +352,13 @@ DEFAULTS = {
     "admin_remind_minutes": "30",
     "trial_on": "0",
     "trial_days": "1",
+    "custom_on": "1",
+    "custom_price_per_gb": "22000",
+    "custom_base_days": "30",
+    "custom_min_gb": "1",
+    "custom_max_gb": "1000",
+    "custom_min_days": "1",
+    "custom_max_days": "365",
 }
 
 # متادیتای تنظیماتی که از منوی «تنظیمات ربات» ویرایش می‌شوند
@@ -384,6 +411,13 @@ SETTINGS = {
     "admin_remind_minutes": dict(page="deliv", type="num", label="یادآوری بعد از (دقیقه)", min=5, max=1440),
     "trial_on": dict(page="deliv", type="toggle", label="سرویس تست رایگان"),
     "trial_days": dict(page="deliv", type="num", label="مدت سرویس تست (روز)", min=1, max=30),
+    "custom_on": dict(page="custom", type="toggle", label="پلن دلخواه (حجم و روز)"),
+    "custom_price_per_gb": dict(page="custom", type="num", label="قیمت هر گیگ (تومان)", min=0, max=100000000),
+    "custom_base_days": dict(page="custom", type="num", label="قیمت گیگ برای چند روز است؟ (۰ = مستقل از روز)", min=0, max=365),
+    "custom_min_gb": dict(page="custom", type="num", label="حداقل حجم (گیگ)", min=1, max=10000),
+    "custom_max_gb": dict(page="custom", type="num", label="حداکثر حجم (گیگ)", min=1, max=10000),
+    "custom_min_days": dict(page="custom", type="num", label="حداقل روز", min=1, max=3650),
+    "custom_max_days": dict(page="custom", type="num", label="حداکثر روز", min=1, max=3650),
 }
 
 SETTING_PAGES = {
@@ -395,6 +429,7 @@ SETTING_PAGES = {
     "ref": "🎁 دعوت دوستان",
     "auto": "🔔 یادآوری، گزارش و نظرسنجی",
     "mon": "📡 مانیتور سرور و اعلان قطعی",
+    "custom": "✨ پلن دلخواه (حجم و روز)",
     "deliv": "📦 تحویل سرویس، QR و تست رایگان",
     "chpost": "📣 پست خودکار کانال",
 }
@@ -468,6 +503,7 @@ def _migrate_columns():
             "created_iso": "VARCHAR",
             "last_remind_iso": "VARCHAR",
             "remind_count": "INTEGER DEFAULT 0",
+            "custom_days": "INTEGER",
         },
     }
     insp = inspect(engine)
@@ -568,6 +604,13 @@ class PaymentState(StatesGroup):
     renaming_category = State()
     editing_cat_emoji = State()
     editing_expiry = State()
+    custom_gb = State()
+    custom_days = State()
+    cb_label = State()
+    cb_text = State()
+    cb_photo = State()
+    cb_url = State()
+    cb_edit = State()
 
 
 # ---------------------------------------------------------------------------
@@ -888,6 +931,7 @@ def main_inline_markup(user_id=None):
         [b(text=BTN_ACCOUNT, callback_data="back_to_account"), b(text=BTN_SUPPORT, callback_data="support_menu")],
         [b(text="🎁 دعوت دوستان", callback_data="referral_menu")],
     ]
+    rows += cb_main_rows()
     url = channel_url()
     if url:
         rows.append([b(text="📢 کانال ما", url=url)])
@@ -1002,7 +1046,7 @@ def get_admin_main_keyboard(user_id=None):
             [b(text="📊 آمار کلی فروش", callback_data="admin_sales_stats"), b(text="🧾 لاگ فعالیت‌ها", callback_data="admin_logs")],
             [b(text="📦 مدیریت پلن‌ها", callback_data="admin_plans"), b(text="🏷 کدهای تخفیف", callback_data="admin_codes")],
             [b(text="📢 پیام همگانی", callback_data="admin_broadcast_start"), b(text="🧰 بکاپ", callback_data="admin_backup")],
-            [b(text="⚙️ تنظیمات ربات", callback_data="admin_settings")],
+            [b(text="🔘 دکمه‌ساز منو", callback_data="acbs_0"), b(text="⚙️ تنظیمات ربات", callback_data="admin_settings")],
         ]
     )
 
@@ -1233,6 +1277,10 @@ def shop_view(user_id, cat_key=None):
             f"۴ خرید 🥈 {get_int('loyalty_silver_percent')}٪ | "
             f"۶ خرید 🥇 {get_int('loyalty_gold_percent')}٪"
         )
+    if get_bool("custom_on") and get_int("custom_price_per_gb") > 0:
+        keyboard.append(
+            [b(text=f"✨ پلن دلخواه (هر گیگ {get_int('custom_price_per_gb'):,} تومان)", callback_data="custom_start")]
+        )
     keyboard.append([b(text="💳 شارژ کیف پول", callback_data="wallet_menu")])
     keyboard.append([b(text="🏠 بازگشت به منوی اصلی", callback_data="main_menu")])
     return out, InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -1264,16 +1312,47 @@ async def category_handler(call: types.CallbackQuery):
     await _show_shop(call, call.from_user.id, call.data.split("_", 1)[1])
 
 
+def custom_limits():
+    gmin = max(1, get_int("custom_min_gb"))
+    gmax = max(gmin, get_int("custom_max_gb"))
+    dmin = max(1, get_int("custom_min_days"))
+    dmax = max(dmin, get_int("custom_max_days"))
+    return gmin, gmax, dmin, dmax
+
+
+def custom_price(gb, days):
+    """قیمت = حجم × قیمت هر گیگ (برای مدت پایه)، متناسب با تعداد روز؛ گرد به هزار تومان."""
+    price = gb * get_int("custom_price_per_gb")
+    base_days = get_int("custom_base_days")
+    if base_days > 0:
+        price = price * days / base_days
+    return max(1000, int(round(price / 1000.0)) * 1000)
+
+
+def parse_int_input(raw):
+    t = (raw or "").translate(DIGITS_FA).replace(",", "").replace("،", "").strip()
+    return int(t) if t.isdigit() else None
+
+
 def compute_checkout(user_id, data):
     sid = data.get("service_id")
-    if not sid:
+    gb, days = data.get("custom_gb"), data.get("custom_days")
+    is_custom = bool(gb and days)
+    if not sid and not is_custom:
         return None
+    custom_days = None
     with SessionLocal() as s:
-        svc = s.get(Service, sid)
-        if svc is None:
-            return None
-        label = f"{cat_label(svc.category)} - {svc.name}"
-        base = svc.price
+        if is_custom:
+            sid = None
+            label = f"✨ پلن دلخواه - {gb} گیگ - {days} روزه"
+            base = custom_price(gb, days)
+            custom_days = days
+        else:
+            svc = s.get(Service, sid)
+            if svc is None:
+                return None
+            label = f"{cat_label(svc.category)} - {svc.name}"
+            base = svc.price
         code, code_pct = None, 0
         if data.get("code"):
             dc, _err = validate_code(s, data["code"], user_id)
@@ -1284,7 +1363,7 @@ def compute_checkout(user_id, data):
     return dict(
         service_id=sid, label=label, base=base, percent=percent, parts=parts,
         code=code, code_pct=code_pct, final=price_with_percent(base, percent),
-        renew_cfg_id=data.get("renew_cfg_id"),
+        renew_cfg_id=data.get("renew_cfg_id"), custom_days=custom_days,
     )
 
 
@@ -1335,6 +1414,58 @@ async def send_checkout(target, state, user_id):
     await reply_to(target, out, markup)
 
 
+@dp.callback_query(F.data == "custom_start")
+async def custom_start_handler(call: types.CallbackQuery, state: FSMContext):
+    if not get_bool("custom_on") or get_int("custom_price_per_gb") <= 0:
+        await call.answer("پلن دلخواه فعلاً غیرفعال است.", show_alert=True)
+        return
+    await call.answer()
+    await state.clear()
+    gmin, gmax, _dmin, _dmax = custom_limits()
+    await state.set_state(PaymentState.custom_gb)
+    out = (
+        "✨ <b>پلن دلخواه | حجم</b>\n\n"
+        f"💰 قیمت هر گیگ: {get_int('custom_price_per_gb'):,} تومان\n\n"
+        f"حجم موردنظر را به <b>گیگ</b> و به‌صورت عدد بفرستید ({gmin} تا {gmax}):"
+    )
+    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ انصراف", callback_data="main_buy")]])
+    await edit_or_send(call, out, markup)
+
+
+@dp.message(PaymentState.custom_gb, ~F.text.in_(MENU_TEXTS))
+async def custom_gb_entered(message: types.Message, state: FSMContext):
+    gmin, gmax, dmin, dmax = custom_limits()
+    n = parse_int_input(message.text)
+    if n is None or not (gmin <= n <= gmax):
+        await message.answer(f"یک عدد بین {gmin} تا {gmax} بفرستید.")
+        return
+    await state.update_data(custom_gb=n)
+    await state.set_state(PaymentState.custom_days)
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ تغییر حجم", callback_data="custom_start")],
+            [InlineKeyboardButton(text="⬅️ انصراف", callback_data="main_buy")],
+        ]
+    )
+    await message.answer(
+        f"✨ <b>پلن دلخواه | مدت</b>\n\n📦 حجم انتخابی: {n} گیگ\n\n"
+        f"تعداد <b>روز</b> را به‌صورت عدد بفرستید ({dmin} تا {dmax}):",
+        reply_markup=markup,
+    )
+
+
+@dp.message(PaymentState.custom_days, ~F.text.in_(MENU_TEXTS))
+async def custom_days_entered(message: types.Message, state: FSMContext):
+    _gmin, _gmax, dmin, dmax = custom_limits()
+    n = parse_int_input(message.text)
+    if n is None or not (dmin <= n <= dmax):
+        await message.answer(f"یک عدد بین {dmin} تا {dmax} بفرستید.")
+        return
+    await state.update_data(service_id=None, renew_cfg_id=None, code=None, custom_days=n)
+    await state.set_state(PaymentState.waiting_for_receipt)
+    await send_checkout(message, state, message.from_user.id)
+
+
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy_plan_handler(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
@@ -1375,7 +1506,7 @@ async def renew_handler(call: types.CallbackQuery, state: FSMContext):
 async def use_code_handler(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
     data = await state.get_data()
-    if not data.get("service_id"):
+    if not (data.get("service_id") or data.get("custom_gb")):
         await edit_or_send(call, "این سفارش منقضی شده است. لطفاً دوباره شروع کنید.", back_home_markup())
         return
     await state.set_state(PaymentState.waiting_for_code)
@@ -1417,6 +1548,7 @@ def build_request(session, user_id, co, paid_wallet, receipt_id):
         paid_wallet=paid_wallet,
         config_id=co["renew_cfg_id"],
         service_id=co["service_id"],
+        custom_days=co.get("custom_days"),
         discount_code=co["code"],
     )
     session.add(req)
@@ -2565,7 +2697,7 @@ async def process_admin_config(message: types.Message, state: FSMContext):
             await message.answer("این درخواست قبلاً بررسی شده است.")
             return
         is_trial = r.req_type == "trial"
-        days = max(1, get_int("trial_days")) if is_trial else 30
+        days = max(1, get_int("trial_days")) if is_trial else (r.custom_days or 30)
         end_date = start_date + timedelta(days=days)
         r.status = "answered"
         r.answered_at = get_current_jalali()
@@ -3036,6 +3168,7 @@ async def admin_plans_list(call: types.CallbackQuery, state: FSMContext):
             InlineKeyboardButton(text="📂 مدیریت دسته‌ها", callback_data="acats"),
         ]
     )
+    keyboard.append([InlineKeyboardButton(text="✨ تنظیم پلن دلخواه (حجم/روز/قیمت)", callback_data="spage_custom")])
     keyboard.append([InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data="admin_home")])
     await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=keyboard))
 
@@ -4398,6 +4531,615 @@ async def sadmin_delete(call: types.CallbackQuery):
     set_setting("sub_admins", ",".join(str(i) for i in ids))
     log_action(call.from_user.id, f"حذف ادمین فرعی {rm}")
     await _render_subadmins(call)
+
+
+# ---------------------------------------------------------------------------
+# دکمه‌ساز: دکمه‌های شیشه‌ای دلخواه (چندمرحله‌ای) — مدیریت توسط ادمین اصلی
+# ---------------------------------------------------------------------------
+CB_MAX_DEPTH = 6  # حداکثر تعداد مرحله‌ها (عمق درخت)
+CB_MAX_PER_LEVEL = 20  # حداکثر دکمه در هر مرحله
+CB_LABEL_MAX = 40
+CB_TEXT_MAX = 3500
+
+CB_EDIT_PROMPTS = {
+    "label": "✏️ نام جدید دکمه را بفرستید (حداکثر ۴۰ کاراکتر).",
+    "text": "📝 متن جدید را بفرستید. برای پاک کردن متن، - بفرستید.",
+    "photo": "🖼 عکس جدید را بفرستید. برای حذف عکس، - بفرستید.",
+    "url": "🔗 لینک جدید را بفرستید (https://... یا @username).",
+}
+
+
+def normalize_url(raw):
+    raw = (raw or "").strip()
+    if re.fullmatch(r"@[A-Za-z0-9_]{4,}", raw):
+        return f"https://t.me/{raw[1:]}"
+    if raw.lower().startswith("t.me/"):
+        raw = "https://" + raw
+    if re.fullmatch(r"https?://\S+", raw, re.I) and len(raw) <= 500:
+        return raw
+    return None
+
+
+def cb_children(s, pid, only_active=False):
+    q = s.query(CustomButton).filter(CustomButton.parent_id == pid)
+    if only_active:
+        q = q.filter(CustomButton.is_active.is_(True))
+    return q.order_by(CustomButton.sort_order, CustomButton.id).all()
+
+
+def cb_cols(pid):
+    return 2 if get_setting(f"cbcols_{pid}").strip() == "2" else 1
+
+
+def cb_depth(s, node_id):
+    """عمق دکمه (دکمه‌های منوی اصلی = ۱ ؛ خودِ منوی اصلی = ۰)."""
+    depth = 0
+    while node_id and depth < 50:
+        node = s.get(CustomButton, node_id)
+        if node is None:
+            break
+        depth += 1
+        node_id = node.parent_id
+    return depth
+
+
+def cb_descendants(s, node_id):
+    """آیدی خود دکمه + همه زیردکمه‌هایش."""
+    out, queue = [], [node_id]
+    while queue and len(out) < 2000:
+        cur = queue.pop()
+        out.append(cur)
+        queue += [i for (i,) in s.query(CustomButton.id).filter(CustomButton.parent_id == cur).all()]
+    return out
+
+
+def cb_is_visible(s, node):
+    """دکمه و همه والدهایش باید فعال باشند."""
+    for _ in range(CB_MAX_DEPTH + 2):
+        if node is None or not node.is_active:
+            return False
+        if not node.parent_id:
+            return True
+        node = s.get(CustomButton, node.parent_id)
+    return False
+
+
+def cb_layout(buttons, cols):
+    rows, cur = [], []
+    for btn in buttons:
+        cur.append(btn)
+        if len(cur) == cols:
+            rows.append(cur)
+            cur = []
+    if cur:
+        rows.append(cur)
+    return rows
+
+
+def cb_user_rows(pid):
+    """ردیف‌های دکمه‌ی فعال یک مرحله برای کاربر."""
+    with SessionLocal() as s:
+        items = [(c.id, c.kind, c.label or "", c.url or "") for c in cb_children(s, pid, only_active=True)]
+    btns = []
+    for cid, kind, label, url in items:
+        if not label.strip():
+            continue
+        if kind == "url":
+            safe = normalize_url(url)
+            if safe:
+                btns.append(InlineKeyboardButton(text=label[:64], url=safe))
+        else:
+            btns.append(InlineKeyboardButton(text=label[:64], callback_data=f"cb_{cid}"))
+    return cb_layout(btns, cb_cols(pid))
+
+
+def cb_main_rows():
+    """دکمه‌های دلخواه منوی اصلی؛ هیچ‌وقت نباید منوی اصلی را خراب کند."""
+    try:
+        return cb_user_rows(0)
+    except Exception as e:  # noqa: BLE001
+        logging.warning("custom buttons failed: %s", e)
+        return []
+
+
+def cb_user_view(node_id, preview=False):
+    with SessionLocal() as s:
+        node = s.get(CustomButton, node_id)
+        if node is None or node.kind != "msg":
+            return None
+        if not preview and not cb_is_visible(s, node):
+            return None
+        label, text_, photo, parent = node.label or "", node.text or "", node.photo_id or "", node.parent_id or 0
+    body = esc(text_) if text_.strip() else f"<b>{esc(label)}</b>"
+    rows = cb_user_rows(node_id)
+    b = InlineKeyboardButton
+    if preview:
+        rows.append([b(text="🔙 بازگشت به ویرایش", callback_data=f"acbn_{node_id}")])
+    else:
+        nav = [b(text="⬅️ بازگشت", callback_data=f"cb_{parent}" if parent else "main_menu")]
+        if parent:
+            nav.append(b(text="🏠 منوی اصلی", callback_data="main_menu"))
+        rows.append(nav)
+    return body, photo, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def present_view(call: types.CallbackQuery, text_, photo, markup):
+    """متن (یا عکس+کپشن) را نشان می‌دهد؛ جابه‌جایی بین پیام عکس‌دار و بی‌عکس را هم درست مدیریت می‌کند."""
+    msg = call.message
+    chat_id = call.from_user.id
+    had_photo = bool(getattr(msg, "photo", None))
+    if photo:
+        try:
+            await msg.delete()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if len(text_) <= 1000:
+                await call.bot.send_photo(chat_id=chat_id, photo=photo, caption=text_, reply_markup=markup)
+            else:
+                await call.bot.send_photo(chat_id=chat_id, photo=photo)
+                await call.bot.send_message(chat_id=chat_id, text=text_, reply_markup=markup)
+        except Exception as e:  # noqa: BLE001
+            logging.warning("custom button photo failed: %s", e)
+            await call.bot.send_message(chat_id=chat_id, text=text_, reply_markup=markup)
+        return
+    if had_photo:
+        try:
+            await msg.delete()
+        except Exception:  # noqa: BLE001
+            pass
+        await call.bot.send_message(chat_id=chat_id, text=text_, reply_markup=markup)
+        return
+    await edit_or_send(call, text_, markup)
+
+
+@dp.callback_query(F.data.regexp(r"^cb_\d+$"))
+async def cb_user_open(call: types.CallbackQuery, state: FSMContext):
+    view = cb_user_view(int(call.data[3:]))
+    if view is None:
+        await call.answer("این گزینه دیگر در دسترس نیست.", show_alert=True)
+        return
+    await call.answer()
+    await state.clear()
+    await present_view(call, *view)
+
+
+# ----- نمای مدیریت (ادمین) -----
+def cb_list_view(pid):
+    with SessionLocal() as s:
+        parent = s.get(CustomButton, pid) if pid else None
+        if pid and parent is None:
+            return None
+        plabel = (parent.label or "") if parent else ""
+        depth = cb_depth(s, pid)
+        items = []
+        for c in cb_children(s, pid):
+            n = s.query(func.count(CustomButton.id)).filter(CustomButton.parent_id == c.id).scalar() or 0
+            items.append((c.id, c.kind, c.label or "", bool(c.is_active), n))
+    if pid == 0:
+        out = (
+            "🔘 <b>دکمه‌ساز منوی اصلی</b>\n\n"
+            "دکمه‌هایی که اینجا بسازید زیر منوی اصلی ربات برای همه کاربران نمایش داده می‌شود.\n\n"
+        )
+    else:
+        out = (
+            f"📂 <b>مرحله بعدِ «{esc(plabel)}»</b>\n\n"
+            f"این دکمه‌ها وقتی کاربر روی «{esc(plabel)}» بزند نشان داده می‌شوند.\n\n"
+        )
+    b = InlineKeyboardButton
+    keyboard = []
+    for cid, kind, label, active, n in items:
+        out += f"{'🟢' if active else '⚪️'} {'💬' if kind == 'msg' else '🔗'} {esc(label)}"
+        out += f" — {n} زیردکمه\n" if kind == "msg" and n else "\n"
+        keyboard.append([b(text=f"⚙️ {label}"[:60], callback_data=f"acbn_{cid}")])
+    if not items:
+        out += "هنوز دکمه‌ای نیست.\n"
+    can_add = len(items) < CB_MAX_PER_LEVEL and depth < CB_MAX_DEPTH
+    if can_add:
+        keyboard.append([b(text="➕ افزودن دکمه", callback_data=f"acbadd_{pid}")])
+    elif len(items) >= CB_MAX_PER_LEVEL:
+        out += f"\nℹ️ به سقف {CB_MAX_PER_LEVEL} دکمه در این مرحله رسیده‌اید."
+    else:
+        out += f"\nℹ️ حداکثر {CB_MAX_DEPTH} مرحله پشت‌سرهم مجاز است."
+    if len(items) > 1:
+        keyboard.append(
+            [b(text=f"↔️ چیدمان: {'۲ ستونه' if cb_cols(pid) == 2 else '۱ ستونه'} (تغییر)", callback_data=f"acbcols_{pid}")]
+        )
+    if pid == 0:
+        keyboard.append([b(text="🔙 بازگشت به پنل", callback_data="admin_home")])
+    else:
+        keyboard.append([b(text=f"🔙 ویرایش «{plabel}»"[:60], callback_data=f"acbn_{pid}")])
+    return out, InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def cb_node_view(node_id):
+    with SessionLocal() as s:
+        c = s.get(CustomButton, node_id)
+        if c is None:
+            return None
+        kind, label, text_, has_photo = c.kind, c.label or "", c.text or "", bool(c.photo_id)
+        url, active, parent = c.url or "", bool(c.is_active), c.parent_id or 0
+        n = s.query(func.count(CustomButton.id)).filter(CustomButton.parent_id == node_id).scalar() or 0
+    out = (
+        f"🔘 <b>{esc(label)}</b>\n\n"
+        f"نوع: {'💬 پیام (با امکان مرحله بعد)' if kind == 'msg' else '🔗 لینک'}\n"
+        f"وضعیت: {'🟢 فعال' if active else '⚪️ غیرفعال (مخفی از کاربر)'}\n"
+    )
+    b = InlineKeyboardButton
+    rows = []
+    if kind == "msg":
+        preview = text_.strip().replace("\n", " ")
+        out += f"متن: {esc(preview[:150]) + ('…' if len(preview) > 150 else '') if preview else 'ندارد'}\n"
+        out += f"عکس: {'✅ دارد' if has_photo else 'ندارد'}\n"
+        out += f"دکمه‌های مرحله بعد: {n}"
+        rows.append([b(text=f"📂 دکمه‌های مرحله بعد ({n})", callback_data=f"acbs_{node_id}")])
+        rows.append(
+            [b(text="📝 متن", callback_data=f"acbed_text_{node_id}"), b(text="🖼 عکس", callback_data=f"acbed_photo_{node_id}")]
+        )
+    else:
+        out += f"لینک: {esc(url)}"
+        rows.append([b(text="🔗 تغییر لینک", callback_data=f"acbed_url_{node_id}")])
+    rows.append([b(text="✏️ نام دکمه", callback_data=f"acbed_label_{node_id}")])
+    if kind == "msg":
+        rows.append([b(text="👁 پیش‌نمایش", callback_data=f"acbprev_{node_id}")])
+    rows.append(
+        [b(text="⬆️ بالاتر", callback_data=f"acbup_{node_id}"), b(text="⬇️ پایین‌تر", callback_data=f"acbdn_{node_id}")]
+    )
+    rows.append([b(text="🔴 غیرفعال کن" if active else "🟢 فعال کن", callback_data=f"acbtog_{node_id}")])
+    rows.append([b(text="🗑 حذف دکمه", callback_data=f"acbdel_{node_id}")])
+    rows.append([b(text="🔙 برگشت به لیست", callback_data=f"acbs_{parent}")])
+    return out, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def cb_show_list(target, pid):
+    view = cb_list_view(pid)
+    if view is None:
+        view = (
+            "دکمه یافت نشد.",
+            InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 دکمه‌ساز", callback_data="acbs_0")]]),
+        )
+    await reply_to(target, *view)
+
+
+async def cb_show_node(target, nid):
+    view = cb_node_view(nid)
+    if view is None:
+        view = (
+            "دکمه یافت نشد.",
+            InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 دکمه‌ساز", callback_data="acbs_0")]]),
+        )
+    await reply_to(target, *view)
+
+
+@dp.callback_query(F.data.regexp(r"^acbs_\d+$"), MainAdmin())
+async def cb_admin_list(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    await cb_show_list(call, int(call.data.split("_")[1]))
+
+
+@dp.callback_query(F.data.regexp(r"^acbn_\d+$"), MainAdmin())
+async def cb_admin_node(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    await cb_show_node(call, int(call.data.split("_")[1]))
+
+
+@dp.callback_query(F.data.regexp(r"^acbprev_\d+$"), MainAdmin())
+async def cb_admin_preview(call: types.CallbackQuery, state: FSMContext):
+    view = cb_user_view(int(call.data.split("_")[1]), preview=True)
+    if view is None:
+        await call.answer("این دکمه پیام ندارد.", show_alert=True)
+        return
+    await call.answer()
+    await state.clear()
+    await present_view(call, *view)
+
+
+@dp.callback_query(F.data.regexp(r"^acbcols_\d+$"), MainAdmin())
+async def cb_admin_cols(call: types.CallbackQuery):
+    pid = int(call.data.split("_")[1])
+    set_setting(f"cbcols_{pid}", "1" if cb_cols(pid) == 2 else "2")
+    await call.answer("چیدمان تغییر کرد.")
+    await cb_show_list(call, pid)
+
+
+# ----- ساخت دکمه‌ی جدید (مرحله‌به‌مرحله) -----
+def cb_cancel_markup(pid):
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data=f"acbs_{pid}")]])
+
+
+@dp.callback_query(F.data.regexp(r"^acbadd_\d+$"), MainAdmin())
+async def cb_add_start(call: types.CallbackQuery, state: FSMContext):
+    pid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        if pid and s.get(CustomButton, pid) is None:
+            await call.answer("مرحله یافت نشد.", show_alert=True)
+            return
+        n = s.query(func.count(CustomButton.id)).filter(CustomButton.parent_id == pid).scalar() or 0
+        depth = cb_depth(s, pid)
+    if n >= CB_MAX_PER_LEVEL or depth >= CB_MAX_DEPTH:
+        await call.answer("به سقف تعداد دکمه یا مرحله رسیده‌اید.", show_alert=True)
+        return
+    await call.answer()
+    await state.clear()
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [b(text="💬 دکمه پیام (قابل ساخت مرحله بعد)", callback_data=f"acbk_msg_{pid}")],
+            [b(text="🔗 دکمه لینک (باز کردن مستقیم)", callback_data=f"acbk_url_{pid}")],
+            [b(text="انصراف", callback_data=f"acbs_{pid}")],
+        ]
+    )
+    await edit_or_send(
+        call,
+        "➕ <b>دکمه جدید</b>\n\nنوع دکمه را انتخاب کنید:\n\n"
+        "💬 <b>پیام:</b> با زدن دکمه، متن (و در صورت تمایل عکس) نمایش داده می‌شود و می‌توانید برایش دکمه‌های مرحله بعد بسازید.\n\n"
+        "🔗 <b>لینک:</b> با زدن دکمه، لینک (کانال، سایت، آیدی...) باز می‌شود.",
+        markup,
+    )
+
+
+@dp.callback_query(F.data.regexp(r"^acbk_(msg|url)_\d+$"), MainAdmin())
+async def cb_add_kind(call: types.CallbackQuery, state: FSMContext):
+    _, kind, pid = call.data.split("_")
+    await call.answer()
+    await state.set_state(PaymentState.cb_label)
+    await state.update_data(cb_pid=int(pid), cb_kind=kind)
+    await edit_or_send(
+        call,
+        "✏️ <b>مرحله ۱:</b> متن روی دکمه را بفرستید (حداکثر ۴۰ کاراکتر، ایموجی مجاز است).\n\n"
+        "مثال: <code>📚 آموزش‌ها</code>",
+        cb_cancel_markup(int(pid)),
+    )
+
+
+@dp.message(PaymentState.cb_label, MainAdmin())
+async def cb_add_label(message: types.Message, state: FSMContext):
+    label = (message.text or "").strip()
+    if not label or len(label) > CB_LABEL_MAX:
+        await message.answer(f"یک متن معتبر (حداکثر {CB_LABEL_MAX} کاراکتر) بفرستید.")
+        return
+    data = await state.get_data()
+    pid, kind = int(data.get("cb_pid", 0)), data.get("cb_kind", "msg")
+    await state.update_data(cb_label=label)
+    if kind == "url":
+        await state.set_state(PaymentState.cb_url)
+        await message.answer(
+            "🔗 <b>مرحله ۲:</b> لینک را بفرستید.\n\nمثال: <code>https://t.me/channel</code> یا <code>@channel</code>",
+            reply_markup=cb_cancel_markup(pid),
+        )
+    else:
+        await state.set_state(PaymentState.cb_text)
+        await message.answer(
+            "📝 <b>مرحله ۲:</b> متنی را بفرستید که با زدن این دکمه به کاربر نشان داده می‌شود.\n\n"
+            "💡 اگر می‌خواهید عکس هم داشته باشد، می‌توانید همین‌جا یک عکس همراه کپشن (متن) بفرستید.",
+            reply_markup=cb_cancel_markup(pid),
+        )
+
+
+async def _cb_finish_add(event, state: FSMContext, text_, photo_id, url=""):
+    data = await state.get_data()
+    pid, kind, label = int(data.get("cb_pid", 0)), data.get("cb_kind", "msg"), data.get("cb_label", "")
+    with SessionLocal() as s:
+        if pid and s.get(CustomButton, pid) is None:
+            await state.clear()
+            await reply_to(event, "مرحله والد پیدا نشد (احتمالاً حذف شده).", None)
+            return
+        last = s.query(func.max(CustomButton.sort_order)).filter(CustomButton.parent_id == pid).scalar() or 0
+        c = CustomButton(
+            parent_id=pid, kind=kind, label=label, text=text_ or "", photo_id=photo_id or "",
+            url=url or "", sort_order=last + 1, is_active=True,
+        )
+        s.add(c)
+        s.flush()
+        cid = c.id
+        depth = cb_depth(s, cid)
+        s.commit()
+    await state.clear()
+    log_action(event.from_user.id, f"ساخت دکمه دلخواه «{label}»")
+    b = InlineKeyboardButton
+    rows = []
+    if kind == "msg":
+        out = (
+            f"✅ دکمه «{esc(label)}» ساخته شد و همین الان برای کاربران فعال است.\n\n"
+            "می‌خواهید برای مرحله بعدِ این دکمه هم دکمه بسازید؟ (گزینه‌هایی که بعد از زدن این دکمه نشان داده می‌شوند)"
+        )
+        if depth < CB_MAX_DEPTH:
+            rows.append([b(text="➕ ساخت دکمه برای مرحله بعد", callback_data=f"acbadd_{cid}")])
+        rows.append([b(text="👁 پیش‌نمایش", callback_data=f"acbprev_{cid}")])
+    else:
+        out = f"✅ دکمه لینک «{esc(label)}» ساخته شد و همین الان برای کاربران فعال است."
+    rows.append([b(text="➕ دکمه دیگر در همین سطح", callback_data=f"acbadd_{pid}")])
+    rows.append([b(text="✅ پایان (لیست دکمه‌ها)", callback_data=f"acbs_{pid}")])
+    await reply_to(event, out, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@dp.message(PaymentState.cb_text, MainAdmin())
+async def cb_add_text(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    pid = int(data.get("cb_pid", 0))
+    if message.photo:
+        text_ = (message.caption or "").strip()
+        if len(text_) > CB_TEXT_MAX:
+            await message.answer(f"متن خیلی طولانی است (حداکثر {CB_TEXT_MAX} کاراکتر).")
+            return
+        await _cb_finish_add(message, state, text_, message.photo[-1].file_id)
+        return
+    text_ = (message.text or "").strip()
+    if not text_ or len(text_) > CB_TEXT_MAX:
+        await message.answer(f"یک متن معتبر (حداکثر {CB_TEXT_MAX} کاراکتر) یا یک عکس همراه کپشن بفرستید.")
+        return
+    await state.update_data(cb_text=text_)
+    await state.set_state(PaymentState.cb_photo)
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [b(text="⏭ بدون عکس، ساخت دکمه", callback_data="acbnophoto")],
+            [b(text="انصراف", callback_data=f"acbs_{pid}")],
+        ]
+    )
+    await message.answer("🖼 <b>مرحله ۳ (اختیاری):</b> اگر می‌خواهید عکسی همراه این پیام باشد، همین‌جا بفرستید.", reply_markup=markup)
+
+
+@dp.callback_query(PaymentState.cb_photo, F.data == "acbnophoto", MainAdmin())
+async def cb_add_no_photo(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    data = await state.get_data()
+    await _cb_finish_add(call, state, data.get("cb_text", ""), "")
+
+
+@dp.message(PaymentState.cb_photo, MainAdmin())
+async def cb_add_photo(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    if message.photo:
+        await _cb_finish_add(message, state, data.get("cb_text", ""), message.photo[-1].file_id)
+    elif (message.text or "").strip() == "-":
+        await _cb_finish_add(message, state, data.get("cb_text", ""), "")
+    else:
+        await message.answer("لطفاً یک عکس بفرستید، یا دکمه «بدون عکس» را بزنید.")
+
+
+@dp.message(PaymentState.cb_url, MainAdmin())
+async def cb_add_url(message: types.Message, state: FSMContext):
+    url = normalize_url(message.text)
+    if not url:
+        await message.answer("لینک معتبر بفرستید. مثال: https://t.me/channel یا @channel")
+        return
+    await _cb_finish_add(message, state, "", "", url=url)
+
+
+# ----- ویرایش، جابه‌جایی، فعال/غیرفعال، حذف -----
+@dp.callback_query(F.data.regexp(r"^acbed_(label|text|photo|url)_\d+$"), MainAdmin())
+async def cb_edit_start(call: types.CallbackQuery, state: FSMContext):
+    _, field, nid = call.data.split("_")
+    await call.answer()
+    await state.set_state(PaymentState.cb_edit)
+    await state.update_data(cb_id=int(nid), cb_field=field)
+    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data=f"acbn_{nid}")]])
+    await edit_or_send(call, CB_EDIT_PROMPTS[field], markup)
+
+
+@dp.message(PaymentState.cb_edit, MainAdmin())
+async def cb_edit_save(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    nid, field = data.get("cb_id"), data.get("cb_field")
+    raw = (message.text or "").strip()
+    with SessionLocal() as s:
+        c = s.get(CustomButton, nid)
+        if c is None:
+            await state.clear()
+            await message.answer("دکمه یافت نشد.")
+            return
+        if field == "label":
+            if not raw or len(raw) > CB_LABEL_MAX:
+                await message.answer(f"یک نام معتبر (حداکثر {CB_LABEL_MAX} کاراکتر) بفرستید.")
+                return
+            c.label = raw
+        elif field == "text":
+            if not raw or len(raw) > CB_TEXT_MAX:
+                await message.answer(f"متن معتبر (حداکثر {CB_TEXT_MAX} کاراکتر) یا - بفرستید.")
+                return
+            c.text = "" if raw == "-" else raw
+        elif field == "photo":
+            if message.photo:
+                c.photo_id = message.photo[-1].file_id
+            elif raw == "-":
+                c.photo_id = ""
+            else:
+                await message.answer("لطفاً یک عکس بفرستید یا - برای حذف.")
+                return
+        elif field == "url":
+            url = normalize_url(raw)
+            if not url:
+                await message.answer("لینک معتبر بفرستید. مثال: https://t.me/channel یا @channel")
+                return
+            c.url = url
+        s.commit()
+    await state.clear()
+    log_action(message.from_user.id, f"ویرایش دکمه دلخواه #{nid} ({field})")
+    await message.answer("✅ ذخیره شد.")
+    await cb_show_node(message, nid)
+
+
+@dp.callback_query(F.data.regexp(r"^acb(up|dn)_\d+$"), MainAdmin())
+async def cb_move(call: types.CallbackQuery):
+    up = call.data.startswith("acbup_")
+    nid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        c = s.get(CustomButton, nid)
+        if c is None:
+            await call.answer("دکمه یافت نشد.", show_alert=True)
+            return
+        sibs = cb_children(s, c.parent_id or 0)
+        ids = [x.id for x in sibs]
+        for i, x in enumerate(sibs):  # ترتیب‌ها را یکتا و پشت‌سرهم می‌کنیم
+            x.sort_order = i
+        i = ids.index(nid)
+        j = i - 1 if up else i + 1
+        if 0 <= j < len(sibs):
+            sibs[i].sort_order, sibs[j].sort_order = sibs[j].sort_order, sibs[i].sort_order
+        s.commit()
+    await call.answer("ترتیب تغییر کرد.")
+    await cb_show_node(call, nid)
+
+
+@dp.callback_query(F.data.regexp(r"^acbtog_\d+$"), MainAdmin())
+async def cb_toggle(call: types.CallbackQuery):
+    nid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        c = s.get(CustomButton, nid)
+        if c is None:
+            await call.answer("دکمه یافت نشد.", show_alert=True)
+            return
+        c.is_active = not bool(c.is_active)
+        s.commit()
+    await call.answer("انجام شد.")
+    await cb_show_node(call, nid)
+
+
+@dp.callback_query(F.data.regexp(r"^acbdel_\d+$"), MainAdmin())
+async def cb_delete_ask(call: types.CallbackQuery):
+    nid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        c = s.get(CustomButton, nid)
+        if c is None:
+            await call.answer("دکمه یافت نشد.", show_alert=True)
+            return
+        label = c.label or ""
+        extra = len(cb_descendants(s, nid)) - 1
+    await call.answer()
+    out = f"🗑 دکمه «{esc(label)}» حذف شود؟"
+    if extra:
+        out += f"\n\n⚠️ {extra} زیردکمه (مرحله‌های بعدی) هم همراهش حذف می‌شود."
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [b(text="✅ بله، حذف کن", callback_data=f"acbdelok_{nid}")],
+            [b(text="انصراف", callback_data=f"acbn_{nid}")],
+        ]
+    )
+    await edit_or_send(call, out, markup)
+
+
+@dp.callback_query(F.data.regexp(r"^acbdelok_\d+$"), MainAdmin())
+async def cb_delete_do(call: types.CallbackQuery):
+    nid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        c = s.get(CustomButton, nid)
+        if c is None:
+            await call.answer("دکمه یافت نشد.", show_alert=True)
+            return
+        pid, label = c.parent_id or 0, c.label or ""
+        ids = cb_descendants(s, nid)
+        s.query(CustomButton).filter(CustomButton.id.in_(ids)).delete(synchronize_session=False)
+        s.query(KV).filter(KV.key.in_([f"cbcols_{i}" for i in ids])).delete(synchronize_session=False)
+        s.commit()
+    for i in ids:
+        _cache.pop(f"cbcols_{i}", None)
+    await call.answer("حذف شد.")
+    log_action(call.from_user.id, f"حذف دکمه دلخواه «{label}» ({len(ids)} مورد)")
+    await cb_show_list(call, pid)
 
 
 # ---------------------------------------------------------------------------
