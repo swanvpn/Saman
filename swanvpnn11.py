@@ -1369,6 +1369,36 @@ async def main_menu_handler_call(call: types.CallbackQuery, state: FSMContext):
 # ---------------------------------------------------------------------------
 # تعرفه‌ها
 # ---------------------------------------------------------------------------
+_BEST_CACHE = {"ts": 0.0, "sid": None}
+BESTSELLER_MIN_SALES = 3  # حداقل فروش تأییدشده تا برچسب «پرفروش» نمایش داده شود
+
+
+def bestseller_id():
+    """شناسه پرفروش‌ترین پلن (از جدول Request)؛ برای ۵ دقیقه کش می‌شود."""
+    if time.time() - _BEST_CACHE["ts"] < 300:
+        return _BEST_CACHE["sid"]
+    sid = None
+    try:
+        with SessionLocal() as s:
+            row = (
+                s.query(Request.service_id, func.count(Request.id).label("n"))
+                .filter(
+                    Request.status == "answered",
+                    Request.req_type.in_(["buy", "renew"]),
+                    Request.service_id.isnot(None),
+                )
+                .group_by(Request.service_id)
+                .order_by(func.count(Request.id).desc())
+                .first()
+            )
+            if row and row[1] >= BESTSELLER_MIN_SALES and s.get(Service, row[0]) is not None:
+                sid = row[0]
+    except Exception as e:  # noqa: BLE001
+        logging.warning("bestseller calc failed: %s", e)
+    _BEST_CACHE.update(ts=time.time(), sid=sid)
+    return sid
+
+
 def shop_view(user_id, cat_key=None):
     """تعرفه و خرید در یک صفحه؛ دسته‌ها به‌شکل تب."""
     total, parts = discount_breakdown(user_id)
@@ -1405,10 +1435,14 @@ def shop_view(user_id, cat_key=None):
         for k, label, em in cats
     ]
     keyboard.extend(tabs[i : i + 3] for i in range(0, len(tabs), 3))
+    best = bestseller_id()
     for sid, name, price in services:
         final = price_with_percent(price, total)
         out += price_line(name, price, final)
-        keyboard.append([b(text=f"🛒 {name} — {final:,} تومان", callback_data=f"buy_{sid}")])
+        badge = "⭐ " if sid == best else ""
+        keyboard.append([b(text=f"🛒 {badge}{name} — {final:,} تومان", callback_data=f"buy_{sid}")])
+    if best and any(sid == best for sid, _n, _p in services):
+        out += "\n⭐ = پرفروش‌ترین پلن (انتخاب بیشتر کاربران)\n"
     if not services:
         out += "فعلاً پلنی در این دسته وجود ندارد.\n"
     if get_bool("loyalty_on"):
@@ -1422,6 +1456,7 @@ def shop_view(user_id, cat_key=None):
         keyboard.append(
             [b(text=f"✨ پلن دلخواه (هر گیگ {get_int('custom_price_per_gb'):,} تومان)", callback_data="custom_start")]
         )
+    keyboard.append([b(text="🤔 نمی‌دونم کدوم رو بخرم؟", callback_data="pk_start")])
     keyboard.append([b(text="💳 شارژ کیف پول", callback_data="wallet_menu")])
     keyboard.append([b(text="🏠 بازگشت به منوی اصلی", callback_data="main_menu")])
     return out, InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -1641,6 +1676,159 @@ async def renew_handler(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(PaymentState.waiting_for_receipt)
     await state.update_data(service_id=service_id, renew_cfg_id=cfg_id, code=None)
     await send_checkout(call, state, call.from_user.id)
+
+
+@dp.callback_query(F.data.startswith("rebuy_"))
+async def rebuy_handler(call: types.CallbackQuery, state: FSMContext):
+    """سرویس جدید (دوم) با همان پلن یک سرویس فعلی؛ برخلاف تمدید، کانفیگ تازه ساخته می‌شود."""
+    try:
+        cfg_id = int(call.data.split("_", 1)[1])
+    except ValueError:
+        return
+    with SessionLocal() as s:
+        cfg = s.get(UserConfig, cfg_id)
+        if cfg is None or cfg.user_id != call.from_user.id:
+            await call.answer("سرویس یافت نشد.", show_alert=True)
+            return
+        service_id = cfg.service_id
+        exists = bool(service_id and s.get(Service, service_id))
+    if not exists:
+        await call.answer("این پلن دیگر در فروشگاه موجود نیست؛ از منوی خرید یک پلن انتخاب کنید.", show_alert=True)
+        return
+    await call.answer()
+    await state.clear()
+    await state.set_state(PaymentState.waiting_for_receipt)
+    await state.update_data(service_id=service_id, renew_cfg_id=None, code=None)
+    await send_checkout(call, state, call.from_user.id)
+
+
+# ----- راهنمای انتخاب پلن (ویزارد بدون FSM؛ پاسخ‌ها داخل callback_data) -----
+_PK_USAGE = {"l": ("🪶 سبک (وب، پیام‌رسان)", 15), "m": ("⚖️ متوسط (یوتیوب، اینستاگرام)", 40), "h": ("🚀 سنگین (فیلم، دانلود)", 100)}
+_PK_PURPOSE = {"t": "💬 تلگرام و شبکه‌های اجتماعی", "f": "🎬 فیلم و استریم", "g": "🎮 بازی آنلاین"}
+_PK_USERS = {"1": "👤 فقط خودم", "2": "👥 ۲ نفر یا بیشتر"}
+
+
+def _plan_gb(name):
+    """حجم پلن را از نامش (مثل «50 گیگ») درمی‌آورد؛ ارقام فارسی هم پشتیبانی می‌شود."""
+    t = (name or "").translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
+    m = re.search(r"(\d+)\s*(?:گیگ|GB|gb|G)", t)
+    return int(m.group(1)) if m else None
+
+
+def recommend_plan(usage, purpose, users):
+    """بهترین پلن را از جدول Service پیشنهاد می‌دهد؛ None اگر پلنی نباشد."""
+    target = _PK_USAGE[usage][1]
+    if purpose == "f":
+        target = max(target, 50)
+    if users == "2":
+        target = int(target * 1.5)
+    with SessionLocal() as s:
+        active = {c.key for c in s.query(Category).filter(Category.is_active.is_(True)).all()}
+        plans = [
+            (r.id, r.category, r.name, r.price)
+            for r in s.query(Service).order_by(Service.id).all()
+            if r.category in active
+        ]
+    if not plans:
+        return None
+    if purpose == "g" and any(p[1] == "gaming" for p in plans):
+        pool = [p for p in plans if p[1] == "gaming"]
+    elif purpose == "t" and usage == "l" and any(p[1] == "economic" for p in plans):
+        pool = [p for p in plans if p[1] == "economic"]
+    else:
+        pool = [p for p in plans if p[1] != "gaming"] or plans
+    if users == "2":  # پلن چندکاربره/نامحدود اگر هست ترجیح دارد
+        multi = [p for p in pool if re.search(r"کاربر|نامحدود", p[2] or "")]
+        pool = multi or pool
+    sized = [(p, _plan_gb(p[2])) for p in pool]
+    known = [(p, g) for p, g in sized if g is not None]
+    if not known:
+        return min(pool, key=lambda p: p[3])
+    ok = [(p, g) for p, g in known if g >= target]
+    chosen = min(ok, key=lambda x: (x[1], x[0][3]))[0] if ok else max(known, key=lambda x: x[1])[0]
+    return chosen
+
+
+@dp.callback_query(F.data == "pk_start")
+async def pick_start(call: types.CallbackQuery):
+    await call.answer()
+    b = InlineKeyboardButton
+    rows = [[b(text=lbl, callback_data=f"pk_1_{k}")] for k, (lbl, _g) in _PK_USAGE.items()]
+    rows.append([b(text="⬅️ بازگشت به لیست پلن‌ها", callback_data="main_buy")])
+    await edit_or_send(
+        call,
+        "🤔 <b>راهنمای انتخاب پلن</b> | سؤال ۱ از ۳\n\nمعمولاً چقدر از اینترنت استفاده می‌کنید؟",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@dp.callback_query(F.data.startswith("pk_1_"))
+async def pick_step_purpose(call: types.CallbackQuery):
+    usage = call.data.split("_")[2]
+    if usage not in _PK_USAGE:
+        await call.answer()
+        return
+    await call.answer()
+    b = InlineKeyboardButton
+    rows = [[b(text=lbl, callback_data=f"pk_2_{usage}_{k}")] for k, lbl in _PK_PURPOSE.items()]
+    rows.append([b(text="⬅️ مرحله قبل", callback_data="pk_start")])
+    await edit_or_send(
+        call,
+        "🤔 <b>راهنمای انتخاب پلن</b> | سؤال ۲ از ۳\n\nبیشتر برای چه کاری استفاده می‌کنید؟",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@dp.callback_query(F.data.startswith("pk_2_"))
+async def pick_step_users(call: types.CallbackQuery):
+    parts = call.data.split("_")
+    if len(parts) != 4 or parts[2] not in _PK_USAGE or parts[3] not in _PK_PURPOSE:
+        await call.answer()
+        return
+    await call.answer()
+    usage, purpose = parts[2], parts[3]
+    b = InlineKeyboardButton
+    rows = [[b(text=lbl, callback_data=f"pk_3_{usage}_{purpose}_{k}")] for k, lbl in _PK_USERS.items()]
+    rows.append([b(text="⬅️ مرحله قبل", callback_data=f"pk_1_{usage}")])
+    await edit_or_send(
+        call,
+        "🤔 <b>راهنمای انتخاب پلن</b> | سؤال ۳ از ۳\n\nسرویس را چند نفر استفاده می‌کنند؟",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@dp.callback_query(F.data.startswith("pk_3_"))
+async def pick_result(call: types.CallbackQuery):
+    parts = call.data.split("_")
+    if len(parts) != 5 or parts[2] not in _PK_USAGE or parts[3] not in _PK_PURPOSE or parts[4] not in _PK_USERS:
+        await call.answer()
+        return
+    await call.answer()
+    usage, purpose, users = parts[2], parts[3], parts[4]
+    plan = recommend_plan(usage, purpose, users)
+    b = InlineKeyboardButton
+    if plan is None:
+        await edit_or_send(
+            call, "فعلاً پلنی برای پیشنهاد ثبت نشده است.",
+            InlineKeyboardMarkup(inline_keyboard=[[b(text="🏠 منوی اصلی", callback_data="main_menu")]]),
+        )
+        return
+    sid, cat, name, price = plan
+    total, _parts = discount_breakdown(call.from_user.id)
+    final = price_with_percent(price, total)
+    price_txt = f"<s>{price:,}</s> {ARROW} <b>{final:,}</b> تومان" if final != price else f"<b>{price:,}</b> تومان"
+    out = (
+        "✅ <b>پلن پیشنهادی ما برای شما</b>\n\n"
+        f"📊 مصرف: {_PK_USAGE[usage][0]}\n🎯 کاربرد: {_PK_PURPOSE[purpose]}\n👥 تعداد: {_PK_USERS[users]}\n\n"
+        f"📦 <b>{esc(cat_label(cat))} - {esc(name)}</b>\n💰 {price_txt}"
+    )
+    if sid == bestseller_id():
+        out += "\n⭐ این پلن پرفروش‌ترین پلن ماست."
+    rows = [
+        [b(text=f"🛒 خرید همین پلن — {final:,} تومان", callback_data=f"buy_{sid}")],
+        [b(text="🔁 دوباره پرسیدن", callback_data="pk_start"), b(text="📋 همه پلن‌ها", callback_data="main_buy")],
+    ]
+    await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @dp.callback_query(F.data == "use_code")
@@ -1895,8 +2083,8 @@ async def receipt_handler(message: types.Message, state: FSMContext):
     )
 
 
-@dp.message(PaymentState.waiting_for_receipt, ~F.text.in_(MENU_TEXTS))
-@dp.message(PaymentState.waiting_for_charge_receipt, ~F.text.in_(MENU_TEXTS))
+@dp.message(PaymentState.waiting_for_receipt, ~F.photo, ~F.text.in_(MENU_TEXTS))
+@dp.message(PaymentState.waiting_for_charge_receipt, ~F.photo, ~F.text.in_(MENU_TEXTS))
 async def receipt_not_photo(message: types.Message):
     await message.answer("لطفاً رسید را به صورت عکس (اسکرین‌شات) ارسال کنید.")
 
@@ -2160,6 +2348,7 @@ async def view_config_detail_handler(call: types.CallbackQuery):
     rows = []
     if sid:
         rows.append([b(text="🔄 تمدید این سرویس", callback_data=f"renew_{cfg_id}")])
+        rows.append([b(text="🛒 همین پلن رو دوباره بگیر (سرویس جدید)", callback_data=f"rebuy_{cfg_id}")])
     if LINK_RE.search(details or ""):
         rows.append([b(text="📷 نمایش QR کد", callback_data=f"cfg_qr_{cfg_id}")])
     rows.append(
