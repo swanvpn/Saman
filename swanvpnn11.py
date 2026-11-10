@@ -4,13 +4,18 @@ import io
 import json
 import logging
 import hashlib
+import hmac
+import ipaddress
 import os
 import random
 import re
+import secrets
+import socket
 import time
 import traceback
+import weakref
 from datetime import date, datetime, timedelta, timezone
-from urllib.parse import quote
+from urllib.parse import quote, urljoin, urlsplit
 
 import jdatetime
 from aiohttp import ClientSession, ClientTimeout, web
@@ -32,6 +37,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, types
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
@@ -86,12 +92,35 @@ else:
 
 Base = declarative_base()
 SessionLocal = sessionmaker(bind=engine)
-from aiogram.dispatcher.event.bases import SkipHandler
 
 dp = Dispatcher(storage=MemoryStorage())
 
 esc = html.escape
 ARROW = "⬅️"  # جهت فلش: از قیمت اصلی به قیمت تخفیف‌خورده (متن راست‌به‌چپ)
+
+# تسک‌های پس‌زمینه باید ارجاع قوی داشته باشند، وگرنه ممکن است وسط اجرا توسط GC حذف شوند.
+_bg_tasks = set()
+
+
+def spawn(coro):
+    """اجرای امن تسک پس‌زمینه (fire-and-forget) با نگه‌داشتن ارجاع."""
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return task
+
+
+# قفل سبک برای هر کاربر؛ جلوی ثبت دوباره‌ی سفارش با کلیک/ارسال همزمان را می‌گیرد.
+_user_locks = weakref.WeakValueDictionary()
+
+
+def user_lock(user_id):
+    lock = _user_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _user_locks[user_id] = lock
+    return lock
+
 
 BTN_BUY = "🛒 خرید سرویس"
 BTN_MY = "📦 سرویس‌های من"
@@ -103,6 +132,7 @@ MENU_TEXTS = {BTN_BUY, BTN_MY, BTN_TARIFFS, BTN_WALLET, BTN_ACCOUNT, BTN_SUPPORT
 
 CATEGORY_LABELS = {"economic": "اقتصادی", "vip": "VIP", "gaming": "گیمینگ"}
 MAX_DISCOUNT = 90
+MAX_BALANCE = 1_000_000_000  # ستون Integer در Postgres ۳۲ بیتی است؛ سقف امن
 
 
 # ---------------------------------------------------------------------------
@@ -708,6 +738,23 @@ def _migrate_columns():
             for name, ddl in cols.items():
                 if name not in existing:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+
+    # ایندکس‌ها برای کوئری‌های پرتکرار (روی جدول‌های قدیمی هم اعمال می‌شود)
+    indexes = (
+        ("ix_user_configs_user_id", "user_configs", "user_id"),
+        ("ix_requests_user_id", "requests", "user_id"),
+        ("ix_requests_status", "requests", "status"),
+        ("ix_code_uses_code_user", "code_uses", "code_id, user_id"),
+        ("ix_receipt_hashes_sha256", "receipt_hashes", "sha256"),
+        ("ix_receipt_hashes_unique_id", "receipt_hashes", "unique_id"),
+        ("ix_ticket_messages_ticket_id", "ticket_messages", "ticket_id"),
+    )
+    for name, table, cols in indexes:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({cols})"))
+        except Exception as e:  # noqa: BLE001
+            logging.warning("index %s skipped: %s", name, e)
 
     if engine.dialect.name == "postgresql":
         for table in ("users", "requests", "user_configs"):
@@ -1350,7 +1397,7 @@ class AccessMiddleware(BaseMiddleware):
                         _bind_referral(user.id, event.text.split(" ", 1)[1].strip())
                     await send_join_prompt(event)
                     return None
-            asyncio.create_task(_react(event))
+            spawn(_react(event))
         return await handler(event, data)
 
 
@@ -1754,12 +1801,27 @@ async def use_code_handler(call: types.CallbackQuery, state: FSMContext):
     await edit_or_send(call, "🏷 کد تخفیف خود را وارد کنید:")
 
 
+_code_failures = {}  # user_id -> [زمان تلاش‌های ناموفق]
+CODE_MAX_FAILS, CODE_WINDOW = 5, 600
+
+
 @dp.message(PaymentState.waiting_for_code, ~F.text.in_(MENU_TEXTS))
 async def code_entered_handler(message: types.Message, state: FSMContext):
+    uid = message.from_user.id
+    now = time.time()
+    recent = [t for t in _code_failures.get(uid, []) if now - t < CODE_WINDOW]
+    if len(recent) >= CODE_MAX_FAILS:
+        _code_failures[uid] = recent
+        await message.answer("⛔ تلاش‌های ناموفق زیاد بود. چند دقیقه دیگر دوباره امتحان کنید.")
+        return
     with SessionLocal() as s:
-        dc, err = validate_code(s, message.text or "", message.from_user.id)
+        dc, err = validate_code(s, message.text or "", uid)
         code = dc.code if dc else None
     if code is None:
+        recent.append(now)
+        _code_failures[uid] = recent
+        if len(_code_failures) > 5000:
+            _code_failures.clear()
         await message.answer(f"❌ {err}\nدوباره وارد کنید یا از منوی پایین خارج شوید.")
         return
     await state.update_data(code=code)
@@ -1839,8 +1901,8 @@ async def pay_with_wallet_handler(call: types.CallbackQuery, state: FSMContext):
         req_id, req_type = req.id, req.req_type
         s.commit()
 
+    await state.clear()  # قبل از هر await شبکه‌ای، تا کلیک دوباره سفارش تکراری نسازد
     await call.answer()
-    await state.clear()
     await edit_or_send(
         call,
         fill_text("t_wallet_paid") + "\n\n" + pending_notice(),
@@ -1903,6 +1965,9 @@ async def receipt_fingerprint(bot, photo):
     """(file_unique_id, sha256 محتوای عکس) برای تشخیص رسید تکراری."""
     uniq = getattr(photo, "file_unique_id", None)
     digest = None
+    size = getattr(photo, "file_size", None)
+    if size and size > 10 * 1024 * 1024:  # از دانلود فایل‌های حجیم برای هش صرف‌نظر می‌شود
+        return uniq, None
     try:
         buf = io.BytesIO()
         await bot.download(photo.file_id, destination=buf)
@@ -2046,18 +2111,18 @@ async def receipt_router(message: types.Message, state: FSMContext):
     if message.text and message.text in MENU_TEXTS:
         raise SkipHandler()
     if has_receipt_media(message):
-        if cur == PaymentState.waiting_for_charge_receipt.state:
-            await process_charge_receipt_handler(message, state)
-        else:
-            await receipt_handler(message, state)
+        async with user_lock(message.from_user.id):
+            cur = await state.get_state()
+            if cur is None:  # عکس دوم آلبوم/ارسال همزمان: سفارش قبلاً ثبت شده
+                return
+            if cur == PaymentState.waiting_for_charge_receipt.state:
+                await process_charge_receipt_handler(message, state)
+            else:
+                await receipt_handler(message, state)
         return
     if message.document:
         await message.answer("رسید رو به‌صورت «عکس» بفرست (فایل تصویری هم قبوله، PDF نه) 📸")
         return
-    if is_staff(message.from_user.id):
-        await message.answer(
-            f"🛠 debug [{BUILD_TAG}] type={message.content_type} state={cur}"
-        )
     await message.answer("عکس رسیدت رو همینجا بفرست، خودم می‌رسم بهش 🙌")
 
 
@@ -3357,12 +3422,18 @@ async def process_balance_adjustment(message: types.Message, state: FSMContext):
         await message.answer("مقدار وارد شده نامعتبر است. لطفاً فقط عدد وارد کنید.")
         return
     amount = int(raw)
+    if amount > MAX_BALANCE:
+        await message.answer(f"مبلغ بیش از حد مجاز است (حداکثر {MAX_BALANCE:,} تومان).")
+        return
 
     with SessionLocal() as s:
         user = get_or_create_user(s, uid)
         current = user.balance or 0
         if mode == "baladd":
             new_balance = current + amount
+            if new_balance > MAX_BALANCE:
+                await message.answer(f"موجودی نهایی نباید از {MAX_BALANCE:,} تومان بیشتر شود.")
+                return
         elif mode == "balsub":
             if amount > current:
                 await message.answer(f"مبلغ بیشتر از موجودی فعلی ({current:,}) است.")
@@ -3375,6 +3446,15 @@ async def process_balance_adjustment(message: types.Message, state: FSMContext):
 
     await state.clear()
     log_action(message.from_user.id, f"تغییر موجودی کاربر {uid}: {current:,} -> {new_balance:,}")
+    if not is_main(message.from_user.id):  # هر تغییر موجودی توسط ادمین فرعی به ادمین اصلی اطلاع داده می‌شود
+        try:
+            await message.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"⚠️ ادمین فرعی <code>{message.from_user.id}</code> موجودی کاربر <code>{uid}</code> را "
+                f"از {current:,} به {new_balance:,} تومان تغییر داد.",
+            )
+        except Exception:  # noqa: BLE001
+            pass
     await message.answer(
         f"✅ موجودی کاربر <code>{uid}</code> از {current:,} به {new_balance:,} تغییر یافت.",
         reply_markup=get_admin_main_keyboard(message.from_user.id),
@@ -4545,7 +4625,7 @@ async def broadcast_now(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
     await state.clear()
     await edit_or_send(call, "⏳ ارسال پیام همگانی آغاز شد؛ پس از اتمام گزارش می‌آید.")
-    asyncio.create_task(
+    spawn(
         _broadcast_and_report(
             call.bot, call.message.chat.id, data["bc_chat"], data["bc_msg"], data.get("bc_seg", "all"),
             call.from_user.id,
@@ -4707,7 +4787,7 @@ async def chpost_now(call: types.CallbackQuery):
 @dp.callback_query(F.data.in_({"outage_send", "recovery_send"}), MainAdmin())
 async def manual_outage_send(call: types.CallbackQuery):
     down = call.data == "outage_send"
-    asyncio.create_task(broadcast_text(call.bot, outage_message(down)))
+    spawn(broadcast_text(call.bot, outage_message(down)))
     log_action(call.from_user.id, "ارسال دستی اعلان " + ("قطعی" if down else "وصل شدن"))
     await call.answer("ارسال برای همه کاربران آغاز شد.", show_alert=True)
 
@@ -6093,7 +6173,7 @@ async def flash_announce(call: types.CallbackQuery):
         f"⏳ فقط {fmt_remaining(left)} فرصت دارید.\n\n"
         f"🛒 همین الان از ربات خرید کنید: @{BOT_USERNAME}"
     )
-    asyncio.create_task(broadcast_text(call.bot, text_))
+    spawn(broadcast_text(call.bot, text_))
     log_action(call.from_user.id, "اعلان تخفیف زمان‌دار برای همه کاربران")
     await call.answer("ارسال برای همه کاربران آغاز شد.", show_alert=True)
 
@@ -6109,8 +6189,30 @@ async def flash_stop(call: types.CallbackQuery):
 
 
 # --- تأیید دومرحله‌ای (کد تصادفی یا PIN) برای کارهای حساس ---
+_PIN_ITERATIONS = 200_000
+
+
 def pin_hash(pin):
-    return hashlib.sha256(f"{TOKEN}:{pin}".encode()).hexdigest()
+    """هش PBKDF2 با salt تصادفی (قابل‌حمل؛ به BOT_TOKEN وابسته نیست)."""
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", str(pin).encode(), bytes.fromhex(salt), _PIN_ITERATIONS).hex()
+    return f"pbkdf2${_PIN_ITERATIONS}${salt}${digest}"
+
+
+def pin_matches(pin, stored):
+    stored = (stored or "").strip()
+    if not stored:
+        return False
+    if stored.startswith("pbkdf2$"):
+        try:
+            _, iters, salt, digest = stored.split("$")
+            calc = hashlib.pbkdf2_hmac("sha256", str(pin).encode(), bytes.fromhex(salt), int(iters)).hex()
+        except ValueError:
+            return False
+        return hmac.compare_digest(calc, digest)
+    # فرمت قدیمی (SHA-256 ساده)؛ بعد از ورود موفق به فرمت جدید ارتقا داده می‌شود.
+    legacy = hashlib.sha256(f"{TOKEN}:{pin}".encode()).hexdigest()
+    return hmac.compare_digest(legacy, stored)
 
 
 def pin_is_set():
@@ -6121,7 +6223,7 @@ async def two_step_gate(call, state, action, arg=""):
     """اگر تأیید دومرحله‌ای روشن باشد، درخواست کد/PIN می‌کند و True برمی‌گرداند (عملیات منتظر می‌ماند)."""
     if not get_bool("twostep_on"):
         return False
-    code = str(random.randint(10000, 99999))
+    code = str(secrets.randbelow(90000) + 10000)
     await state.set_state(PaymentState.confirm_code)
     await state.update_data(cf_action=action, cf_arg=str(arg), cf_code=code, cf_tries=0)
     if pin_is_set():
@@ -6199,7 +6301,10 @@ async def two_step_check(message: types.Message, state: FSMContext):
     data = await state.get_data()
     entered = (message.text or "").translate(DIGITS_FA).strip()
     if pin_is_set():
-        ok = pin_hash(entered) == get_setting("admin_pin_hash").strip()
+        stored_pin = get_setting("admin_pin_hash").strip()
+        ok = pin_matches(entered, stored_pin)
+        if ok and not stored_pin.startswith("pbkdf2$"):
+            set_setting("admin_pin_hash", pin_hash(entered))  # ارتقای هش قدیمی
         try:
             await message.delete()  # PIN در چت نماند
         except Exception:  # noqa: BLE001
@@ -7035,7 +7140,7 @@ async def announce_outage(bot, down, bad_urls=None):
     else:
         await notify_staff(bot, "🟢 <b>مانیتور: سرورها دوباره در دسترس‌اند.</b>")
     if get_bool("monitor_notify_users"):
-        asyncio.create_task(broadcast_text(bot, outage_message(down)))
+        spawn(broadcast_text(bot, outage_message(down)))
 
 
 async def monitor_loop(bot):
@@ -7183,7 +7288,7 @@ async def job_scheduled_broadcasts(bot):
             due.append((x.id, x.segment, x.chat_id, x.message_id, x.created_by))
         s.commit()
     for bid, seg, chat_id, msg_id, admin_id in due:
-        asyncio.create_task(_run_scheduled_broadcast(bot, bid, seg, chat_id, msg_id, admin_id))
+        spawn(_run_scheduled_broadcast(bot, bid, seg, chat_id, msg_id, admin_id))
 
 
 async def job_pending_reminder(bot):
@@ -7248,6 +7353,46 @@ def parse_userinfo(raw):
     return vals
 
 
+async def _url_is_public(url):
+    """فقط آدرس‌های http(s) که به IP عمومی می‌رسند مجازند (جلوگیری از SSRF به شبکه داخلی/متادیتای کلود)."""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https") or not host:
+        return False
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        try:
+            if not ipaddress.ip_address(info[4][0].split("%")[0]).is_global:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def _apply_usage_response(res, body, info):
+    if not body.strip() and not info:
+        res["error"] = "پاسخ خالی"
+        return
+    res["ok"] = True
+    if info:
+        v = parse_userinfo(info)
+        res.update(
+            has_info=True,
+            used=v.get("upload", 0) + v.get("download", 0),
+            total=v.get("total", 0),
+            expire=v.get("expire", 0),
+        )
+
+
 async def fetch_usage(url, force=False, timeout=12):
     """{ok, error, has_info, used, total, expire} را از ساب‌لینک می‌خواند (با کش ۵ دقیقه‌ای)."""
     now = time.time()
@@ -7257,24 +7402,24 @@ async def fetch_usage(url, force=False, timeout=12):
     res = {"ok": False, "error": "", "has_info": False, "used": 0, "total": 0, "expire": 0}
     try:
         async with ClientSession(timeout=ClientTimeout(total=timeout)) as session:
-            async with session.get(url, headers={"User-Agent": "v2rayN/6.0"}, allow_redirects=True) as resp:
-                if resp.status != 200:
-                    res["error"] = f"HTTP {resp.status}"
-                else:
-                    body = await resp.content.read(65536)
-                    info = resp.headers.get("subscription-userinfo")
-                    if not body.strip() and not info:
-                        res["error"] = "پاسخ خالی"
+            current = url
+            for _hop in range(4):  # ریدایرکت‌ها دستی دنبال می‌شوند تا هر مقصد بررسی شود
+                if not await _url_is_public(current):
+                    res["error"] = "blocked"
+                    break
+                async with session.get(current, headers={"User-Agent": "v2rayN/6.0"}, allow_redirects=False) as resp:
+                    location = resp.headers.get("Location")
+                    if resp.status in (301, 302, 303, 307, 308) and location:
+                        current = urljoin(current, location)
+                        continue
+                    if resp.status != 200:
+                        res["error"] = f"HTTP {resp.status}"
                     else:
-                        res["ok"] = True
-                        if info:
-                            v = parse_userinfo(info)
-                            res.update(
-                                has_info=True,
-                                used=v.get("upload", 0) + v.get("download", 0),
-                                total=v.get("total", 0),
-                                expire=v.get("expire", 0),
-                            )
+                        body = await resp.content.read(65536)
+                        _apply_usage_response(res, body, resp.headers.get("subscription-userinfo"))
+                    break
+            else:
+                res["error"] = "too many redirects"
     except asyncio.TimeoutError:
         res["error"] = "timeout"
     except Exception as e:  # noqa: BLE001
@@ -7790,9 +7935,6 @@ async def pk_result(call: types.CallbackQuery):
 # ---------------------------------------------------------------------------
 # ویرایش دکمه‌های کیبورد پایین صفحه (فقط ادمین اصلی)
 # ---------------------------------------------------------------------------
-_bg_tasks = set()
-
-
 def kb_screen_view():
     b = InlineKeyboardButton
     out = (
@@ -7992,9 +8134,7 @@ async def _push_keyboard(bot, admin_chat):
 async def kb_push_go(call: types.CallbackQuery):
     await call.answer("ارسال شروع شد.", show_alert=True)
     log_action(call.from_user.id, "اعمال فوری کیبورد پایین برای همه")
-    task = asyncio.create_task(_push_keyboard(call.bot, call.message.chat.id))
-    _bg_tasks.add(task)
-    task.add_done_callback(_bg_tasks.discard)
+    spawn(_push_keyboard(call.bot, call.message.chat.id))
     await edit_or_send(call, *kb_screen_view())
 
 
@@ -8031,9 +8171,7 @@ async def scheduler(bot):
             await job_scheduled_broadcasts(bot)
             await job_channel_posts(bot)
             await job_pending_reminder(bot)
-            _t = asyncio.create_task(job_usage_alerts(bot))
-            _bg_tasks.add(_t)
-            _t.add_done_callback(_bg_tasks.discard)
+            spawn(job_usage_alerts(bot))
         except Exception as e:  # noqa: BLE001
             logging.error("scheduler error: %s", e)
             await report_error(bot, "زمان‌بند اصلی", e)
@@ -8094,6 +8232,11 @@ async def main():
     global BOT_USERNAME
     init_db()
     refresh_menu_texts()
+    if not database_url:
+        logging.warning(
+            "DATABASE_URL تنظیم نشده؛ از SQLite محلی استفاده می‌شود. روی هاست‌های بدون دیسک پایدار "
+            "(مثل Render رایگان) با هر دیپلوی اطلاعات پاک می‌شود."
+        )
     from aiogram.client.session.aiohttp import AiohttpSession
 
     bot = Bot(
