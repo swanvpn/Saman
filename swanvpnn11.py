@@ -1899,11 +1899,9 @@ async def short_charge_handler(call: types.CallbackQuery, state: FSMContext):
 
 async def receipt_fingerprint(bot, photo):
     """(file_unique_id, sha256 محتوای عکس) برای تشخیص رسید تکراری."""
-    uniq = photo.file_unique_id
+    uniq = getattr(photo, "file_unique_id", None)
     digest = None
     try:
-        import hashlib
-
         buf = io.BytesIO()
         await bot.download(photo.file_id, destination=buf)
         digest = hashlib.sha256(buf.getvalue()).hexdigest()
@@ -1936,6 +1934,36 @@ def save_receipt_fingerprint(session, uniq, digest, user_id, req_id):
     )
 
 
+IMG_RECEIPT = F.photo | (F.document & F.document.mime_type.startswith("image/"))
+
+
+def receipt_media(message: types.Message):
+    """آبجکت فایل رسید (عکس یا فایل تصویری)."""
+    if message.photo:
+        return message.photo[-1]
+    return message.document
+
+
+def safe_find_duplicate(s, uniq, digest):
+    try:
+        return find_duplicate_receipt(s, uniq, digest)
+    except Exception as e:  # noqa: BLE001
+        logging.exception("duplicate check failed: %s", e)
+        try:
+            s.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+
+def safe_save_fingerprint(s, uniq, digest, user_id, req_id):
+    try:
+        with s.begin_nested():
+            save_receipt_fingerprint(s, uniq, digest, user_id, req_id)
+    except Exception as e:  # noqa: BLE001
+        logging.exception("save fingerprint failed: %s", e)
+
+
 async def handle_duplicate_receipt(message: types.Message, dup):
     prev_req, prev_user = dup
     await message.answer(
@@ -1950,7 +1978,7 @@ async def handle_duplicate_receipt(message: types.Message, dup):
     )
 
 
-@dp.message(PaymentState.waiting_for_receipt, F.photo)
+@dp.message(PaymentState.waiting_for_receipt, IMG_RECEIPT)
 async def receipt_handler(message: types.Message, state: FSMContext):
     data = await state.get_data()
     co = compute_checkout(message.from_user.id, data)
@@ -1960,12 +1988,14 @@ async def receipt_handler(message: types.Message, state: FSMContext):
         return
 
     user_id = message.from_user.id
-    photo_id = message.photo[-1].file_id
-    uniq, digest = await receipt_fingerprint(message.bot, message.photo[-1])
+    media = receipt_media(message)
+    photo_id = media.file_id
+    logging.info("receipt received from %s", user_id)
+    uniq, digest = await receipt_fingerprint(message.bot, media)
     dup = None
     with SessionLocal() as s:
         get_or_create_user(s, user_id)
-        dup = find_duplicate_receipt(s, uniq, digest)
+        dup = safe_find_duplicate(s, uniq, digest)
         if dup is None:
             try:
                 req = build_request(s, user_id, co, False, photo_id)
@@ -1974,7 +2004,7 @@ async def receipt_handler(message: types.Message, state: FSMContext):
                 return
             if data.get("pay_base") == co["final"] and data.get("pay_amount"):
                 req.pay_amount = int(data["pay_amount"])
-            save_receipt_fingerprint(s, uniq, digest, user_id, req.id)
+            safe_save_fingerprint(s, uniq, digest, user_id, req.id)
             req_id, req_type, pay_amt = req.id, req.req_type, req.pay_amount
             s.commit()
     if dup is not None:
@@ -1996,6 +2026,9 @@ async def receipt_handler(message: types.Message, state: FSMContext):
 @dp.message(PaymentState.waiting_for_receipt, ~F.text.in_(MENU_TEXTS))
 @dp.message(PaymentState.waiting_for_charge_receipt, ~F.text.in_(MENU_TEXTS))
 async def receipt_not_photo(message: types.Message):
+    if message.document:
+        await message.answer("رسید رو به‌صورت «عکس» بفرست (فایل تصویری هم قبوله، PDF نه) 📸")
+        return
     await message.answer("عکس رسیدت رو همینجا بفرست، خودم می‌رسم بهش 🙌")
 
 
@@ -2117,7 +2150,7 @@ async def prompt_charge_receipt_handler(call: types.CallbackQuery, state: FSMCon
     await edit_or_send(call, "عکس رسید واریزیت رو همینجا بفرست، خودم می‌رسم بهش 🙌")
 
 
-@dp.message(PaymentState.waiting_for_charge_receipt, F.photo)
+@dp.message(PaymentState.waiting_for_charge_receipt, IMG_RECEIPT)
 async def process_charge_receipt_handler(message: types.Message, state: FSMContext):
     data = await state.get_data()
     amount = data.get("charge_amount", 0)
@@ -2127,12 +2160,14 @@ async def process_charge_receipt_handler(message: types.Message, state: FSMConte
         return
 
     user_id = message.from_user.id
-    photo_id = message.photo[-1].file_id
-    uniq, digest = await receipt_fingerprint(message.bot, message.photo[-1])
+    media = receipt_media(message)
+    photo_id = media.file_id
+    logging.info("receipt received from %s", user_id)
+    uniq, digest = await receipt_fingerprint(message.bot, media)
     dup = None
     with SessionLocal() as s:
         get_or_create_user(s, user_id)
-        dup = find_duplicate_receipt(s, uniq, digest)
+        dup = safe_find_duplicate(s, uniq, digest)
         if dup is None:
             req = Request(
                 user_id=user_id, req_type="charge", plan_name="شارژ کیف پول", status="unanswered",
@@ -2142,7 +2177,7 @@ async def process_charge_receipt_handler(message: types.Message, state: FSMConte
             )
             s.add(req)
             s.flush()
-            save_receipt_fingerprint(s, uniq, digest, user_id, req.id)
+            safe_save_fingerprint(s, uniq, digest, user_id, req.id)
             req_id, pay_amt = req.id, req.pay_amount
             s.commit()
     if dup is not None:
