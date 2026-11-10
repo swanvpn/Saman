@@ -34,6 +34,7 @@ from sqlalchemy import (
     or_,
     text,
 )
+from sqlalchemy import event as sa_event
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, types
@@ -92,6 +93,34 @@ else:
 
 Base = declarative_base()
 SessionLocal = sessionmaker(bind=engine)
+
+
+# --- ابزار تشخیص کندی: کوئری‌های کند در لاگ ثبت می‌شوند ---
+SLOW_QUERY_MS = 150
+
+
+@sa_event.listens_for(engine, "before_cursor_execute")
+def _query_start(conn, cursor, statement, parameters, context, executemany):
+    conn.info.setdefault("_qstart", []).append(time.perf_counter())
+
+
+@sa_event.listens_for(engine, "after_cursor_execute")
+def _query_end(conn, cursor, statement, parameters, context, executemany):
+    starts = conn.info.get("_qstart")
+    if starts:
+        ms = (time.perf_counter() - starts.pop()) * 1000
+        if ms > SLOW_QUERY_MS:
+            logging.warning("SLOW QUERY %.0fms: %s", ms, " ".join(statement.split())[:140])
+
+
+def measure_db_latency(rounds=5):
+    """میانگین زمان رفت‌وبرگشت به دیتابیس (میلی‌ثانیه)."""
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))  # اتصال اولیه
+        t0 = time.perf_counter()
+        for _ in range(rounds):
+            conn.execute(text("SELECT 1"))
+        return (time.perf_counter() - t0) * 1000 / rounds
 
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -1431,6 +1460,32 @@ class AccessMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
+class TimingMiddleware(BaseMiddleware):
+    """هر پردازشی که بیش از ۱ ثانیه طول بکشد را با نام دکمه/پیام در لاگ می‌نویسد."""
+
+    async def __call__(self, handler, event, data):
+        t0 = time.perf_counter()
+        try:
+            return await handler(event, data)
+        finally:
+            ms = (time.perf_counter() - t0) * 1000
+            if ms > 1000:
+                label = getattr(event, "data", None) or (getattr(event, "text", None) or "")[:30] or type(event).__name__
+                logging.warning("SLOW HANDLER %.0fms: %s", ms, label)
+
+
+async def loop_lag_monitor():
+    """اگر حلقهٔ asyncio بیش از نیم‌ثانیه بلاک شود (کار سنگین همگام)، گزارش می‌دهد."""
+    while True:
+        t0 = time.perf_counter()
+        await asyncio.sleep(1)
+        lag = (time.perf_counter() - t0 - 1) * 1000
+        if lag > 500:
+            logging.warning("EVENT LOOP BLOCKED ~%.0fms", lag)
+
+
+dp.message.outer_middleware(TimingMiddleware())
+dp.callback_query.outer_middleware(TimingMiddleware())
 dp.message.outer_middleware(AccessMiddleware())
 dp.callback_query.outer_middleware(AccessMiddleware())
 
@@ -8286,6 +8341,10 @@ async def main():
     global BOT_USERNAME
     init_db()
     refresh_menu_texts()
+    try:
+        logging.info("DB round-trip: %.0f ms (زیر ۳۰ عالی، بالای ۱۰۰ یعنی دیتابیس دور است)", await asyncio.to_thread(measure_db_latency))
+    except Exception as e:  # noqa: BLE001
+        logging.warning("DB latency check failed: %s", e)
     if not database_url:
         logging.warning(
             "DATABASE_URL تنظیم نشده؛ از SQLite محلی استفاده می‌شود. روی هاست‌های بدون دیسک پایدار "
@@ -8317,6 +8376,7 @@ async def main():
         asyncio.create_task(scheduler(bot)),
         asyncio.create_task(keepalive()),
         asyncio.create_task(monitor_loop(bot)),
+        asyncio.create_task(loop_lag_monitor()),
     ]
     logging.info("BUILD %s", BUILD_TAG)
     logging.info("Bot @%s is running; web server on port %s", BOT_USERNAME, port)
