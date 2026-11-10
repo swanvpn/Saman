@@ -2187,7 +2187,7 @@ async def receipt_handler(message: types.Message, state: FSMContext):
     )
 
 
-BUILD_TAG = "growth-pack-v12"
+BUILD_TAG = "growth-pack-v12b"
 
 
 def has_receipt_media(message: types.Message) -> bool:
@@ -7778,6 +7778,7 @@ async def _finish_config_delivery(bot, chat_id, admin_id, state, config_text, no
             await bot.send_message(chat_id=chat_id, text="این درخواست قبلاً بررسی شده است.")
             return
         is_trial = r.req_type == "trial"
+        sale_req_type = r.req_type
         days = max(1, get_int("trial_days")) if is_trial else (r.custom_days or 30)
         end_date = start_date + timedelta(days=days)
         r.status = "answered"
@@ -7817,6 +7818,8 @@ async def _finish_config_delivery(bot, chat_id, admin_id, state, config_text, no
     except Exception as e:  # noqa: BLE001
         logging.error("Error notifying user about config delivery: %s", e)
     await post_purchase_notifications(bot, target_user_id, monthly_notif, reward)
+    if not is_trial:
+        spawn(post_sale_feed(bot, plan_name, sale_req_type))
     if not is_trial:
         await send_rating_request(bot, target_user_id, req_id)
 
@@ -8369,6 +8372,10 @@ DEFAULTS.update(
         "sms_on": "0",
         "sms_secret": "",
         "sms_window": "180",
+        # --- فید فروش در کانال ---
+        "salefeed_on": "0",
+        "salefeed_gap": "30",
+        "salefeed_text": "🔥 یک نفر همین الان پلن {plan} رو خرید ✅",
     }
 )
 
@@ -8416,6 +8423,9 @@ SETTINGS.update(
         "sms_on": dict(page="grow_c", type="toggle", label="تشخیص واریز با پیامک بانکی (وب‌هوک)"),
         "sms_secret": dict(page="grow_c", type="text", label="رمز آدرس وب‌هوک (فقط حروف و عدد انگلیسی)"),
         "sms_window": dict(page="grow_c", type="num", label="بازهٔ تطبیق پیامک با سفارش (دقیقه)", min=10, max=1440),
+        "salefeed_on": dict(page="chpost", type="toggle", label="اعلام خودکار فروش در کانال (ناشناس)"),
+        "salefeed_gap": dict(page="chpost", type="num", label="حداقل فاصلهٔ دو اعلام فروش (دقیقه)", min=0, max=1440),
+        "salefeed_text": dict(page="chpost", type="text", label="متن اعلام فروش ({plan})"),
     }
 )
 
@@ -8936,6 +8946,35 @@ async def job_growth_daily(bot):
             await fn(bot)
         except Exception as e:  # noqa: BLE001
             logging.error("growth daily %s failed: %s", fn.__name__, e)
+
+
+# ---------------------------------------------------------------------------
+# فید فروش ناشناس در کانال
+# ---------------------------------------------------------------------------
+_salefeed_last = 0.0
+
+
+async def post_sale_feed(bot, plan_name, req_type):
+    """بعد از تحویل یک خرید جدید، بدون نام کاربر در کانال اعلام می‌کند."""
+    global _salefeed_last
+    if req_type != "buy" or not get_bool("salefeed_on"):
+        return
+    try:
+        chat_id = channel_chat_id()
+    except ValueError:
+        return
+    now = time.time()
+    if now - _salefeed_last < max(0, get_int("salefeed_gap")) * 60:
+        return
+    _salefeed_last = now
+    text_ = (get_setting("salefeed_text") or DEFAULTS["salefeed_text"]).replace("{plan}", esc(plan_name or ""))
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🛒 خرید از ربات", url=f"https://t.me/{BOT_USERNAME}")]]
+    )
+    try:
+        await bot.send_message(chat_id=chat_id, text=text_, reply_markup=markup)
+    except Exception as e:  # noqa: BLE001
+        logging.warning("sale feed failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
