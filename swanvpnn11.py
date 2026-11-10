@@ -86,6 +86,8 @@ else:
 
 Base = declarative_base()
 SessionLocal = sessionmaker(bind=engine)
+from aiogram.dispatcher.event.bases import SkipHandler
+
 dp = Dispatcher(storage=MemoryStorage())
 
 esc = html.escape
@@ -1978,7 +1980,6 @@ async def handle_duplicate_receipt(message: types.Message, dup):
     )
 
 
-@dp.message(PaymentState.waiting_for_receipt, IMG_RECEIPT)
 async def receipt_handler(message: types.Message, state: FSMContext):
     data = await state.get_data()
     co = compute_checkout(message.from_user.id, data)
@@ -2023,12 +2024,40 @@ async def receipt_handler(message: types.Message, state: FSMContext):
     )
 
 
-@dp.message(PaymentState.waiting_for_receipt, ~F.text.in_(MENU_TEXTS))
-@dp.message(PaymentState.waiting_for_charge_receipt, ~F.text.in_(MENU_TEXTS))
-async def receipt_not_photo(message: types.Message):
+BUILD_TAG = "receipt-fix-r3"
+
+
+def has_receipt_media(message: types.Message) -> bool:
+    if message.photo:
+        return True
+    doc = message.document
+    return bool(doc and (doc.mime_type or "").startswith("image/"))
+
+
+@dp.message(PaymentState.waiting_for_receipt)
+@dp.message(PaymentState.waiting_for_charge_receipt)
+async def receipt_router(message: types.Message, state: FSMContext):
+    """همه پیام‌های مرحله رسید از اینجا رد می‌شوند و داخل تابع تصمیم‌گیری می‌شود."""
+    cur = await state.get_state()
+    logging.info(
+        "receipt_router user=%s state=%s type=%s photo=%s doc=%s",
+        message.from_user.id, cur, message.content_type, bool(message.photo), bool(message.document),
+    )
+    if message.text and message.text in MENU_TEXTS:
+        raise SkipHandler()
+    if has_receipt_media(message):
+        if cur == PaymentState.waiting_for_charge_receipt.state:
+            await process_charge_receipt_handler(message, state)
+        else:
+            await receipt_handler(message, state)
+        return
     if message.document:
         await message.answer("رسید رو به‌صورت «عکس» بفرست (فایل تصویری هم قبوله، PDF نه) 📸")
         return
+    if is_staff(message.from_user.id):
+        await message.answer(
+            f"🛠 debug [{BUILD_TAG}] type={message.content_type} state={cur}"
+        )
     await message.answer("عکس رسیدت رو همینجا بفرست، خودم می‌رسم بهش 🙌")
 
 
@@ -2150,7 +2179,6 @@ async def prompt_charge_receipt_handler(call: types.CallbackQuery, state: FSMCon
     await edit_or_send(call, "عکس رسید واریزیت رو همینجا بفرست، خودم می‌رسم بهش 🙌")
 
 
-@dp.message(PaymentState.waiting_for_charge_receipt, IMG_RECEIPT)
 async def process_charge_receipt_handler(message: types.Message, state: FSMContext):
     data = await state.get_data()
     amount = data.get("charge_amount", 0)
@@ -8093,6 +8121,7 @@ async def main():
         asyncio.create_task(keepalive()),
         asyncio.create_task(monitor_loop(bot)),
     ]
+    logging.info("BUILD %s", BUILD_TAG)
     logging.info("Bot @%s is running; web server on port %s", BOT_USERNAME, port)
     try:
         # اگر polling به‌خاطر خطای شبکه/Conflict افتاد، کل برنامه کرش نکند
