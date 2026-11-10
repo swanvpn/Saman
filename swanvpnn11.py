@@ -86,7 +86,7 @@ if database_url and database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
 
 if database_url:
-    engine = create_engine(database_url, pool_pre_ping=True)
+    engine = create_engine(database_url, pool_pre_ping=True, pool_recycle=240, pool_size=5, max_overflow=5)
 else:
     engine = create_engine("sqlite:///bot_data.db")
 
@@ -96,6 +96,14 @@ SessionLocal = sessionmaker(bind=engine)
 dp = Dispatcher(storage=MemoryStorage())
 
 esc = html.escape
+
+
+def err_text(exc, limit=300):
+    """متن کوتاه‌شدهٔ خطا برای ارسال در تلگرام (حد پیام ۴۰۹۶ کاراکتر است؛ خطای SQL می‌تواند بسیار بلند باشد)."""
+    text_ = str(exc)
+    if len(text_) > limit:
+        text_ = text_[:limit] + "…"
+    return html.escape(text_)
 ARROW = "⬅️"  # جهت فلش: از قیمت اصلی به قیمت تخفیف‌خورده (متن راست‌به‌چپ)
 
 # تسک‌های پس‌زمینه باید ارجاع قوی داشته باشند، وگرنه ممکن است وسط اجرا توسط GC حذف شوند.
@@ -1000,10 +1008,22 @@ def get_or_create_user(session, user_id):
     return user
 
 
+_ban_cache = {}  # user_id -> (is_banned, زمان)؛ هر پیام یک کوئری دیتابیس نمی‌زند
+BAN_CACHE_TTL = 30
+
+
 def is_banned(user_id):
+    now = time.time()
+    hit = _ban_cache.get(user_id)
+    if hit and now - hit[1] < BAN_CACHE_TTL:
+        return hit[0]
     with SessionLocal() as s:
         user = s.get(User, user_id)
-        return bool(user and user.is_banned)
+        banned = bool(user and user.is_banned)
+    if len(_ban_cache) > 5000:
+        _ban_cache.clear()
+    _ban_cache[user_id] = (banned, now)
+    return banned
 
 
 # ---------------------------------------------------------------------------
@@ -1330,8 +1350,15 @@ def admin_request_markup(req_id):
 # ---------------------------------------------------------------------------
 # میدل‌ور: ثبت کاربر، مسدودسازی، حالت تعمیر، ریاکشن
 # ---------------------------------------------------------------------------
+_user_seen = {}  # user_id -> (username, first_name, زمان آخرین ثبت)
+
+
 def touch_user(tg_user):
     """کاربر را ثبت/به‌روزرسانی می‌کند. اگر کاربر تازه ساخته شد True برمی‌گرداند."""
+    now = time.time()
+    hit = _user_seen.get(tg_user.id)
+    if hit and hit[0] == tg_user.username and hit[1] == tg_user.first_name and now - hit[2] < 600:
+        return False  # کاربر شناخته‌شده و بدون تغییر؛ نیازی به نوشتن در دیتابیس نیست
     try:
         with SessionLocal() as s:
             created = s.get(User, tg_user.id) is None
@@ -1339,7 +1366,10 @@ def touch_user(tg_user):
             u.username = tg_user.username
             u.first_name = tg_user.first_name
             s.commit()
-            return created
+        if len(_user_seen) > 5000:
+            _user_seen.clear()
+        _user_seen[tg_user.id] = (tg_user.username, tg_user.first_name, now)
+        return created
     except Exception as e:  # noqa: BLE001
         logging.warning("touch_user failed: %s", e)
         return False
@@ -3295,6 +3325,7 @@ async def toggle_ban_action(call: types.CallbackQuery):
         user.is_banned = not bool(user.is_banned)
         new_state = user.is_banned
         s.commit()
+    _ban_cache.pop(user_id, None)  # اعمال فوری بن/آزادسازی
     log_action(call.from_user.id, f"{'بن' if new_state else 'آزادسازی'} کاربر {user_id}")
     await call.answer("وضعیت کاربر تغییر یافت.", show_alert=True)
     await _render_user_management(call, user_id)
@@ -3505,7 +3536,7 @@ async def private_message_send(message: types.Message, state: FSMContext):
         await message.answer("✅ پیام ارسال شد.", reply_markup=get_admin_main_keyboard(message.from_user.id))
         log_action(message.from_user.id, f"پیام خصوصی به کاربر {uid}")
     except Exception as e:  # noqa: BLE001
-        await message.answer(f"❌ ارسال ناموفق بود: {esc(str(e))}")
+        await message.answer(f"❌ ارسال ناموفق بود: {err_text(e)}")
 
 
 @dp.callback_query(F.data.startswith("note_"), Perm("users"))
@@ -4214,7 +4245,7 @@ async def ticket_staff_reply_send(message: types.Message, state: FSMContext):
         await message.answer("✅ پاسخ ارسال شد.", reply_markup=get_admin_main_keyboard(message.from_user.id))
         log_action(message.from_user.id, f"پاسخ به تیکت #{tid}")
     except Exception as e:  # noqa: BLE001
-        await message.answer(f"❌ ارسال به کاربر ناموفق بود: {esc(str(e))}")
+        await message.answer(f"❌ ارسال به کاربر ناموفق بود: {err_text(e)}")
 
 
 @dp.callback_query(F.data.startswith("ticket_close_"), Staff())
@@ -6855,9 +6886,10 @@ async def _run_restore(bot, chat_id, admin_id, state):
         await asyncio.to_thread(apply_backup, payload)
         refresh_menu_texts()
     except Exception as e:  # noqa: BLE001
+        logging.exception("restore failed: %s", e)  # خطای کامل فقط در لاگ سرور
         await state.clear()
         await bot.send_message(
-            chat_id=chat_id, text=f"❌ بازیابی ناموفق بود (اطلاعات قبلی دست‌نخورده ماند): {esc(str(e))}"
+            chat_id=chat_id, text=f"❌ بازیابی ناموفق بود (اطلاعات قبلی دست‌نخورده ماند): {err_text(e)}"
         )
         return
     await state.clear()
@@ -6881,7 +6913,7 @@ async def backup_to_channel(call: types.CallbackQuery):
         log_action(call.from_user.id, "ارسال بکاپ به کانال")
         await call.message.answer("✅ بکاپ به کانال ارسال شد.")
     except Exception as e:  # noqa: BLE001
-        await call.message.answer(f"❌ ارسال ناموفق بود: {esc(str(e))}\nمطمئن شوید ربات در کانال «ادمین» است.")
+        await call.message.answer(f"❌ ارسال ناموفق بود: {err_text(e)}\nمطمئن شوید ربات در کانال «ادمین» است.")
 
 
 async def _do_sadmin_delete(target, rm):
@@ -6947,6 +6979,8 @@ def apply_backup(payload):
     with SessionLocal() as s:
         ensure_categories(s)
     _cache.clear()
+    _ban_cache.clear()
+    _user_seen.clear()
 
 
 async def send_backup(bot, chat_id, caption, data=None):
@@ -6983,7 +7017,7 @@ async def backup_now(call: types.CallbackQuery):
         await send_backup(call.bot, call.message.chat.id, f"🧰 بکاپ دستی - {get_current_jalali()}")
         log_action(call.from_user.id, "دریافت بکاپ دستی")
     except Exception as e:  # noqa: BLE001
-        await call.message.answer(f"❌ ساخت بکاپ ناموفق بود: {esc(str(e))}")
+        await call.message.answer(f"❌ ساخت بکاپ ناموفق بود: {err_text(e)}")
 
 
 @dp.callback_query(F.data == "backup_restore", MainAdmin())
@@ -7006,7 +7040,7 @@ async def backup_restore_file(message: types.Message, state: FSMContext):
         await message.bot.download(message.document.file_id, destination=buf)
         payload = parse_backup(buf.getvalue())
     except Exception as e:  # noqa: BLE001
-        await message.answer(f"❌ فایل نامعتبر است: {esc(str(e))}")
+        await message.answer(f"❌ فایل نامعتبر است: {err_text(e)}")
         return
 
     summary = "\n".join(f"• {name}: {len(rows)}" for name, rows in payload["tables"].items())
@@ -7101,7 +7135,7 @@ async def job_backup(bot):
             try:
                 await bot.send_message(
                     chat_id=ADMIN_ID,
-                    text=f"⚠️ ارسال بکاپ به کانال ناموفق بود: {esc(str(e))}\nمطمئن شوید ربات در کانال «ادمین» است.",
+                    text=f"⚠️ ارسال بکاپ به کانال ناموفق بود: {err_text(e)}\nمطمئن شوید ربات در کانال «ادمین» است.",
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -7277,7 +7311,7 @@ async def job_channel_posts(bot):
                 try:
                     await bot.send_message(
                         chat_id=ADMIN_ID,
-                        text=f"❌ پست خودکار کانال ناموفق بود: {esc(str(e))}\n"
+                        text=f"❌ پست خودکار کانال ناموفق بود: {err_text(e)}\n"
                         "مطمئن شوید ربات در کانال ادمین است و اجازه ارسال پیام دارد.",
                     )
                 except Exception:  # noqa: BLE001
