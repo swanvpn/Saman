@@ -3331,7 +3331,7 @@ async def _render_user_management(target, user_id: int):
         note = user.note or ""
         referred_by = user.referred_by
         configs = [
-            (c.id, c.config_name, c.expires_at)
+            (c.id, c.config_name, c.expires_at, c.config_details)
             for c in s.query(UserConfig).filter(UserConfig.user_id == user_id).all()
         ]
 
@@ -3347,20 +3347,17 @@ async def _render_user_management(target, user_id: int):
         out += f"🔗 دعوت‌شده توسط: <code>{referred_by}</code>\n"
     if note:
         out += f"📝 یادداشت: {esc(note)}\n"
-    out += "\n📦 <b>کانفیگ‌های فعال کاربر:</b>\n"
+    out += "\n📦 <b>سرویس‌های خریداری‌شده:</b> (برای دیدن مشخصات روی هر سرویس بزن)\n"
 
     keyboard = []
-    for cfg_id, cfg_name, exp in configs:
+    for cfg_id, cfg_name, exp, _cfg_details in configs[:40]:
         exp_txt = f" - تا {jalali_from_iso(exp)}" if exp else ""
-        out += f"🔹 {esc(cfg_name or '')}{exp_txt} (ID: {cfg_id})\n"
+        out += f"🔹 {esc(cfg_name or '')}{exp_txt}\n"
         keyboard.append(
-            [
-                InlineKeyboardButton(text=f"🗑 حذف #{cfg_id}", callback_data=f"del_cfg_user_{cfg_id}_{user_id}"),
-                InlineKeyboardButton(text=f"📅 تاریخ #{cfg_id}", callback_data=f"cfgexp_{cfg_id}_{user_id}"),
-            ]
+            [InlineKeyboardButton(text=f"📦 {(cfg_name or 'سرویس')[:40]} #{cfg_id}", callback_data=f"ucfg_{cfg_id}_{user_id}")]
         )
     if not configs:
-        out += "هیچ کانفیگ فعالی ندارد.\n"
+        out += "هیچ سرویسی ندارد.\n"
 
     b = InlineKeyboardButton
     keyboard.extend(
@@ -3404,6 +3401,108 @@ async def toggle_ban_action(call: types.CallbackQuery):
     log_action(call.from_user.id, f"{'بن' if new_state else 'آزادسازی'} کاربر {user_id}")
     await call.answer("وضعیت کاربر تغییر یافت.", show_alert=True)
     await _render_user_management(call, user_id)
+
+
+def _cfg_purchase_info(cfg_id, user_id, cfg_name):
+    """(تاریخ خرید, آخرین تمدید) از ثبت‌های ربات؛ برای سرویس‌های قدیمی از تاریخچه درخواست‌ها حدس زده می‌شود."""
+    bought = get_setting(f"cbuy_{cfg_id}") or ""
+    approx = False
+    last_renew = ""
+    with SessionLocal() as s:
+        renews = (
+            s.query(Request)
+            .filter(Request.config_id == cfg_id, Request.req_type == "renew", Request.status == "answered")
+            .order_by(Request.id.desc())
+            .all()
+        )
+        if renews:
+            last_renew = renews[0].answered_at or renews[0].created_at or ""
+        if not bought:
+            first = (
+                s.query(Request)
+                .filter(
+                    Request.user_id == user_id, Request.plan_name == cfg_name,
+                    Request.req_type.in_(["buy", "trial"]), Request.status == "answered",
+                )
+                .order_by(Request.id.asc())
+                .first()
+            )
+            if first is not None:
+                bought, approx = (first.answered_at or first.created_at or ""), True
+    return bought, approx, last_renew, len(renews) if renews else 0
+
+
+async def _render_user_config(call, cfg_id, user_id, fresh=True):
+    with SessionLocal() as s:
+        cfg = s.get(UserConfig, cfg_id)
+        if cfg is None:
+            await call.answer("این سرویس دیگه وجود نداره.", show_alert=True)
+            return
+        name, details, exp, sid = cfg.config_name, cfg.config_details, cfg.expires_at, cfg.service_id
+        svc = s.get(Service, sid) if sid else None
+        category = svc.category if svc is not None else ""
+        svc_name = svc.name if svc is not None else ""
+    bought, approx, last_renew, renew_n = _cfg_purchase_info(cfg_id, user_id, name)
+
+    out = f"📦 <b>{esc(name or svc_name or 'سرویس')}</b> (#{cfg_id})\n"
+    out += f"👤 کاربر: <code>{user_id}</code>\n"
+    if category or svc_name:
+        out += f"🏷 دسته/پلن: {esc(category or '')} {esc(svc_name or '')}\n".replace("  ", " ")
+    out += f"🛒 تاریخ خرید: {esc(bought) if bought else 'نامشخص'}{' (تقریبی)' if bought and approx else ''}\n"
+    if renew_n:
+        out += f"🔄 تمدید: {renew_n} بار | آخرین: {esc(last_renew)}\n"
+    if exp:
+        try:
+            left = (date.fromisoformat(exp) - today_iran()).days
+            left_txt = f" ({left} روز مانده)" if left >= 0 else f" (🔴 {abs(left)} روز گذشته)"
+        except ValueError:
+            left_txt = ""
+        out += f"📅 تاریخ انقضا: {jalali_from_iso(exp)}{left_txt}\n"
+    else:
+        out += "📅 تاریخ انقضا: ثبت نشده\n"
+
+    url = find_sub_url(details)
+    if url:
+        out += f"\n🔗 <b>ساب‌لینک:</b>\n<code>{esc(url)}</code>\n"
+        u = await fetch_usage(url, force=fresh)
+        out += "\n🩺 <b>وضعیت لینک:</b>\n"
+        if u.get("ok"):
+            out += "✅ سالم و پاسخگو\n"
+            lines = usage_lines(u)
+            out += lines if lines else "ℹ️ پنل اطلاعات حجم نداده است.\n"
+        else:
+            fails = get_int(f"ufail_{cfg_id}")
+            out += f"❌ <b>لینک خراب/بی‌پاسخ</b>: {esc(u.get('error') or '?')}\n"
+            if fails:
+                out += f"⚠️ {fails} بار پشت‌سرهم در بررسی خودکار ناموفق بوده.\n"
+            last_total = get_int(f"utotal_{cfg_id}")
+            if last_total > 0:
+                out += f"📊 آخرین حجم ثبت‌شده: {fmt_bytes(last_total)}\n"
+    else:
+        out += "\n🔗 <b>کانفیگ ارسالی:</b>\n"
+        out += f"<code>{esc((details or '').strip()[:800])}</code>\n" if details else "ثبت نشده\n"
+        out += "ℹ️ ساب‌لینک پیدا نشد، بررسی وضعیت ممکن نیست.\n"
+
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                b(text="🗑 حذف", callback_data=f"del_cfg_user_{cfg_id}_{user_id}"),
+                b(text="📅 تغییر تاریخ", callback_data=f"cfgexp_{cfg_id}_{user_id}"),
+            ],
+            [b(text="🔄 بررسی دوباره", callback_data=f"ucfg_{cfg_id}_{user_id}")],
+            [b(text="🔙 بازگشت به کاربر", callback_data=f"manage_user_{user_id}")],
+        ]
+    )
+    await edit_or_send(call, out, markup)
+
+
+@dp.callback_query(F.data.startswith("ucfg_"), Perm("users"))
+async def admin_user_config_detail(call: types.CallbackQuery, state: FSMContext):
+    await call.answer("در حال بررسی…")
+    await state.clear()
+    _, cfg_id, uid = call.data.split("_")
+    await _render_user_config(call, int(cfg_id), int(uid))
 
 
 @dp.callback_query(F.data.startswith("del_cfg_user_"), Perm("users"))
@@ -7663,6 +7762,47 @@ async def testsub_cmd(message: types.Message, command: CommandObject):
 _usage_job_running = False
 
 
+def _cfg_report_block(title, cid, sid, uid, u=None, url=None):
+    """بلوک کامل گزارش ادمین: کاربر، پلن، تاریخ خرید/انقضا، حجم، وضعیت و ساب‌لینک."""
+    lines = [title]
+    name = exp = ""
+    user_txt = f"<code>{uid}</code>"
+    plan = ""
+    try:
+        with SessionLocal() as s:
+            cfg = s.get(UserConfig, cid)
+            svc = s.get(Service, sid) if sid else None
+            usr = s.get(User, uid)
+            if cfg is not None:
+                name, exp = cfg.config_name or "", cfg.expires_at or ""
+            if svc is not None:
+                plan = f"{svc.category or ''} {svc.name or ''}".strip()
+            if usr is not None:
+                user_txt = f"{esc(user_display(usr))} (<code>{uid}</code>)"
+    except Exception:  # noqa: BLE001
+        pass
+    lines.append(f"👤 کاربر: {user_txt}")
+    lines.append(f"📦 سرویس: {esc(name or plan or '-')} (#{cid})")
+    if plan and plan != name:
+        lines.append(f"🏷 پلن: {esc(plan)}")
+    try:
+        bought, approx, _lr, _rn = _cfg_purchase_info(cid, uid, name)
+    except Exception:  # noqa: BLE001
+        bought, approx = "", False
+    if bought:
+        lines.append(f"🛒 تاریخ خرید: {esc(bought)}{' (تقریبی)' if approx else ''}")
+    if exp:
+        lines.append(f"📅 انقضا: {jalali_from_iso(exp)}")
+    total = int(u["total"]) if u and u.get("ok") and u.get("total") else get_int(f"utotal_{cid}")
+    if total > 0:
+        lines.append(f"📊 حجم: {fmt_bytes(total)}")
+    if u is not None and not u.get("ok"):
+        lines.append(f"⚠️ خطا: {esc(u.get('error') or '?')}")
+    if url:
+        lines.append(f"🔗 <code>{esc(url)}</code>")
+    return "\n".join(lines)
+
+
 async def job_usage_alerts(bot):
     """هر ۳۰ دقیقه مصرف همه‌ی ساب‌لینک‌ها را می‌خواند؛ هشدار بدون تکرار برای کاربر و گزارش برای ادمین."""
     global _usage_job_running
@@ -7716,6 +7856,8 @@ async def job_usage_alerts(bot):
                 if sync_on and u["has_info"]:
                     sync_real_expiry(cid, u)
                 if u["has_info"] and u["total"] > 0:
+                    set_setting(f"utotal_{cid}", str(int(u["total"])))
+                if u["has_info"] and u["total"] > 0:
                     pct = u["used"] * 100 / u["total"]
                     if pct >= 100:
                         flags |= {"w", "f"}
@@ -7726,9 +7868,9 @@ async def job_usage_alerts(bot):
                 set_setting(f"ualert_{cid}", ",".join(sorted(flags)))
             if report_on:
                 if "x" in new:
-                    broken.append(f"❌ #{cid} | {esc(name or '')} | <code>{uid}</code> | {esc(u.get('error') or '?')}")
+                    broken.append((cid, uid, _cfg_report_block("❌ <b>لینک خراب/بی‌پاسخ</b>", cid, sid, uid, u, _url)))
                 if "f" in new:
-                    finished.append(f"🔴 #{cid} | {esc(name or '')} | <code>{uid}</code>")
+                    finished.append(_cfg_report_block("🔴 <b>حجم تموم شد</b>", cid, sid, uid, u, _url))
             if alerts_on and ("f" in new or "w" in new):
                 if "f" in new:
                     msg = f"🔴 حجم سرویس «{esc(name or '')}» تموم شد. برای ادامه تمدیدش کن 👇"
@@ -7748,12 +7890,22 @@ async def job_usage_alerts(bot):
                     logging.info("usage alert to %s failed: %s", uid, e)
                 await asyncio.sleep(0.05)
         if broken or finished:
-            out = "🚨 <b>گزارش لینک سرویس‌ها</b>\n"
-            if broken:
-                out += "\n<b>لینک خراب/بی‌پاسخ:</b>\n" + "\n".join(broken[:25]) + "\n"
-            if finished:
-                out += "\n<b>حجم تموم‌شده:</b>\n" + "\n".join(finished[:25]) + "\n"
-            await notify_staff(bot, out)
+            await notify_staff(bot, "🚨 <b>گزارش لینک سرویس‌ها</b>")
+            for cid, uid, text_ in broken[:15]:
+                mk = InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="📦 مشخصات کامل سرویس", callback_data=f"ucfg_{cid}_{uid}")]]
+                )
+                await notify_staff(bot, text_, mk)
+            if len(broken) > 15:
+                await notify_staff(bot, f"… و {len(broken) - 15} لینک خراب دیگر (در پنل کاربران ببینید).")
+            chunk = ""
+            for blk in finished[:25]:
+                if chunk and len(chunk) + len(blk) + 2 > 3600:
+                    await notify_staff(bot, chunk)
+                    chunk = ""
+                chunk += ("\n\n" if chunk else "") + blk
+            if chunk:
+                await notify_staff(bot, chunk)
     except Exception as e:  # noqa: BLE001
         logging.error("usage alerts failed: %s", e)
     finally:
@@ -7783,14 +7935,19 @@ async def _finish_config_delivery(bot, chat_id, admin_id, state, config_text, no
         end_date = start_date + timedelta(days=days)
         r.status = "answered"
         r.answered_at = get_current_jalali()
-        s.add(
-            UserConfig(
-                user_id=target_user_id, config_name=plan_name, config_details=config_text,
-                service_id=service_id, expires_at=end_date.isoformat(), reminded=False,
-            )
+        new_cfg = UserConfig(
+            user_id=target_user_id, config_name=plan_name, config_details=config_text,
+            service_id=service_id, expires_at=end_date.isoformat(), reminded=False,
         )
+        s.add(new_cfg)
+        s.flush()
+        new_cfg_id = new_cfg.id
         monthly_notif, reward = (None, None) if is_trial else register_purchase(s, target_user_id, r.price or 0)
         s.commit()
+    try:
+        set_setting(f"cbuy_{new_cfg_id}", get_current_jalali())
+    except Exception as e:  # noqa: BLE001
+        logging.warning("save purchase date failed: %s", e)
 
     await state.clear()
     log_action(admin_id, f"ارسال کانفیگ برای درخواست #{req_id}")
