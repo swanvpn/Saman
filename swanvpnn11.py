@@ -2669,7 +2669,11 @@ async def ticket_user_reply(call: types.CallbackQuery, state: FSMContext):
     await call.message.answer(f"✍️ پاسخ شما برای تیکت #{tid} را بنویسید:")
 
 
-@dp.message(PaymentState.ticket_waiting_text)
+_ticket_times = {}  # user_id -> [زمان ساخت تیکت‌های جدید]
+TICKET_MAX_PER_HOUR = 5
+
+
+@dp.message(PaymentState.ticket_waiting_text, ~F.text.in_(MENU_TEXTS))
 async def ticket_text_received(message: types.Message, state: FSMContext):
     body = message.caption if message.photo else message.text
     if not body and not message.photo:
@@ -2677,6 +2681,17 @@ async def ticket_text_received(message: types.Message, state: FSMContext):
         return
     data = await state.get_data()
     tid = data.get("ticket_id")
+    if not tid and not is_staff(message.from_user.id):  # محدودیت ساخت تیکت جدید (ضد اسپم)
+        now = time.time()
+        recent = [t for t in _ticket_times.get(message.from_user.id, []) if now - t < 3600]
+        if len(recent) >= TICKET_MAX_PER_HOUR:
+            _ticket_times[message.from_user.id] = recent
+            await message.answer("⛔ تعداد تیکت‌های ارسالی شما در یک ساعت گذشته زیاد بوده؛ لطفاً کمی بعد دوباره تلاش کنید.")
+            return
+        recent.append(now)
+        _ticket_times[message.from_user.id] = recent
+        if len(_ticket_times) > 5000:
+            _ticket_times.clear()
     photo_id = message.photo[-1].file_id if message.photo else None
     with SessionLocal() as s:
         if tid:
@@ -6837,7 +6852,7 @@ async def _run_restore(bot, chat_id, admin_id, state):
         buf = io.BytesIO()
         await bot.download(file_id, destination=buf)
         payload = parse_backup(buf.getvalue())
-        apply_backup(payload)
+        await asyncio.to_thread(apply_backup, payload)
         refresh_menu_texts()
     except Exception as e:  # noqa: BLE001
         await state.clear()
@@ -6935,7 +6950,7 @@ def apply_backup(payload):
 
 
 async def send_backup(bot, chat_id, caption, data=None):
-    data = data if data is not None else build_backup_bytes()
+    data = data if data is not None else await asyncio.to_thread(build_backup_bytes)
     name = f"swan_backup_{now_iran().strftime('%Y%m%d_%H%M')}.json"
     await bot.send_document(chat_id=chat_id, document=BufferedInputFile(data, filename=name), caption=caption)
 
@@ -7074,7 +7089,7 @@ async def job_report(bot):
 async def job_backup(bot):
     if not get_bool("backup_on"):
         return
-    data = build_backup_bytes()
+    data = await asyncio.to_thread(build_backup_bytes)
     caption = f"🧰 بکاپ شبانه خودکار - {get_current_jalali()}"
     await send_backup(bot, ADMIN_ID, caption, data)
     chan = get_setting("backup_channel").strip()
@@ -7115,14 +7130,21 @@ async def check_url(session, url):
         return False
 
 
+async def send_message_retry(bot, chat_id, text, **kwargs):
+    """ارسال پیام؛ با محدودیت نرخ تلگرام یک‌بار بعد از صبر دوباره تلاش می‌کند (قبلاً پیام گم می‌شد)."""
+    try:
+        return await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after + 1)
+        return await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+
+
 async def broadcast_text(bot, text_):
     with SessionLocal() as s:
         ids = segment_user_ids(s, "all")
     for uid in ids:
         try:
-            await bot.send_message(chat_id=uid, text=text_)
-        except TelegramRetryAfter as e:
-            await asyncio.sleep(e.retry_after + 1)
+            await send_message_retry(bot, uid, text_)
         except Exception:  # noqa: BLE001
             pass
         await asyncio.sleep(0.05)
@@ -8117,10 +8139,8 @@ async def _push_keyboard(bot, admin_chat):
     ok = 0
     for uid in ids:
         try:
-            await bot.send_message(chat_id=uid, text="🔄 منوی پایین به‌روز شد 👇", reply_markup=build_reply_keyboard())
+            await send_message_retry(bot, uid, "🔄 منوی پایین به‌روز شد 👇", reply_markup=build_reply_keyboard())
             ok += 1
-        except TelegramRetryAfter as e:
-            await asyncio.sleep(e.retry_after + 1)
         except Exception:  # noqa: BLE001
             pass
         await asyncio.sleep(0.05)
