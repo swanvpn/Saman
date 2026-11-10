@@ -192,6 +192,9 @@ class User(Base):
     joined_at = Column(String)
     trial_used = Column(Boolean, default=False)
     points = Column(Integer, default=0)  # امتیاز باشگاه مشتریان
+    src = Column(String)  # منبع جذب (/start src_xxx)
+    promo_off = Column(Boolean, default=False)
+    blocked = Column(Boolean, default=False)
 
 
 class Service(Base):
@@ -211,6 +214,7 @@ class UserConfig(Base):
     service_id = Column(Integer)
     expires_at = Column(String)  # YYYY-MM-DD (میلادی)
     reminded = Column(Boolean, default=False)
+    remind_stage = Column(Integer, default=0)
 
 
 class Request(Base):
@@ -748,11 +752,15 @@ def _migrate_columns():
             "joined_at": "VARCHAR",
             "trial_used": "BOOLEAN DEFAULT FALSE",
             "points": "INTEGER DEFAULT 0",
+            "src": "VARCHAR",
+            "promo_off": "BOOLEAN DEFAULT FALSE",
+            "blocked": "BOOLEAN DEFAULT FALSE",
         },
         "user_configs": {
             "service_id": "INTEGER",
             "expires_at": "VARCHAR",
             "reminded": "BOOLEAN DEFAULT FALSE",
+            "remind_stage": "INTEGER DEFAULT 0",
         },
         "requests": {
             "receipt_file_id": "VARCHAR",
@@ -1111,6 +1119,7 @@ def price_with_percent(base, percent):
 
 def price_line(name, base, final, badge=""):
     tag = f" {esc(badge)}" if badge else ""
+    tag += per_gb_note(name, final)
     if final != base:
         return f"🔹 <s>{base:,}</s> {ARROW} <b>{final:,}</b> تومان ({esc(name)}){tag}\n"
     return f"🔹 {base:,} تومان ({esc(name)}){tag}\n"
@@ -1394,6 +1403,7 @@ def touch_user(tg_user):
             u = get_or_create_user(s, tg_user.id)
             u.username = tg_user.username
             u.first_name = tg_user.first_name
+            u.blocked = False
             s.commit()
         if len(_user_seen) > 5000:
             _user_seen.clear()
@@ -1566,6 +1576,8 @@ async def show_main_menu(
                         me.referred_by = ref_id
                         s.commit()
 
+    if is_new_user_row and command.args and command.args.startswith("src_"):
+        bind_source(message.from_user.id, command.args)
     await send_sticker(message.bot, message.chat.id, "sticker_welcome")
     body = build_welcome(message.from_user.id, message.from_user.first_name)
     markup = main_inline_markup(message.from_user.id)
@@ -1957,7 +1969,7 @@ def request_caption(req_id, tg_user, co, req_type, via_wallet, pay_amount=None):
         out += f"💳 مبلغ واریزی دقیق (با عدد تصادفی): <b>{pay_amount:,}</b> تومان\n"
     if co["code"]:
         out += f"🏷 کد تخفیف: {esc(co['code'])}\n"
-    return out + f"⏱ زمان ثبت: {get_current_jalali()}"
+    return out + f"⏱ زمان ثبت: {get_current_jalali()}" + sms_badge(pay_amount)
 
 
 @dp.callback_query(F.data == "pay_with_wallet")
@@ -2007,13 +2019,14 @@ async def confirm_payment_handler(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
     await state.set_state(PaymentState.waiting_for_receipt)
     amount = await ensure_pay_amount(state, co["final"])
+    record_cart(call.from_user.id, co["label"], co["final"])
     out = (
         "<b>مرحله ۳ از ۳ | واریز و ارسال رسید</b>\n\n"
         f"📦 {esc(co['label'])}\n💰 مبلغ قابل پرداخت: <b>{amount:,}</b> تومان\n"
         + pay_note(co["final"], amount)
         + "\n"
-        f"💳 شماره کارت:\n<code>{esc(get_setting('card_number'))}</code>\n"
-        f"به نام: {esc(get_setting('card_holder'))}\n\n"
+        f"💳 شماره کارت:\n<code>{esc(pick_card(call.from_user.id)[0])}</code>\n"
+        f"به نام: {esc(pick_card(call.from_user.id)[1])}\n\n"
         "بعد از واریز، <b>عکس رسیدت</b> رو همینجا بفرست 📸\n⏱ بعد از ارسال رسید، معمولاً ظرف ۳۰ دقیقه آماده می‌شه."
     )
     markup = InlineKeyboardMarkup(
@@ -2174,7 +2187,7 @@ async def receipt_handler(message: types.Message, state: FSMContext):
     )
 
 
-BUILD_TAG = "receipt-fix-r3"
+BUILD_TAG = "growth-pack-v12"
 
 
 def has_receipt_media(message: types.Message) -> bool:
@@ -2268,8 +2281,8 @@ async def send_charge_instructions(target, state, amount, note=""):
         + bonus_line
         + "\n"
         "لطفاً مبلغ را به شماره کارت زیر واریز نمایید:\n"
-        f"💳 <code>{esc(get_setting('card_number'))}</code>\n"
-        f"به نام: {esc(get_setting('card_holder'))}\n\n"
+        f"💳 <code>{esc(pick_card(target.from_user.id)[0])}</code>\n"
+        f"به نام: {esc(pick_card(target.from_user.id)[1])}\n\n"
         "پس از واریز، روی دکمه زیر کلیک کرده و رسید خود را ارسال کنید."
         + note
     )
@@ -2980,10 +2993,17 @@ def register_purchase(s, user_id, price=0):
             hits = referral_tier_hits(s, ref.user_id)
             ref.balance = (ref.balance or 0) + amount + sum(a for _n, a in hits)
             reward = (ref.user_id, amount, hits)
+            inv = get_int("ref_invitee_reward")
+            if inv > 0:
+                user.balance = min(MAX_BALANCE, (user.balance or 0) + inv)
+                _INVITEE_NOTICE[user_id] = inv
     return monthly_notif, reward
 
 
 async def post_purchase_notifications(bot, user_id, monthly_notif, reward):
+    inv_amount = _INVITEE_NOTICE.pop(user_id, 0)
+    if inv_amount:
+        await gsend(bot, user_id, f"🎁 هدیهٔ دعوت: {inv_amount:,} تومان به کیف پولت اضافه شد. ممنون که با دعوت دوستت اومدی!")
     if monthly_notif:
         try:
             await bot.send_message(
@@ -4533,9 +4553,13 @@ BC_SEGMENTS = {
 DIGITS_FA = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 
 
-def segment_user_ids(s, seg):
+def segment_user_ids(s, seg, promo=True):
     ok = or_(User.is_banned.is_(None), User.is_banned.is_(False))
-    base = {r[0] for r in s.query(User.user_id).filter(ok).all()}
+    not_blocked = or_(User.blocked.is_(None), User.blocked.is_(False))
+    q = s.query(User.user_id).filter(ok, not_blocked)
+    if promo:
+        q = q.filter(or_(User.promo_off.is_(None), User.promo_off.is_(False)))
+    base = {r[0] for r in q.all()}
     if seg == "all":
         return sorted(base)
     today_iso = today_iran().isoformat()
@@ -4613,6 +4637,7 @@ async def run_broadcast(bot, from_chat, message_id, seg):
             sent += 1
         except TelegramForbiddenError:
             blocked += 1
+            mark_blocked(u_id)
         except TelegramRetryAfter as e:
             await asyncio.sleep(e.retry_after + 1)
             try:
@@ -6600,6 +6625,8 @@ def ub_build_rows(screen, user_id=None, ctx=None):
                 continue
             if cond == "club" and not get_bool("club_on"):
                 continue
+            if cond in GROWTH_CONDS and not get_bool(GROWTH_CONDS[cond]):
+                continue
             if cond == "sid" and not ctx.get("sid"):
                 continue
             if cond == "link" and not ctx.get("has_link"):
@@ -7134,7 +7161,7 @@ async def backup_restore_confirm(call: types.CallbackQuery, state: FSMContext):
 # ---------------------------------------------------------------------------
 # کارهای زمان‌بندی‌شده: یادآوری تمدید، گزارش روزانه، بکاپ شبانه
 # ---------------------------------------------------------------------------
-async def job_reminders(bot):
+async def job_reminders_orig(bot):
     days = get_int("reminder_days")
     todo = []
     with SessionLocal() as s:
@@ -7230,7 +7257,7 @@ async def send_message_retry(bot, chat_id, text, **kwargs):
 
 async def broadcast_text(bot, text_):
     with SessionLocal() as s:
-        ids = segment_user_ids(s, "all")
+        ids = segment_user_ids(s, "all", promo=False)
     for uid in ids:
         try:
             await send_message_retry(bot, uid, text_)
@@ -8248,11 +8275,1080 @@ async def kb_push_go(call: types.CallbackQuery):
 
 
 
+# ===========================================================================
+# 🚀 بستهٔ رشد و فروش (v12)
+# همهٔ قابلیت‌ها به‌صورت پیش‌فرض خاموش‌اند و از «⚙️ تنظیمات ربات ← بخش‌های 🚀» روشن می‌شوند.
+# ===========================================================================
+from aiogram.types import InlineQueryResultArticle, InputTextMessageContent  # noqa: E402
+
+TS_FMT = "%Y-%m-%dT%H:%M"
+
+
+class GrowthLog(Base):
+    """لاگ عمومی رویدادهای رشد؛ برای جلوگیری از ارسال تکراری و ثبت چک‌این/دلیل ریزش/هدیه."""
+
+    __tablename__ = "growth_log"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger)
+    kind = Column(String)
+    ref = Column(String)
+    created_iso = Column(String)
+
+
+class CartEvent(Base):
+    """سبد خرید رهاشده: کاربری که به مرحلهٔ پرداخت رسید."""
+
+    __tablename__ = "cart_events"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger)
+    label = Column(String)
+    price = Column(Integer, default=0)
+    created_iso = Column(String)
+    stage = Column(Integer, default=0)  # 0 جدید | 1 یادآوری اول | 2 تمام
+
+
+class GiftCode(Base):
+    __tablename__ = "gift_codes"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String, unique=True)
+    amount = Column(Integer, default=0)
+    max_uses = Column(Integer, default=1)
+    used_count = Column(Integer, default=0)
+    expires_at = Column(String)
+    is_active = Column(Boolean, default=True)
+
+
+class GiftUse(Base):
+    __tablename__ = "gift_uses"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    gift_id = Column(Integer)
+    user_id = Column(BigInteger)
+
+
+class GrowthState(StatesGroup):
+    waiting_gift = State()
+
+
+DEFAULTS.update(
+    {
+        # --- یادآوری و بازگشت مشتری ---
+        "remind_multi_on": "0",
+        "cart_on": "0",
+        "cart_minutes": "45",
+        "cart_code_percent": "10",
+        "cart_text": "🛒 سفارشت نیمه‌کاره موند!\n\n📦 {plan}\n💰 {price} تومان\n\nاگه تو پرداخت مشکلی داشتی یا سوالی داری همینجا بپرس 🙌",
+        "winback_on": "0",
+        "winback_days": "3",
+        "winback_percent": "15",
+        "winback_text": "👋 دلمون برات تنگ شده! سرویست چند روزه تموم شده.\nبرای برگشتت یه کد تخفیف {percent}٪ مخصوص خودت ساختیم:",
+        "churn_ask_on": "0",
+        "drip_on": "0",
+        "drip_t1": "سلام {name} 👋\nهنوز سرویسی نگرفتی؟ تعرفه‌ها رو ببین؛ خرید اولت تخفیف ویژه داره 🎁",
+        "drip_t2": "{name} جان، سرویس‌های ما با پشتیبانی سریع و تحویل فوری آماده‌ست 🚀\nاگه سوالی داری از بخش پشتیبانی بپرس.",
+        "drip_t3": "⭐ تا الان ده‌ها نفر از مشتری‌هامون راضی بودن. تو هم امتحان کن؛ پلن‌های اقتصادی از همین‌جا شروع می‌شه 👇",
+        "comp_on": "0",
+        "comp_minutes": "60",
+        "comp_amount": "10000",
+        # --- رشد و دعوت ---
+        "ref_invitee_reward": "0",
+        "checkin_on": "0",
+        "checkin_points": "1",
+        "checkin_streak_bonus": "10",
+        "transfer_on": "0",
+        "transfer_min": "20000",
+        "transfer_fee_percent": "0",
+        "toprefs_on": "0",
+        "promo_toggle_on": "0",
+        "anniv_on": "0",
+        "anniv_percent": "20",
+        "pergb_on": "0",
+        "cost_per_gb": "0",
+        # --- چند کارت و پیامک بانکی ---
+        "cards_rotate_on": "0",
+        "cards_extra": "",
+        "sms_on": "0",
+        "sms_secret": "",
+        "sms_window": "180",
+    }
+)
+
+SETTING_PAGES.update(
+    {
+        "grow_a": "🚀 یادآوری و بازگشت مشتری",
+        "grow_b": "🚀 دعوت، امتیاز و هدیه",
+        "grow_c": "🚀 چند کارت و پیامک بانکی",
+    }
+)
+SETTINGS.update(
+    {
+        "remind_multi_on": dict(page="grow_a", type="toggle", label="یادآوری چندمرحله‌ای تمدید (۳ روز، ۱ روز، انقضا، ۲ روز بعد)"),
+        "cart_on": dict(page="grow_a", type="toggle", label="یادآوری سبد رهاشده"),
+        "cart_minutes": dict(page="grow_a", type="num", label="یادآوری اول بعد از (دقیقه)", min=5, max=1440),
+        "cart_code_percent": dict(page="grow_a", type="num", label="کد تخفیف یادآوری دوم (٪؛ ۰ = بدون کد)", min=0, max=50),
+        "cart_text": dict(page="grow_a", type="text", label="متن یادآوری سبد ({plan} {price})"),
+        "winback_on": dict(page="grow_a", type="toggle", label="کد تخفیف بازگشت برای منقضی‌شده‌ها"),
+        "winback_days": dict(page="grow_a", type="num", label="چند روز بعد از انقضا", min=1, max=60),
+        "winback_percent": dict(page="grow_a", type="num", label="درصد تخفیف بازگشت", min=0, max=50),
+        "winback_text": dict(page="grow_a", type="text", label="متن پیام بازگشت ({percent})"),
+        "churn_ask_on": dict(page="grow_a", type="toggle", label="پرسیدن دلیل نرفتن (دکمه‌های نظرسنجی)"),
+        "drip_on": dict(page="grow_a", type="toggle", label="پیام‌های پیگیری کاربران بدون خرید (روز ۱، ۳، ۷)"),
+        "drip_t1": dict(page="grow_a", type="text", label="متن روز ۱ ({name})"),
+        "drip_t2": dict(page="grow_a", type="text", label="متن روز ۳ ({name})"),
+        "drip_t3": dict(page="grow_a", type="text", label="متن روز ۷ ({name})"),
+        "comp_on": dict(page="grow_a", type="toggle", label="جبران خودکار تأخیر تحویل (اعتبار)"),
+        "comp_minutes": dict(page="grow_a", type="num", label="اگر تحویل بیش از این دقیقه طول کشید", min=10, max=1440),
+        "comp_amount": dict(page="grow_a", type="num", label="مبلغ جبران (تومان)", min=0, max=1000000),
+        "ref_invitee_reward": dict(page="grow_b", type="num", label="هدیهٔ دعوت‌شده بعد از اولین خرید (تومان؛ دعوت دوطرفه)", min=0, max=10000000),
+        "checkin_on": dict(page="grow_b", type="toggle", label="چک‌این روزانه (امتیاز باشگاه)"),
+        "checkin_points": dict(page="grow_b", type="num", label="امتیاز هر چک‌این", min=1, max=1000),
+        "checkin_streak_bonus": dict(page="grow_b", type="num", label="امتیاز ویژه هر ۷ روز پشت‌سرهم", min=0, max=10000),
+        "transfer_on": dict(page="grow_b", type="toggle", label="انتقال اعتبار بین کاربران (/transfer)"),
+        "transfer_min": dict(page="grow_b", type="num", label="حداقل مبلغ انتقال (تومان)", min=1000, max=100000000),
+        "transfer_fee_percent": dict(page="grow_b", type="num", label="کارمزد انتقال (٪)", min=0, max=20),
+        "toprefs_on": dict(page="grow_b", type="toggle", label="جدول برترین دعوت‌کننده‌ها"),
+        "promo_toggle_on": dict(page="grow_b", type="toggle", label="دکمهٔ قطع/وصل تبلیغات برای کاربر"),
+        "anniv_on": dict(page="grow_b", type="toggle", label="هدیهٔ سالگرد عضویت"),
+        "anniv_percent": dict(page="grow_b", type="num", label="درصد تخفیف سالگرد", min=1, max=50),
+        "pergb_on": dict(page="grow_b", type="toggle", label="نمایش قیمت هر گیگ کنار پلن‌ها"),
+        "cost_per_gb": dict(page="grow_b", type="num", label="هزینهٔ هر گیگ برای شما (گزارش /profit)", min=0, max=10000000),
+        "cards_rotate_on": dict(page="grow_c", type="toggle", label="چرخش چند کارت"),
+        "cards_extra": dict(page="grow_c", type="text", label="کارت‌های اضافه (هر خط: شماره|نام صاحب کارت)"),
+        "sms_on": dict(page="grow_c", type="toggle", label="تشخیص واریز با پیامک بانکی (وب‌هوک)"),
+        "sms_secret": dict(page="grow_c", type="text", label="رمز آدرس وب‌هوک (فقط حروف و عدد انگلیسی)"),
+        "sms_window": dict(page="grow_c", type="num", label="بازهٔ تطبیق پیامک با سفارش (دقیقه)", min=10, max=1440),
+    }
+)
+
+GROWTH_CONDS = {"checkin": "checkin_on", "toprefs": "toprefs_on", "promo": "promo_toggle_on"}
+UB_ITEMS["main"].append(dict(key="checkin", label="📅 چک‌این روزانه", cb="checkin", cond="checkin"))
+UB_ITEMS["main"].append(dict(key="gift", label="🎁 کد هدیه", cb="gift_start", hide_default=True))
+UB_ITEMS["account"].append(dict(key="toprefs", label="🏅 برترین دعوت‌کننده‌ها", cb="toprefs", wide=True, cond="toprefs"))
+UB_ITEMS["account"].append(dict(key="promo", label="🔔 قطع/وصل تبلیغات", cb="promo_toggle", wide=True, cond="promo"))
+
+_INVITEE_NOTICE = {}  # user_id -> مبلغ هدیهٔ دعوت‌شده (برای اعلان بعد از خرید)
+_sms_seen = {}  # مبلغ -> زمان دیدن در پیامک بانکی
+GROWTH_BOT = None
+_growth_last = 0.0
+_growth_busy = False
+_card_assign = {}
+
+
+def set_growth_bot(bot):
+    global GROWTH_BOT
+    GROWTH_BOT = bot
+
+
+# ---------------------------------------------------------------------------
+# ابزارهای مشترک
+# ---------------------------------------------------------------------------
+def glog_has(s, uid, kind, ref=""):
+    return (
+        s.query(GrowthLog.id)
+        .filter(GrowthLog.user_id == uid, GrowthLog.kind == kind, GrowthLog.ref == str(ref))
+        .first()
+        is not None
+    )
+
+
+def glog_add(s, uid, kind, ref=""):
+    s.add(GrowthLog(user_id=uid, kind=kind, ref=str(ref), created_iso=iso_now_minute()))
+
+
+def _num(raw):
+    t = (raw or "").translate(DIGITS_FA).replace(",", "").replace("،", "").strip()
+    return int(t) if t.isdigit() else None
+
+
+def mark_blocked(uid):
+    try:
+        with SessionLocal() as s:
+            u = s.get(User, uid)
+            if u is not None and not u.blocked:
+                u.blocked = True
+                s.commit()
+    except Exception as e:  # noqa: BLE001
+        logging.warning("mark_blocked failed: %s", e)
+
+
+async def gsend(bot, uid, text_, markup=None):
+    """ارسال امن؛ اگر کاربر ربات را بلاک کرده باشد علامت می‌خورد."""
+    try:
+        await bot.send_message(chat_id=uid, text=text_, reply_markup=markup)
+        return True
+    except TelegramForbiddenError:
+        mark_blocked(uid)
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after + 1)
+        try:
+            await bot.send_message(chat_id=uid, text=text_, reply_markup=markup)
+            return True
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception as e:  # noqa: BLE001
+        logging.info("gsend to %s failed: %s", uid, e)
+    return False
+
+
+def make_personal_code(s, percent, days, prefix):
+    """کد تخفیف یک‌بارمصرف و تصادفی می‌سازد."""
+    percent = max(1, min(MAX_DISCOUNT, int(percent)))
+    code = ""
+    for _ in range(8):
+        code = f"{prefix}{secrets.token_hex(3).upper()}"
+        if not s.query(DiscountCode.id).filter(DiscountCode.code == code).first():
+            break
+    s.add(
+        DiscountCode(
+            code=code, percent=percent, max_uses=1, used_count=0, is_active=True,
+            expires_at=(today_iran() + timedelta(days=days)).isoformat(),
+        )
+    )
+    return code
+
+
+def _buy_markup(extra_rows=None):
+    rows = [[InlineKeyboardButton(text="🛒 مشاهده تعرفه و خرید", callback_data="main_buy")]]
+    rows.extend(extra_rows or [])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ---------------------------------------------------------------------------
+# ۱) چرخش چند کارت
+# ---------------------------------------------------------------------------
+def _cards():
+    cards = [(get_setting("card_number").strip(), get_setting("card_holder").strip())]
+    if get_bool("cards_rotate_on"):
+        for line in get_setting("cards_extra").splitlines():
+            if "|" in line:
+                num, holder = (x.strip() for x in line.split("|", 1))
+                if num:
+                    cards.append((num, holder))
+    return cards
+
+
+def pick_card(user_id=None):
+    """(شماره کارت, نام صاحب). هر کاربر تا ۶ ساعت یک کارت ثابت می‌بیند؛ کاربر جدید نوبتی کارت بعدی را می‌گیرد."""
+    cards = _cards()
+    if len(cards) == 1:
+        return cards[0]
+    now = time.time()
+    hit = _card_assign.get(user_id)
+    if hit and now - hit[1] < 6 * 3600 and hit[0] < len(cards):
+        return cards[hit[0]]
+    try:
+        counter = int(get_setting("card_rr") or 0)
+    except ValueError:
+        counter = 0
+    idx = counter % len(cards)
+    set_setting("card_rr", counter + 1)
+    if len(_card_assign) > 5000:
+        _card_assign.clear()
+    _card_assign[user_id] = (idx, now)
+    return cards[idx]
+
+
+# ---------------------------------------------------------------------------
+# ۲) پیامک بانکی (وب‌هوک)
+# ---------------------------------------------------------------------------
+def _extract_amounts(text_):
+    t = (text_ or "").translate(DIGITS_FA)
+    nums = set()
+    for m in re.finditer(r"\d[\d,٬،]*", t):
+        raw = re.sub(r"[,٬،]", "", m.group(0))
+        if raw.isdigit() and 4 <= len(raw) <= 12:
+            n = int(raw)
+            nums.add(n)
+            if n % 10 == 0:
+                nums.add(n // 10)  # پیامک بانک‌ها معمولاً ریال است
+    return nums
+
+
+def sms_badge(pay_amount):
+    ts = _sms_seen.get(int(pay_amount)) if pay_amount else None
+    if ts and time.time() - ts < 6 * 3600:
+        return "\n✅ <b>پیامک بانکی: واریز همین مبلغ دیده شد</b>"
+    return ""
+
+
+def sms_match(text_):
+    """لیست سفارش‌های در انتظارِ هم‌مبلغ با پیامک. (id, user_id, amount)"""
+    nums = _extract_amounts(text_)
+    for n in nums:
+        _sms_seen[n] = time.time()
+    if len(_sms_seen) > 2000:
+        _sms_seen.clear()
+    window = max(10, get_int("sms_window") or 180)
+    cutoff = (now_iran().replace(tzinfo=None) - timedelta(minutes=window)).strftime(TS_FMT)
+    out = []
+    with SessionLocal() as s:
+        rows = (
+            s.query(Request)
+            .filter(Request.status == "unanswered", Request.pay_amount.isnot(None), Request.created_iso >= cutoff)
+            .all()
+        )
+        for r in rows:
+            if r.pay_amount in nums and not glog_has(s, r.user_id, "sms", r.id):
+                out.append((r.id, r.user_id, r.pay_amount))
+        for rid, uid, _amt in out:
+            glog_add(s, uid, "sms", rid)
+        s.commit()
+    return out
+
+
+async def sms_webhook(request):
+    secret = get_setting("sms_secret").strip()
+    given = request.match_info.get("secret", "")
+    if not get_bool("sms_on") or not secret or not hmac.compare_digest(given.encode(), secret.encode()):
+        return web.Response(status=404)
+    try:
+        raw = await request.text()
+    except Exception:  # noqa: BLE001
+        return web.Response(status=400)
+    body = raw
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            body = " ".join(str(data.get(k, "")) for k in ("text", "message", "body", "sms", "content")) or raw
+    except ValueError:
+        if "=" in raw and "&" in raw:
+            from urllib.parse import parse_qs
+
+            qs = parse_qs(raw)
+            body = " ".join(" ".join(v) for v in qs.values())
+    if "برداشت" in body and "واریز" not in body:
+        return web.json_response({"ok": True, "matched": 0})
+    if "واریز" not in body and "deposit" not in body.lower() and "+" not in body:
+        return web.json_response({"ok": True, "matched": 0})
+    hits = sms_match(body)
+    bot = GROWTH_BOT
+    if bot is not None:
+        for rid, uid, amount in hits:
+            try:
+                await notify_staff(
+                    bot,
+                    f"💚 <b>پیامک بانکی:</b> واریز {amount:,} تومان با سفارش #{rid} مطابقت دارد.",
+                    admin_request_markup(rid),
+                )
+                await gsend(bot, uid, "✅ واریزت دیده شد و سفارشت در صف تحویل قرار گرفت. ممنون 🙏")
+            except Exception as e:  # noqa: BLE001
+                logging.warning("sms notify failed: %s", e)
+    return web.json_response({"ok": True, "matched": len(hits)})
+
+
+# ---------------------------------------------------------------------------
+# ۳) سبد رهاشده
+# ---------------------------------------------------------------------------
+def record_cart(user_id, label, price):
+    try:
+        with SessionLocal() as s:
+            s.query(CartEvent).filter(CartEvent.user_id == user_id, CartEvent.stage < 2).delete()
+            s.add(CartEvent(user_id=user_id, label=label, price=int(price or 0), created_iso=iso_now_minute(), stage=0))
+            s.commit()
+    except Exception as e:  # noqa: BLE001
+        logging.warning("record_cart failed: %s", e)
+
+
+async def job_cart(bot):
+    if not get_bool("cart_on"):
+        return
+    mins = max(5, get_int("cart_minutes"))
+    pct = get_int("cart_code_percent")
+    now = now_iran().replace(tzinfo=None)
+    c1 = (now - timedelta(minutes=mins)).strftime(TS_FMT)
+    c2 = (now - timedelta(hours=24)).strftime(TS_FMT)
+    c_old = (now - timedelta(days=3)).strftime(TS_FMT)
+    todo = []
+    with SessionLocal() as s:
+        for c in s.query(CartEvent).filter(CartEvent.stage < 2).limit(200).all():
+            bought = (
+                s.query(Request.id).filter(Request.user_id == c.user_id, Request.created_iso >= c.created_iso).first()
+            )
+            if bought or c.created_iso <= c_old:
+                c.stage = 2
+                continue
+            if c.stage == 0 and c.created_iso <= c1:
+                c.stage = 1
+                todo.append((c.user_id, c.label, c.price, ""))
+            elif c.stage == 1 and c.created_iso <= c2:
+                c.stage = 2
+                if pct > 0:
+                    todo.append((c.user_id, c.label, c.price, make_personal_code(s, pct, 2, "CART")))
+        s.commit()
+    for uid, label, price, code in todo:
+        text_ = (get_setting("cart_text") or DEFAULTS["cart_text"]).replace("{plan}", esc(label or "")).replace(
+            "{price}", f"{int(price or 0):,}"
+        )
+        if code:
+            text_ += f"\n\n🎁 یه کد تخفیف {pct}٪ مخصوص خودت: <code>{code}</code> (۲ روز اعتبار)"
+        await gsend(bot, uid, text_, _buy_markup([[InlineKeyboardButton(text="🎧 پشتیبانی", callback_data="support_menu")]]))
+        await asyncio.sleep(0.05)
+
+
+# ---------------------------------------------------------------------------
+# ۴) جبران تأخیر تحویل
+# ---------------------------------------------------------------------------
+async def job_comp(bot):
+    if not get_bool("comp_on"):
+        return
+    amount = get_int("comp_amount")
+    if amount <= 0:
+        return
+    mins = max(10, get_int("comp_minutes"))
+    cutoff = (now_iran().replace(tzinfo=None) - timedelta(minutes=mins)).strftime(TS_FMT)
+    todo = []
+    with SessionLocal() as s:
+        rows = (
+            s.query(Request)
+            .filter(
+                Request.status == "unanswered", Request.req_type.in_(SALE_TYPES), Request.price > 0,
+                Request.created_iso.isnot(None), Request.created_iso <= cutoff,
+            )
+            .limit(30)
+            .all()
+        )
+        for r in rows:
+            if glog_has(s, r.user_id, "comp", r.id):
+                continue
+            day_key = f"{r.user_id}:{today_iran().isoformat()}"
+            if glog_has(s, r.user_id, "compday", day_key):
+                continue
+            u = s.get(User, r.user_id)
+            if u is None:
+                continue
+            u.balance = min(MAX_BALANCE, (u.balance or 0) + amount)
+            glog_add(s, r.user_id, "comp", r.id)
+            glog_add(s, r.user_id, "compday", day_key)
+            todo.append((r.user_id, r.id))
+        s.commit()
+    for uid, rid in todo:
+        await gsend(
+            bot, uid,
+            f"🙏 بابت تأخیر در تحویل سفارش #{rid} ببخشید؛ {amount:,} تومان اعتبار هدیه به کیف پولت اضافه شد.",
+        )
+
+
+async def job_growth_tick(bot):
+    """هر ~۵ دقیقه: سبد رهاشده و جبران تأخیر."""
+    global _growth_last, _growth_busy
+    now = time.time()
+    if _growth_busy or now - _growth_last < 280:
+        return
+    _growth_busy = True
+    _growth_last = now
+    try:
+        for fn in (job_cart, job_comp):
+            try:
+                await fn(bot)
+            except Exception as e:  # noqa: BLE001
+                logging.error("growth %s failed: %s", fn.__name__, e)
+    finally:
+        _growth_busy = False
+
+
+# ---------------------------------------------------------------------------
+# ۵) یادآوری چندمرحله‌ای تمدید
+# ---------------------------------------------------------------------------
+def _remind_stage_for(left, days):
+    if left <= -2:
+        return 4
+    if left <= 0:
+        return 3
+    if left <= 1:
+        return 2
+    if left <= days:
+        return 1
+    return 0
+
+
+async def job_reminders(bot):
+    if not get_bool("remind_multi_on"):
+        return await job_reminders_orig(bot)
+    days = max(2, get_int("reminder_days"))
+    todo = []
+    with SessionLocal() as s:
+        rows = s.query(UserConfig).filter(UserConfig.expires_at.isnot(None)).all()
+        for c in rows:
+            try:
+                left = (date.fromisoformat(c.expires_at) - today_iran()).days
+            except (TypeError, ValueError):
+                continue
+            cur = c.remind_stage or 0
+            target = _remind_stage_for(left, days)
+            if target == 0:
+                if cur:
+                    c.remind_stage = 0  # تمدید شده
+                    c.reminded = False
+                continue
+            if left < -3:
+                if cur < 4:
+                    c.remind_stage = 4
+                continue
+            if target > cur:
+                c.remind_stage = target
+                c.reminded = True
+                todo.append((c.id, c.user_id, c.config_name, left, c.service_id, target))
+        s.commit()
+    for cfg_id, uid, name, left, sid, stage in todo:
+        n = esc(name or "")
+        if stage == 1:
+            msg = f"⏰ سرویس «{n}» {left} روز دیگه تموم می‌شه. برای تمدید روی دکمه زیر بزن 👇"
+        elif stage == 2:
+            msg = f"⚠️ فقط ۱ روز تا پایان سرویس «{n}» مونده! قبل از قطع شدن تمدید کن 👇"
+        elif stage == 3:
+            msg = f"❌ سرویس «{n}» تموم شد. همین الان تمدید کن تا وصل بمونی 👇"
+        else:
+            msg = f"🙏 سرویس «{n}» ۲ روزه که منقضی شده. هنوز می‌تونی تمدیدش کنی 👇"
+        markup = None
+        if sid:
+            markup = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🔄 تمدید سرویس", callback_data=f"renew_{cfg_id}")]]
+            )
+        await gsend(bot, uid, msg, markup)
+        await asyncio.sleep(0.05)
+
+
+# ---------------------------------------------------------------------------
+# ۶) بازگشت مشتری، دلیل ریزش، پیگیری کاربران بدون خرید، هدیهٔ سالگرد
+# ---------------------------------------------------------------------------
+CHURN_REASONS = {"price": "💰 گرون بود", "speed": "🐢 کند بود", "cut": "🔌 قطع و وصل می‌شد", "other": "🤷 دلیل دیگه"}
+
+
+async def _winback(bot):
+    if not get_bool("winback_on"):
+        return
+    days = max(1, get_int("winback_days"))
+    pct = get_int("winback_percent")
+    today = today_iran()
+    limit = (today - timedelta(days=days)).isoformat()
+    oldest = (today - timedelta(days=days + 30)).isoformat()
+    todo = []
+    with SessionLocal() as s:
+        rows = (
+            s.query(UserConfig.user_id, func.max(UserConfig.expires_at))
+            .filter(UserConfig.expires_at.isnot(None))
+            .group_by(UserConfig.user_id)
+            .all()
+        )
+        for uid, mx in rows:
+            if not mx or mx >= limit or mx < oldest or glog_has(s, uid, "winback", mx):
+                continue
+            u = s.get(User, uid)
+            if u is None or u.is_banned or u.blocked:
+                continue
+            code = make_personal_code(s, pct, 3, "BACK") if pct > 0 else ""
+            glog_add(s, uid, "winback", mx)
+            todo.append((uid, code))
+        s.commit()
+    for uid, code in todo:
+        text_ = (get_setting("winback_text") or DEFAULTS["winback_text"]).replace("{percent}", str(pct))
+        if code:
+            text_ += f"\n\n🎁 <code>{code}</code> (۳ روز اعتبار، یک‌بار مصرف)"
+        extra = []
+        if get_bool("churn_ask_on"):
+            extra.append(
+                [InlineKeyboardButton(text=lbl, callback_data=f"churn_{k}") for k, lbl in list(CHURN_REASONS.items())[:2]]
+            )
+            extra.append(
+                [InlineKeyboardButton(text=lbl, callback_data=f"churn_{k}") for k, lbl in list(CHURN_REASONS.items())[2:]]
+            )
+            text_ += "\n\n🙋 اگه تمدید نمی‌کنی، بگو چرا؟ کمکمون می‌کنه بهتر بشیم:"
+        await gsend(bot, uid, text_, _buy_markup(extra))
+        await asyncio.sleep(0.05)
+
+
+@dp.callback_query(F.data.startswith("churn_"))
+async def churn_answer(call: types.CallbackQuery):
+    key = call.data.split("_", 1)[1]
+    if key not in CHURN_REASONS:
+        await call.answer()
+        return
+    with SessionLocal() as s:
+        if not glog_has(s, call.from_user.id, "churn", key):
+            glog_add(s, call.from_user.id, "churn", key)
+            s.commit()
+    await call.answer("ممنون که گفتی 🙏", show_alert=True)
+
+
+async def _drip(bot):
+    if not get_bool("drip_on"):
+        return
+    today = today_iran()
+    first = (today - timedelta(days=9)).isoformat()
+    todo = []
+    with SessionLocal() as s:
+        buyers = {
+            r[0]
+            for r in s.query(Request.user_id).filter(Request.req_type.in_(SALE_TYPES + ["trial"])).all()
+        }
+        users = s.query(User).filter(User.joined_at >= first).all()
+        for u in users:
+            if u.user_id in buyers or u.is_banned or u.blocked:
+                continue
+            try:
+                age = (today - date.fromisoformat(u.joined_at)).days
+            except (TypeError, ValueError):
+                continue
+            stage = 3 if age >= 7 else 2 if age >= 3 else 1 if age >= 1 else 0
+            if not stage or glog_has(s, u.user_id, "drip", stage):
+                continue
+            for st in range(1, stage + 1):
+                if not glog_has(s, u.user_id, "drip", st):
+                    glog_add(s, u.user_id, "drip", st)
+            todo.append((u.user_id, u.first_name or "دوست عزیز", stage))
+        s.commit()
+    for uid, name, stage in todo:
+        text_ = (get_setting(f"drip_t{stage}") or DEFAULTS[f"drip_t{stage}"]).replace("{name}", esc(name))
+        await gsend(bot, uid, text_, _buy_markup())
+        await asyncio.sleep(0.05)
+
+
+async def _anniversary(bot):
+    if not get_bool("anniv_on"):
+        return
+    pct = get_int("anniv_percent")
+    today = today_iran()
+    todo = []
+    with SessionLocal() as s:
+        for u in s.query(User).filter(User.joined_at.isnot(None)).all():
+            try:
+                j = date.fromisoformat(u.joined_at)
+            except (TypeError, ValueError):
+                continue
+            if (j.month, j.day) != (today.month, today.day) or j.year >= today.year:
+                continue
+            if u.is_banned or u.blocked or glog_has(s, u.user_id, "anniv", today.year):
+                continue
+            glog_add(s, u.user_id, "anniv", today.year)
+            todo.append((u.user_id, today.year - j.year, make_personal_code(s, pct, 7, "YEAR")))
+        s.commit()
+    for uid, years, code in todo:
+        await gsend(
+            bot, uid,
+            f"🎂 امروز {years} ساله که همراه ما هستی! ممنون 💙\n🎁 کد تخفیف {pct}٪ سالگرد: <code>{code}</code> (۷ روز اعتبار)",
+            _buy_markup(),
+        )
+        await asyncio.sleep(0.05)
+
+
+async def job_growth_daily(bot):
+    for fn in (_winback, _drip, _anniversary):
+        try:
+            await fn(bot)
+        except Exception as e:  # noqa: BLE001
+            logging.error("growth daily %s failed: %s", fn.__name__, e)
+
+
+# ---------------------------------------------------------------------------
+# ۷) ردیابی منبع (/start src_xxx)
+# ---------------------------------------------------------------------------
+def bind_source(user_id, arg):
+    src = re.sub(r"[^A-Za-z0-9_\-]", "", (arg or "")[4:])[:30]
+    if not src:
+        return
+    try:
+        with SessionLocal() as s:
+            u = s.get(User, user_id)
+            if u is not None and not u.src:
+                u.src = src
+                s.commit()
+    except Exception as e:  # noqa: BLE001
+        logging.warning("bind_source failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# ۸) نمایش قیمت هر گیگ
+# ---------------------------------------------------------------------------
+def per_gb_note(name, final):
+    if not get_bool("pergb_on"):
+        return ""
+    gb = _plan_gb(name)
+    if not gb or not final:
+        return ""
+    return f" (≈{int(final / gb):,}/گیگ)"
+
+
+# ---------------------------------------------------------------------------
+# ۹) چک‌این روزانه، جدول دعوت، قطع/وصل تبلیغات
+# ---------------------------------------------------------------------------
+@dp.callback_query(F.data == "checkin")
+async def checkin_handler(call: types.CallbackQuery):
+    if not get_bool("checkin_on"):
+        await call.answer("چک‌این فعلاً غیرفعاله.", show_alert=True)
+        return
+    uid = call.from_user.id
+    today = today_iran()
+    with SessionLocal() as s:
+        if glog_has(s, uid, "checkin", today.isoformat()):
+            await call.answer("امروز چک‌این کردی ✅ فردا دوباره بیا!", show_alert=True)
+            return
+        dates = {
+            r[0]
+            for r in s.query(GrowthLog.ref).filter(GrowthLog.user_id == uid, GrowthLog.kind == "checkin").all()
+        }
+        streak, d = 1, today - timedelta(days=1)
+        while d.isoformat() in dates:
+            streak += 1
+            d -= timedelta(days=1)
+        pts = max(1, get_int("checkin_points"))
+        bonus = get_int("checkin_streak_bonus") if streak % 7 == 0 else 0
+        u = get_or_create_user(s, uid)
+        u.points = (u.points or 0) + pts + bonus
+        glog_add(s, uid, "checkin", today.isoformat())
+        total = u.points
+        s.commit()
+    msg = f"📅 چک‌این ثبت شد! +{pts} امتیاز\n🔥 زنجیرهٔ {streak} روزه\n🏆 مجموع امتیاز: {total}"
+    if bonus:
+        msg += f"\n🎉 جایزهٔ ۷ روز پشت‌سرهم: +{bonus} امتیاز"
+    await call.answer(msg[:190], show_alert=True)
+
+
+@dp.callback_query(F.data == "toprefs")
+async def toprefs_handler(call: types.CallbackQuery):
+    if not get_bool("toprefs_on"):
+        await call.answer("فعلاً غیرفعاله.", show_alert=True)
+        return
+    await call.answer()
+    uid = call.from_user.id
+    with SessionLocal() as s:
+        rows = (
+            s.query(User.referred_by, func.count(User.user_id))
+            .filter(User.referred_by.isnot(None), User.referral_rewarded.is_(True))
+            .group_by(User.referred_by)
+            .order_by(func.count(User.user_id).desc())
+            .limit(10)
+            .all()
+        )
+        names = {}
+        for r in rows:
+            ru = s.get(User, r[0])
+            names[r[0]] = (ru.first_name if ru is not None and ru.first_name else "کاربر")
+        mine = (
+            s.query(func.count(User.user_id)).filter(User.referred_by == uid, User.referral_rewarded.is_(True)).scalar()
+            or 0
+        )
+    medals = ["🥇", "🥈", "🥉"]
+    out = "🏅 <b>برترین دعوت‌کننده‌ها</b>\n\n"
+    if not rows:
+        out += "هنوز کسی در جدول نیست؛ اولیش تو باش! 😉\n"
+    for i, (rid, cnt) in enumerate(rows):
+        nm = esc(names[rid][:2]) + "***"
+        out += f"{medals[i] if i < 3 else str(i + 1) + '.'} {nm} — {cnt} دعوت موفق{' (شما)' if rid == uid else ''}\n"
+    out += f"\n👤 دعوت‌های موفق شما: {mine}"
+    await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎁 دعوت دوستان", callback_data="referral_menu")], [InlineKeyboardButton(text="🏠 منوی اصلی", callback_data="main_menu")]]))
+
+
+@dp.callback_query(F.data == "promo_toggle")
+async def promo_toggle_handler(call: types.CallbackQuery):
+    if not get_bool("promo_toggle_on"):
+        await call.answer("فعلاً غیرفعاله.", show_alert=True)
+        return
+    with SessionLocal() as s:
+        u = get_or_create_user(s, call.from_user.id)
+        u.promo_off = not bool(u.promo_off)
+        off = u.promo_off
+        s.commit()
+    await call.answer(
+        "🔕 تبلیغات خاموش شد؛ فقط اعلان‌های مهم سرویس می‌رسه." if off else "🔔 تبلیغات و تخفیف‌ها دوباره فعال شد.",
+        show_alert=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# ۱۰) کد هدیه و انتقال اعتبار
+# ---------------------------------------------------------------------------
+def redeem_gift(uid, code):
+    code = (code or "").strip().upper()
+    if not code:
+        return 0, "کدی وارد نشده."
+    with SessionLocal() as s:
+        g = s.query(GiftCode).filter(GiftCode.code == code).with_for_update().first()
+        if g is None or not g.is_active:
+            return 0, "این کد معتبر نیست."
+        if g.expires_at:
+            try:
+                if date.fromisoformat(g.expires_at) < today_iran():
+                    return 0, "این کد منقضی شده."
+            except ValueError:
+                pass
+        if (g.max_uses or 0) > 0 and (g.used_count or 0) >= g.max_uses:
+            return 0, "ظرفیت این کد تموم شده."
+        if s.query(GiftUse.id).filter(GiftUse.gift_id == g.id, GiftUse.user_id == uid).first():
+            return 0, "قبلاً از این کد استفاده کردی."
+        u = get_or_create_user(s, uid)
+        u.balance = min(MAX_BALANCE, (u.balance or 0) + (g.amount or 0))
+        g.used_count = (g.used_count or 0) + 1
+        s.add(GiftUse(gift_id=g.id, user_id=uid))
+        amount = g.amount or 0
+        s.commit()
+    return amount, ""
+
+
+@dp.callback_query(F.data == "gift_start")
+async def gift_start(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.set_state(GrowthState.waiting_gift)
+    await edit_or_send(call, "🎁 کد هدیه‌ت رو بفرست:", back_home_markup())
+
+
+@dp.message(GrowthState.waiting_gift, F.text)
+async def gift_entered(message: types.Message, state: FSMContext):
+    amount, err = await asyncio.to_thread(redeem_gift, message.from_user.id, message.text)
+    if err:
+        await message.answer(f"❌ {err}\nدوباره بفرست یا /start بزن.")
+        return
+    await state.clear()
+    await message.answer(f"🎉 {amount:,} تومان به کیف پولت اضافه شد!", reply_markup=back_home_markup())
+
+
+@dp.message(Command("redeem"))
+async def redeem_cmd(message: types.Message, command: CommandObject):
+    if not command.args:
+        await message.answer("استفاده: <code>/redeem کد</code>")
+        return
+    amount, err = await asyncio.to_thread(redeem_gift, message.from_user.id, command.args)
+    await message.answer(f"🎉 {amount:,} تومان به کیف پولت اضافه شد!" if not err else f"❌ {err}")
+
+
+@dp.message(Command("gift"), MainAdmin())
+async def gift_admin_cmd(message: types.Message, command: CommandObject):
+    parts = (command.args or "").split()
+    amount = _num(parts[0]) if parts else None
+    if not amount:
+        await message.answer("استفاده: <code>/gift مبلغ [تعداد کد] [روز اعتبار] [تعداد استفاده هر کد]</code>\nمثال: <code>/gift 50000 10 30 1</code>")
+        return
+    count = min(50, _num(parts[1]) or 1) if len(parts) > 1 else 1
+    days = _num(parts[2]) if len(parts) > 2 else 30
+    uses = max(1, _num(parts[3])) if len(parts) > 3 and _num(parts[3]) else 1
+    codes = []
+    with SessionLocal() as s:
+        for _ in range(count):
+            code = "GIFT" + secrets.token_hex(3).upper()
+            s.add(
+                GiftCode(
+                    code=code, amount=min(amount, MAX_BALANCE), max_uses=uses, used_count=0, is_active=True,
+                    expires_at=(today_iran() + timedelta(days=days or 30)).isoformat(),
+                )
+            )
+            codes.append(code)
+        s.commit()
+    log_action(message.from_user.id, f"ساخت {count} کد هدیه {amount:,} تومانی")
+    await message.answer(
+        f"✅ {count} کد هدیه {amount:,} تومانی ({days or 30} روز اعتبار، {uses} بار مصرف):\n\n"
+        + "\n".join(f"<code>{c}</code>" for c in codes)
+    )
+
+
+@dp.message(Command("transfer"))
+async def transfer_cmd(message: types.Message, command: CommandObject):
+    if not get_bool("transfer_on"):
+        await message.answer("انتقال اعتبار فعلاً غیرفعاله.")
+        return
+    parts = (command.args or "").split()
+    to_id = _num(parts[0]) if len(parts) == 2 else None
+    amount = _num(parts[1]) if len(parts) == 2 else None
+    minimum = get_int("transfer_min")
+    if not to_id or not amount:
+        await message.answer(
+            f"استفاده: <code>/transfer آیدی_عددی_گیرنده مبلغ</code>\nحداقل مبلغ: {minimum:,} تومان\n"
+            "آیدی عددی رو گیرنده از «حساب کاربری» می‌بینه."
+        )
+        return
+    uid = message.from_user.id
+    fee = amount * get_int("transfer_fee_percent") // 100
+    if amount < minimum or to_id == uid:
+        await message.answer(f"مبلغ باید حداقل {minimum:,} تومان باشه و گیرنده خودت نباشه.")
+        return
+    async with user_lock(uid):
+        with SessionLocal() as s:
+            me, to = s.get(User, uid), s.get(User, to_id)
+            if to is None or to.is_banned:
+                await message.answer("گیرنده پیدا نشد (باید قبلاً ربات رو استارت کرده باشه).")
+                return
+            if (me.balance or 0) < amount + fee:
+                await message.answer(f"موجودی کافی نیست. لازم: {amount + fee:,} تومان (کارمزد {fee:,})")
+                return
+            if (to.balance or 0) + amount > MAX_BALANCE:
+                await message.answer("سقف موجودی گیرنده پر می‌شه.")
+                return
+            me.balance = (me.balance or 0) - amount - fee
+            to.balance = (to.balance or 0) + amount
+            glog_add(s, uid, "transfer", f"{to_id}:{amount}")
+            s.commit()
+    await message.answer(f"✅ {amount:,} تومان به <code>{to_id}</code> منتقل شد.")
+    await gsend(message.bot, to_id, f"🎁 {amount:,} تومان اعتبار از طرف یکی از دوستانت به کیف پولت اضافه شد!")
+
+
+# ---------------------------------------------------------------------------
+# ۱۱) حالت اینلاین: @ربات در هر چت
+# ---------------------------------------------------------------------------
+@dp.inline_query()
+async def inline_invite(q: types.InlineQuery):
+    uid = q.from_user.id
+    if not BOT_USERNAME:
+        await q.answer([], cache_time=5)
+        return
+    link = f"https://t.me/{BOT_USERNAME}"
+    if get_bool("referral_on"):
+        link += f"?start=ref_{uid}"
+    text_ = f"🚀 سرویس پرسرعت و پایدار با پشتیبانی سریع\n🎁 با این لینک وارد شو و خرید اولت رو با تخفیف بگیر:\n{link}"
+    res = InlineQueryResultArticle(
+        id=f"inv{uid}", title="📨 ارسال لینک دعوت", description="لینک اختصاصی دعوت رو برای این چت بفرست",
+        input_message_content=InputTextMessageContent(message_text=text_),
+    )
+    await q.answer([res], cache_time=30, is_personal=True)
+
+
+# ---------------------------------------------------------------------------
+# ۱۲) گزارش‌های ادمین: /funnel /sources /profit /pricenotice /growth
+# ---------------------------------------------------------------------------
+@dp.message(Command("funnel"), MainAdmin())
+async def funnel_cmd(message: types.Message):
+    cutoff = (today_iran() - timedelta(days=30)).isoformat()
+    with SessionLocal() as s:
+        total = s.query(func.count(User.user_id)).scalar() or 0
+        new30 = s.query(func.count(User.user_id)).filter(User.joined_at >= cutoff).scalar() or 0
+        blocked = s.query(func.count(User.user_id)).filter(User.blocked.is_(True)).scalar() or 0
+        trial = s.query(func.count(User.user_id)).filter(User.trial_used.is_(True)).scalar() or 0
+        ordered = (
+            s.query(func.count(func.distinct(Request.user_id))).filter(Request.req_type.in_(SALE_TYPES)).scalar() or 0
+        )
+        paid_rows = (
+            s.query(Request.user_id, func.count(Request.id))
+            .filter(Request.status == "answered", Request.req_type.in_(SALE_TYPES))
+            .group_by(Request.user_id)
+            .all()
+        )
+        carts = s.query(func.count(CartEvent.id)).scalar() or 0
+        churn = dict(
+            s.query(GrowthLog.ref, func.count(GrowthLog.id)).filter(GrowthLog.kind == "churn").group_by(GrowthLog.ref).all()
+        )
+    buyers = len(paid_rows)
+    repeat = sum(1 for _u, c in paid_rows if c >= 2)
+
+    def pct(a, b):
+        return f"{(a * 100 / b):.1f}٪" if b else "—"
+
+    out = (
+        "📊 <b>قیف فروش</b>\n\n"
+        f"👥 کل کاربران: {total:,} (۳۰ روز اخیر: {new30:,})\n"
+        f"🚫 بلاک‌کننده‌ها: {blocked:,}\n"
+        f"🎁 تست رایگان گرفته: {trial:,}\n"
+        f"🛒 سفارش ثبت کرده: {ordered:,} ({pct(ordered, total)} از کل)\n"
+        f"✅ خریدار واقعی: {buyers:,} ({pct(buyers, total)} از کل | {pct(buyers, ordered)} از سفارش‌دهنده‌ها)\n"
+        f"🔁 مشتری تکراری: {repeat:,} ({pct(repeat, buyers)} از خریداران)\n"
+        f"🛍 سبد ثبت‌شده در پرداخت: {carts:,}\n"
+    )
+    if churn:
+        out += "\n🙋 <b>دلیل نرفتن/تمدید نکردن:</b>\n" + "\n".join(
+            f"• {CHURN_REASONS.get(k, k)}: {v}" for k, v in churn.items()
+        )
+    await message.answer(out)
+
+
+@dp.message(Command("sources"), MainAdmin())
+async def sources_cmd(message: types.Message):
+    with SessionLocal() as s:
+        users = s.query(User.user_id, User.src).filter(User.src.isnot(None), User.src != "").all()
+        rev = {
+            r[0]: (r[1], r[2] or 0)
+            for r in s.query(Request.user_id, func.count(Request.id), func.sum(Request.price))
+            .filter(Request.status == "answered", Request.req_type.in_(SALE_TYPES))
+            .group_by(Request.user_id)
+            .all()
+        }
+    agg = {}
+    for uid, src in users:
+        a = agg.setdefault(src, [0, 0, 0])
+        a[0] += 1
+        if uid in rev:
+            a[1] += 1
+            a[2] += int(rev[uid][1])
+    if not agg:
+        link = f"https://t.me/{BOT_USERNAME}?start=src_" if BOT_USERNAME else "https://t.me/ربات?start=src_"
+        await message.answer(f"هنوز منبعی ثبت نشده.\nلینک رهگیری بساز: <code>{link}نام_کانال</code>")
+        return
+    out = "🔗 <b>منابع جذب کاربر</b>\n\n"
+    for src, (n, b, r) in sorted(agg.items(), key=lambda kv: -kv[1][2]):
+        out += f"• <code>{esc(src)}</code>: {n} کاربر | {b} خریدار | {r:,} تومان\n"
+    out += f"\nساخت لینک: <code>https://t.me/{BOT_USERNAME}?start=src_نام</code>"
+    await message.answer(out)
+
+
+@dp.message(Command("profit"), MainAdmin())
+async def profit_cmd(message: types.Message, command: CommandObject):
+    cost = get_int("cost_per_gb")
+    if cost <= 0:
+        await message.answer("اول «هزینهٔ هر گیگ» رو در تنظیمات ← 🚀 دعوت، امتیاز و هدیه وارد کن.")
+        return
+    days = _num(command.args) if command.args else None
+    with SessionLocal() as s:
+        q = s.query(Request.plan_name, func.count(Request.id), func.sum(Request.price)).filter(
+            Request.status == "answered", Request.req_type.in_(SALE_TYPES)
+        )
+        if days:
+            q = q.filter(Request.created_iso >= (now_iran().replace(tzinfo=None) - timedelta(days=days)).strftime(TS_FMT))
+        rows = q.group_by(Request.plan_name).all()
+    lines, tot_rev, tot_cost = [], 0, 0
+    for name, cnt, rev in rows:
+        rev = int(rev or 0)
+        gb = _plan_gb(name)
+        c = gb * cost * cnt if gb else 0
+        tot_rev += rev
+        tot_cost += c
+        lines.append((rev - c, name, cnt, rev, c if gb else None))
+    lines.sort(reverse=True)
+    out = f"💹 <b>سود تخمینی{f' ({days} روز اخیر)' if days else ''}</b> | هزینه هر گیگ {cost:,}\n\n"
+    for margin, name, cnt, rev, c in lines[:15]:
+        out += (
+            f"• {esc(name or '')}: {cnt} فروش | درآمد {rev:,} | "
+            + (f"سود {margin:,} ({margin * 100 // rev if rev else 0}٪)" if c is not None else "هزینه نامشخص")
+            + "\n"
+        )
+    out += f"\n💰 درآمد کل: {tot_rev:,}\n📉 هزینه تخمینی: {tot_cost:,}\n✅ سود تخمینی: {tot_rev - tot_cost:,}"
+    await message.answer(out)
+
+
+@dp.message(Command("pricenotice"), MainAdmin())
+async def pricenotice_cmd(message: types.Message, command: CommandObject):
+    days = _num(command.args) if command.args else None
+    if not days:
+        await message.answer("استفاده: <code>/pricenotice تعداد_روز</code>\nمثال: <code>/pricenotice 3</code> ← «قیمت‌ها تا ۳ روز دیگه بالا می‌ره»")
+        return
+    until = jalali_from_iso((today_iran() + timedelta(days=days)).isoformat())
+    text_ = f"📢 <b>اطلاعیه افزایش قیمت</b>\n\nبه‌خاطر تغییر هزینه‌ها، قیمت سرویس‌ها از تاریخ {until} افزایش پیدا می‌کنه.\nتا اون موقع با قیمت‌های فعلی بخر یا تمدید کن 👇"
+
+    async def _go():
+        with SessionLocal() as s:
+            ids = segment_user_ids(s, "all")
+        for uid in ids:
+            await gsend(message.bot, uid, text_, _buy_markup())
+            await asyncio.sleep(0.05)
+
+    spawn(_go())
+    log_action(message.from_user.id, f"ارسال اطلاعیه افزایش قیمت ({days} روز)")
+    await message.answer("✅ ارسال برای کاربران شروع شد.")
+
+
+@dp.message(Command("growth"), MainAdmin())
+async def growth_help(message: types.Message):
+    await message.answer(
+        "🚀 <b>دستورهای رشد (ادمین اصلی)</b>\n\n"
+        "/funnel — قیف فروش و دلیل ریزش\n"
+        "/sources — آمار لینک‌های رهگیری (<code>?start=src_نام</code>)\n"
+        "/profit [روز] — سود تخمینی هر پلن\n"
+        "/gift مبلغ [تعداد] [روز] [دفعات] — ساخت کد هدیه اعتباری\n"
+        "/pricenotice روز — اطلاعیه افزایش قیمت برای همه\n\n"
+        "تنظیمات: ⚙️ تنظیمات ربات ← بخش‌های «🚀»\n"
+        "کاربران: /redeem کد ، /transfer آیدی مبلغ"
+    )
+
+
 JOBS = [
     ("backup", 3, 0, job_backup),
     ("cleanup", 4, 0, job_cleanup),
     ("weekly", 9, 0, job_weekly_report),
     ("reminders", 10, 0, job_reminders),
+    ("growthd", 11, 0, job_growth_daily),
     ("report", 23, 30, job_report),
 ]
 
@@ -8281,6 +9377,7 @@ async def scheduler(bot):
             await job_channel_posts(bot)
             await job_pending_reminder(bot)
             spawn(job_usage_alerts(bot))
+            spawn(job_growth_tick(bot))
         except Exception as e:  # noqa: BLE001
             logging.error("scheduler error: %s", e)
             await report_error(bot, "زمان‌بند اصلی", e)
@@ -8361,6 +9458,8 @@ async def main():
     # وب‌سرور اول بالا میاد تا Render پورت را ببیند، حتی اگر تلگرام کند باشد
     app = web.Application()
     app.router.add_get("/", health_check)
+    app.router.add_post("/sms/{secret}", sms_webhook)
+    set_growth_bot(bot)
     port = int(os.environ.get("PORT", 8080))
     await run_web_server(app, port)
 
