@@ -8050,20 +8050,43 @@ async def run_web_server(app, port):
     await site.start()
 
 
+async def with_retry(fn, *args, tries=8, **kw):
+    """تماس با تلگرام را در برابر timeout/قطعی موقت دوباره امتحان می‌کند."""
+    for i in range(tries):
+        try:
+            return await fn(*args, **kw)
+        except Exception as e:  # noqa: BLE001
+            logging.warning("telegram call failed (%s/%s): %s", i + 1, tries, e)
+            if i == tries - 1:
+                raise
+            await asyncio.sleep(min(30, 3 * (i + 1)))
+
+
 async def main():
     global BOT_USERNAME
     init_db()
     refresh_menu_texts()
-    bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    me = await bot.get_me()
-    BOT_USERNAME = me.username or ""
-    await bot.delete_webhook(drop_pending_updates=True)
-    await update_bot_commands(bot)
+    from aiogram.client.session.aiohttp import AiohttpSession
 
+    bot = Bot(
+        token=TOKEN,
+        session=AiohttpSession(timeout=60),
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+
+    # وب‌سرور اول بالا میاد تا Render پورت را ببیند، حتی اگر تلگرام کند باشد
     app = web.Application()
     app.router.add_get("/", health_check)
     port = int(os.environ.get("PORT", 8080))
     await run_web_server(app, port)
+
+    me = await with_retry(bot.get_me)
+    BOT_USERNAME = me.username or ""
+    await with_retry(bot.delete_webhook, drop_pending_updates=True)
+    try:
+        await update_bot_commands(bot)
+    except Exception as e:  # noqa: BLE001
+        logging.warning("update_bot_commands failed: %s", e)
 
     background = [
         asyncio.create_task(scheduler(bot)),
@@ -8072,10 +8095,21 @@ async def main():
     ]
     logging.info("Bot @%s is running; web server on port %s", BOT_USERNAME, port)
     try:
-        await dp.start_polling(bot)
+        # اگر polling به‌خاطر خطای شبکه/Conflict افتاد، کل برنامه کرش نکند
+        while True:
+            try:
+                await dp.start_polling(bot, handle_signals=False)
+                break
+            except Exception as e:  # noqa: BLE001
+                logging.error("polling crashed, restarting in 5s: %s", e)
+                await asyncio.sleep(5)
     finally:
         for task in background:
             task.cancel()
+        try:
+            await bot.session.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 if __name__ == "__main__":
