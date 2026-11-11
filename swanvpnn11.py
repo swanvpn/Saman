@@ -12676,6 +12676,7 @@ DEFAULTS.update(
         "ap_posts": "[]",
         "ap_disabled": "[]",
         "ap_edits": "{}",
+        "ap_photos": "{}",
         "ap_flash_on": "1",
     }
 )
@@ -12916,6 +12917,7 @@ def _ap_all():
     _ap_migrate()
     disabled = set(_ap_json("ap_disabled", []))
     edits = _ap_json("ap_edits", {})
+    photos = _ap_json("ap_photos", {})
     items = []
     for kind, key, text_, cond in AP_LIBRARY:
         try:
@@ -12923,16 +12925,47 @@ def _ap_all():
         except Exception:  # noqa: BLE001
             ok = False
         items.append(dict(kind=kind, key=key, text=edits.get(key) or text_, custom=False,
-                          edited=bool(edits.get(key)), enabled=key not in disabled, cond_ok=ok))
+                          edited=bool(edits.get(key)), enabled=key not in disabled, cond_ok=ok,
+                          photo=photos.get(key)))
     for p in _ap_json("ap_posts", []):
         if p.get("key") and p.get("text"):
             items.append(dict(kind=p.get("kind") or "custom", key=p["key"], text=p["text"], custom=True,
-                              edited=False, enabled=p["key"] not in disabled, cond_ok=True))
+                              edited=False, enabled=p["key"] not in disabled, cond_ok=True,
+                              photo=p.get("photo")))
     return items
 
 
 def _ap_pool():
     return [(i["kind"], i["key"], i["text"]) for i in _ap_all() if i["enabled"] and i["cond_ok"]]
+
+
+def _ap_photo(key):
+    it = next((i for i in _ap_all() if i["key"] == key), None)
+    return it.get("photo") if it else None
+
+
+def _ap_set_photo(key, file_id):
+    """عکس یک پست را ذخیره می‌کند (file_id) یا با file_id=None حذف می‌کند."""
+    item = next((i for i in _ap_all() if i["key"] == key), None)
+    if item is None:
+        return False
+    if item["custom"]:
+        posts = _ap_json("ap_posts", [])
+        for p_ in posts:
+            if p_.get("key") == key:
+                if file_id:
+                    p_["photo"] = file_id
+                else:
+                    p_.pop("photo", None)
+        set_setting("ap_posts", json.dumps(posts, ensure_ascii=False))
+    else:
+        ph = _ap_json("ap_photos", {})
+        if file_id:
+            ph[key] = file_id
+        else:
+            ph.pop(key, None)
+        set_setting("ap_photos", json.dumps(ph, ensure_ascii=False))
+    return True
 
 
 def ap_next_post():
@@ -12980,9 +13013,27 @@ def ap_flash_post():
     )
 
 
+AP_CAPTION_MAX = 1000  # سقف کپشن تلگرام ۱۰۲۴ نویسه است
+
+
+def _ap_plain_len(text_):
+    return len(html.unescape(re.sub(r"<[^>]+>", "", text_)))
+
+
+async def ap_send(bot, chat_id, text_, markup=None, photo=None):
+    """پست را می‌فرستد؛ اگر عکس دارد، متن کوتاه به‌صورت کپشن و متن بلند در پیام جداگانه زیر عکس می‌آید."""
+    if photo:
+        if _ap_plain_len(text_) <= AP_CAPTION_MAX:
+            await bot.send_photo(chat_id=chat_id, photo=photo, caption=text_, reply_markup=markup)
+            return
+        await bot.send_photo(chat_id=chat_id, photo=photo)
+    await bot.send_message(chat_id=chat_id, text=text_, reply_markup=markup, disable_web_page_preview=True)
+
+
 async def ap_publish(bot, dry=False):
-    """یک پست را در کانال می‌فرستد (dry=True: فقط (kind, متن) را برمی‌گرداند)."""
+    """یک پست را در کانال می‌فرستد (dry=True: فقط (kind, متن, عکس) را برمی‌گرداند)."""
     flash = ap_flash_post()
+    photo = None
     if flash:
         kind, body, commit = "sales", flash, None
     else:
@@ -12990,15 +13041,16 @@ async def ap_publish(bot, dry=False):
         if post is None:
             raise ValueError("پستی برای ارسال نیست (کتابخانه خالی است).")
         kind, body, commit = post[0], _ap_fill(post[2]), (seq, used)
+        photo = _ap_photo(post[1])
     if dry:
-        return kind, body
-    await bot.send_message(chat_id=channel_chat_id(), text=body, reply_markup=ap_markup(kind), disable_web_page_preview=True)
+        return kind, body, photo
+    await ap_send(bot, channel_chat_id(), body, ap_markup(kind), photo)
     if flash:
         set_setting("ap_last_flash", get_setting("flash_until"))
     else:
         set_setting("ap_seq", str(commit[0]))
         set_setting("ap_used", json.dumps(sorted(commit[1])))
-    return kind, body
+    return kind, body, photo
 
 
 async def job_autoposts(bot):
@@ -13021,7 +13073,7 @@ async def job_autoposts(bot):
 @dp.callback_query(F.data == "ap_now", MainAdmin())
 async def ap_now_cb(call: types.CallbackQuery):
     try:
-        kind, _body = await ap_publish(call.bot)
+        kind, _body, _ph = await ap_publish(call.bot)
         log_action(call.from_user.id, f"ارسال دستی پست خودکار ({AP_KIND_LABELS.get(kind, kind)})")
         await call.answer(f"✅ پست «{AP_KIND_LABELS.get(kind, kind)}» در کانال ارسال شد.", show_alert=True)
     except Exception as e:  # noqa: BLE001
@@ -13031,25 +13083,27 @@ async def ap_now_cb(call: types.CallbackQuery):
 @dp.callback_query(F.data == "ap_prev", MainAdmin())
 async def ap_prev_cb(call: types.CallbackQuery):
     try:
-        kind, body = await ap_publish(call.bot, dry=True)
+        kind, body, photo = await ap_publish(call.bot, dry=True)
     except Exception as e:  # noqa: BLE001
         await call.answer(f"ناموفق: {e}"[:190], show_alert=True)
         return
     await call.answer()
-    await call.bot.send_message(
-        chat_id=call.from_user.id,
-        text=f"👁 <b>پیش‌نمایش پست بعدی ({AP_KIND_LABELS.get(kind, kind)}):</b>\n\n{body}",
-        reply_markup=ap_markup(kind),
+    await ap_send(
+        call.bot, call.from_user.id,
+        f"👁 <b>پیش‌نمایش پست بعدی ({AP_KIND_LABELS.get(kind, kind)}):</b>\n\n{body}",
+        ap_markup(kind), photo,
     )
 
 
 # ---------------------------------------------------------------------------
-# 📚 پست‌های پیش‌فرض: لیست، مشاهده، ویرایش، روشن/خاموش و افزودن پست
+# 📚 پست‌های پیش‌فرض: لیست، مشاهده، ویرایش، عکس، روشن/خاموش و افزودن پست
 # ---------------------------------------------------------------------------
 class APState(StatesGroup):
     new_text = State()
+    new_photo = State()
     new_kind = State()
     edit_text = State()
+    edit_photo = State()
 
 
 AP_PAGE_SIZE = 8
@@ -13059,6 +13113,7 @@ AP_HINT = (
     "جاگذاری‌های خودکار: <code>{bot}</code> آیدی ربات، <code>{ref}</code> پاداش دعوت، "
     "<code>{trial_days}</code> روز تست، <code>{general}</code> درصد تخفیف عمومی."
 )
+AP_PHOTO_HINT = "\n🖼 اگر عکس هم می‌خواهید، <b>عکس را همراه متن (به‌صورت کپشن)</b> بفرستید."
 
 
 def _ap_title(text_):
@@ -13070,6 +13125,13 @@ def _ap_find(key):
     return next((i for i in _ap_all() if i["key"] == key), None)
 
 
+def _ap_msg_html(message):
+    """متن یا کپشن پیام با حفظ قالب‌بندی تلگرام (HTML)."""
+    if not (message.text or message.caption):
+        return ""
+    return (message.html_text or "").strip()
+
+
 def ap_list_view(page):
     items = _ap_all()
     pages = max(1, -(-len(items) // AP_PAGE_SIZE))
@@ -13078,15 +13140,16 @@ def ap_list_view(page):
     out = (
         "📚 <b>پست‌های پیش‌فرض</b>\n\n"
         f"✅ روشن: {on} | ⬜ خاموش: {len(items) - on} | کل: {len(items)}\n\n"
-        "روی هر پست بزنید تا متنش را ببینید، ویرایشش کنید یا روشن/خاموشش کنید. "
-        "فقط پست‌های روشن در کانال منتشر می‌شوند.\n"
+        "روی هر پست بزنید تا متنش را ببینید، ویرایشش کنید، عکس بگذارید یا روشن/خاموشش کنید. "
+        "فقط پست‌های روشن در کانال منتشر می‌شوند. (🖼 یعنی پست عکس دارد)\n"
         f"صفحهٔ {page + 1} از {pages}"
     )
     b = InlineKeyboardButton
     kb = [[b(text="➕ افزودن پست جدید", callback_data="ap:a")]]
     for i in items[page * AP_PAGE_SIZE:(page + 1) * AP_PAGE_SIZE]:
         mark = "✅" if i["enabled"] else "⬜"
-        label = f"{mark} {AP_KIND_LABELS.get(i['kind'], i['kind'])} | {_ap_title(i['text'])}"
+        pic = "🖼" if i.get("photo") else ""
+        label = f"{mark}{pic} {AP_KIND_LABELS.get(i['kind'], i['kind'])} | {_ap_title(i['text'])}"
         kb.append([b(text=label[:60], callback_data=f"ap:v:{i['key']}:{page}")])
     nav = []
     if page > 0:
@@ -13108,14 +13171,19 @@ def ap_item_view(key, page):
     out = f"📝 <b>{AP_KIND_LABELS.get(item['kind'], item['kind'])}</b>"
     out += " — پست شما" if item["custom"] else (" — ویرایش‌شده" if item["edited"] else " — پیش‌فرض")
     out += f"\nوضعیت: {status}\n"
+    out += "عکس: 🖼 دارد\n" if item.get("photo") else "عکس: ندارد\n"
     if not item["cond_ok"]:
         out += "⚠️ شرط نمایش این پست الان برقرار نیست (مثلاً ویژگی مربوطه خاموش است)؛ تا برقرار نشود منتشر نمی‌شود.\n"
     out += "\n" + _ap_fill(item["text"])
     kb = [
         [b(text=("🔴 خاموش کردن" if item["enabled"] else "🟢 روشن کردن"), callback_data=f"ap:t:{key}:{page}")],
-        [b(text="✏️ ویرایش متن", callback_data=f"ap:e:{key}:{page}")],
-        [b(text="📤 ارسال همین پست به کانال", callback_data=f"ap:s:{key}:{page}")],
+        [b(text="✏️ ویرایش متن", callback_data=f"ap:e:{key}:{page}"),
+         b(text=("🖼 تغییر عکس" if item.get("photo") else "🖼 افزودن عکس"), callback_data=f"ap:p:{key}:{page}")],
     ]
+    if item.get("photo"):
+        kb.append([b(text="❌ حذف عکس", callback_data=f"ap:x:{key}:{page}")])
+    kb.append([b(text="👁 پیش‌نمایش (همان‌طور که در کانال می‌آید)", callback_data=f"ap:w:{key}:{page}")])
+    kb.append([b(text="📤 ارسال همین پست به کانال", callback_data=f"ap:s:{key}:{page}")])
     if item["edited"]:
         kb.append([b(text="↩️ بازگشت به متن پیش‌فرض", callback_data=f"ap:r:{key}:{page}")])
     if item["custom"]:
@@ -13177,6 +13245,20 @@ async def ap_reset_cb(call: types.CallbackQuery):
     await edit_or_send(call, out, markup)
 
 
+@dp.callback_query(F.data.startswith("ap:w:"), MainAdmin())
+async def ap_preview_one_cb(call: types.CallbackQuery):
+    _, _, key, _page = call.data.split(":")
+    item = _ap_find(key)
+    if item is None:
+        await call.answer("پست پیدا نشد.", show_alert=True)
+        return
+    await call.answer()
+    try:
+        await ap_send(call.bot, call.from_user.id, _ap_fill(item["text"]), ap_markup(item["kind"]), item.get("photo"))
+    except Exception as e:  # noqa: BLE001
+        await call.bot.send_message(chat_id=call.from_user.id, text=f"❌ پیش‌نمایش ناموفق: {err_text(e)}")
+
+
 @dp.callback_query(F.data.startswith("ap:s:"), MainAdmin())
 async def ap_send_one_cb(call: types.CallbackQuery):
     _, _, key, page = call.data.split(":")
@@ -13185,10 +13267,7 @@ async def ap_send_one_cb(call: types.CallbackQuery):
         await call.answer("پست پیدا نشد.", show_alert=True)
         return
     try:
-        await call.bot.send_message(
-            chat_id=channel_chat_id(), text=_ap_fill(item["text"]),
-            reply_markup=ap_markup(item["kind"]), disable_web_page_preview=True,
-        )
+        await ap_send(call.bot, channel_chat_id(), _ap_fill(item["text"]), ap_markup(item["kind"]), item.get("photo"))
         log_action(call.from_user.id, f"ارسال دستی یک پست به کانال ({key})")
         await call.answer("✅ در کانال ارسال شد.", show_alert=True)
     except Exception as e:  # noqa: BLE001
@@ -13213,7 +13292,7 @@ async def ap_delete_ask_cb(call: types.CallbackQuery):
 async def ap_delete_do_cb(call: types.CallbackQuery):
     _, _, key, page = call.data.split(":")
     _ap_migrate()
-    posts = [p for p in _ap_json("ap_posts", []) if p.get("key") != key]
+    posts = [p_ for p_ in _ap_json("ap_posts", []) if p_.get("key") != key]
     set_setting("ap_posts", json.dumps(posts, ensure_ascii=False))
     log_action(call.from_user.id, f"حذف پست کانال ({key})")
     await call.answer("🗑 حذف شد.")
@@ -13221,7 +13300,7 @@ async def ap_delete_do_cb(call: types.CallbackQuery):
     await edit_or_send(call, out, markup)
 
 
-# --- ویرایش متن ---
+# --- ویرایش متن (متن ساده، یا عکس + کپشن) ---
 @dp.callback_query(F.data.startswith("ap:e:"), MainAdmin())
 async def ap_edit_start_cb(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
@@ -13232,17 +13311,19 @@ async def ap_edit_start_cb(call: types.CallbackQuery, state: FSMContext):
     await state.update_data(ap_key=key, ap_page=int(page))
     b = InlineKeyboardButton
     await edit_or_send(
-        call, "✏️ <b>متن جدید پست</b> را بفرستید.\n\n" + AP_HINT,
+        call, "✏️ <b>متن جدید پست</b> را بفرستید.\n\n" + AP_HINT + AP_PHOTO_HINT,
         InlineKeyboardMarkup(inline_keyboard=[[b(text="انصراف", callback_data=f"ap:v:{key}:{page}")]]),
     )
 
 
 @dp.message(APState.edit_text, F.text, MainAdmin())
+@dp.message(APState.edit_text, F.photo, MainAdmin())
 async def ap_edit_save(message: types.Message, state: FSMContext):
     data = await state.get_data()
     key, page = data.get("ap_key"), int(data.get("ap_page") or 0)
-    new_text = (message.html_text or "").strip()
-    if not new_text:
+    new_text = _ap_msg_html(message)
+    photo = message.photo[-1].file_id if message.photo else None
+    if not new_text and not photo:
         await message.answer("لطفاً متن بفرستید.")
         return
     if len(new_text) > AP_MAX_LEN:
@@ -13252,44 +13333,82 @@ async def ap_edit_save(message: types.Message, state: FSMContext):
     if item is None:
         await state.clear()
         return
-    if item["custom"]:
-        posts = _ap_json("ap_posts", [])
-        for p in posts:
-            if p.get("key") == key:
-                p["text"] = new_text
-        set_setting("ap_posts", json.dumps(posts, ensure_ascii=False))
-    else:
-        edits = _ap_json("ap_edits", {})
-        edits[key] = new_text
-        set_setting("ap_edits", json.dumps(edits, ensure_ascii=False))
+    if new_text:
+        if item["custom"]:
+            posts = _ap_json("ap_posts", [])
+            for p_ in posts:
+                if p_.get("key") == key:
+                    p_["text"] = new_text
+            set_setting("ap_posts", json.dumps(posts, ensure_ascii=False))
+        else:
+            edits = _ap_json("ap_edits", {})
+            edits[key] = new_text
+            set_setting("ap_edits", json.dumps(edits, ensure_ascii=False))
+    if photo:
+        _ap_set_photo(key, photo)
     await state.clear()
-    log_action(message.from_user.id, f"ویرایش متن پست کانال ({key})")
+    log_action(message.from_user.id, f"ویرایش پست کانال ({key})")
     out, markup = ap_item_view(key, page)
     await message.answer("✅ ذخیره شد.\n\n" + out, reply_markup=markup)
+
+
+# --- افزودن/تغییر/حذف عکس یک پست موجود ---
+@dp.callback_query(F.data.startswith("ap:p:"), MainAdmin())
+async def ap_photo_start_cb(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    _, _, key, page = call.data.split(":")
+    if _ap_find(key) is None:
+        return
+    await state.set_state(APState.edit_photo)
+    await state.update_data(ap_key=key, ap_page=int(page))
+    b = InlineKeyboardButton
+    await edit_or_send(
+        call, "🖼 <b>عکس پست</b> را بفرستید (به‌صورت عکس، نه فایل).\n\n"
+              "عکس بالای متن پست در کانال نمایش داده می‌شود.",
+        InlineKeyboardMarkup(inline_keyboard=[[b(text="انصراف", callback_data=f"ap:v:{key}:{page}")]]),
+    )
+
+
+@dp.message(APState.edit_photo, F.photo, MainAdmin())
+async def ap_photo_save(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    key, page = data.get("ap_key"), int(data.get("ap_page") or 0)
+    _ap_set_photo(key, message.photo[-1].file_id)
+    await state.clear()
+    log_action(message.from_user.id, f"تنظیم عکس پست کانال ({key})")
+    out, markup = ap_item_view(key, page)
+    await message.answer("✅ عکس ذخیره شد.\n\n" + out, reply_markup=markup)
+
+
+@dp.message(APState.edit_photo, MainAdmin())
+async def ap_photo_wrong(message: types.Message):
+    await message.answer("لطفاً یک عکس بفرستید (نه متن یا فایل).")
+
+
+@dp.callback_query(F.data.startswith("ap:x:"), MainAdmin())
+async def ap_photo_remove_cb(call: types.CallbackQuery):
+    _, _, key, page = call.data.split(":")
+    _ap_set_photo(key, None)
+    log_action(call.from_user.id, f"حذف عکس پست کانال ({key})")
+    await call.answer("❌ عکس حذف شد.")
+    out, markup = ap_item_view(key, int(page))
+    await edit_or_send(call, out, markup)
 
 
 # --- افزودن پست ---
 @dp.callback_query(F.data == "ap:a", MainAdmin())
 async def ap_add_start_cb(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
+    await state.clear()
     await state.set_state(APState.new_text)
     b = InlineKeyboardButton
     await edit_or_send(
-        call, "➕ <b>متن پست جدید</b> را بفرستید.\n\n" + AP_HINT,
+        call, "➕ <b>متن پست جدید</b> را بفرستید.\n\n" + AP_HINT + AP_PHOTO_HINT,
         InlineKeyboardMarkup(inline_keyboard=[[b(text="انصراف", callback_data="ap:l:0")]]),
     )
 
 
-@dp.message(APState.new_text, F.text, MainAdmin())
-async def ap_add_text(message: types.Message, state: FSMContext):
-    new_text = (message.html_text or "").strip()
-    if not new_text:
-        await message.answer("لطفاً متن بفرستید.")
-        return
-    if len(new_text) > AP_MAX_LEN:
-        await message.answer(f"متن بیش از حد طولانی است (حداکثر {AP_MAX_LEN} نویسه). کوتاه‌تر بفرستید.")
-        return
-    await state.update_data(ap_new_text=new_text)
+async def ap_ask_kind(message, state):
     await state.set_state(APState.new_kind)
     b = InlineKeyboardButton
     kinds = ["sales", "edu", "tip", "trust", "security"]
@@ -13298,6 +13417,54 @@ async def ap_add_text(message: types.Message, state: FSMContext):
           [b(text="انصراف", callback_data="ap:l:0")]]
     await message.answer("این پست از چه نوعی باشد؟ (نوع، جای پست را در چرخهٔ انتشار و متن دکمهٔ زیرش را تعیین می‌کند)",
                          reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+
+@dp.message(APState.new_text, F.text, MainAdmin())
+@dp.message(APState.new_text, F.photo, MainAdmin())
+async def ap_add_text(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    photo = message.photo[-1].file_id if message.photo else data.get("ap_new_photo")
+    new_text = _ap_msg_html(message)
+    if not new_text:
+        if message.photo:  # عکس بدون کپشن: عکس را نگه می‌داریم و متن را می‌خواهیم
+            await state.update_data(ap_new_photo=photo)
+            await message.answer("🖼 عکس ذخیره شد. حالا <b>متن پست</b> را بفرستید.")
+        else:
+            await message.answer("لطفاً متن بفرستید.")
+        return
+    if len(new_text) > AP_MAX_LEN:
+        await message.answer(f"متن بیش از حد طولانی است (حداکثر {AP_MAX_LEN} نویسه). کوتاه‌تر بفرستید.")
+        return
+    await state.update_data(ap_new_text=new_text, ap_new_photo=photo)
+    if photo:
+        await ap_ask_kind(message, state)
+        return
+    await state.set_state(APState.new_photo)
+    b = InlineKeyboardButton
+    await message.answer(
+        "🖼 اگر می‌خواهید عکس همراه پست باشد همین حالا <b>عکس</b> را بفرستید؛ وگرنه «بدون عکس» را بزنید.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [b(text="⏭ بدون عکس", callback_data="ap:np")],
+            [b(text="انصراف", callback_data="ap:l:0")],
+        ]),
+    )
+
+
+@dp.message(APState.new_photo, F.photo, MainAdmin())
+async def ap_add_photo(message: types.Message, state: FSMContext):
+    await state.update_data(ap_new_photo=message.photo[-1].file_id)
+    await ap_ask_kind(message, state)
+
+
+@dp.message(APState.new_photo, MainAdmin())
+async def ap_add_photo_wrong(message: types.Message):
+    await message.answer("لطفاً یک عکس بفرستید، یا دکمهٔ «بدون عکس» را بزنید.")
+
+
+@dp.callback_query(F.data == "ap:np", APState.new_photo, MainAdmin())
+async def ap_add_skip_photo_cb(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await ap_ask_kind(call.message, state)
 
 
 @dp.callback_query(F.data.startswith("ap:k:"), APState.new_kind, MainAdmin())
@@ -13311,17 +13478,19 @@ async def ap_add_kind_cb(call: types.CallbackQuery, state: FSMContext):
         return
     _ap_migrate()
     posts = _ap_json("ap_posts", [])
-    have = {p.get("key") for p in posts}
+    have = {p_.get("key") for p_ in posts}
     key = "c" + secrets.token_hex(3)
     while key in have:
         key = "c" + secrets.token_hex(3)
-    posts.append({"key": key, "kind": kind, "text": new_text})
+    entry = {"key": key, "kind": kind, "text": new_text}
+    if data.get("ap_new_photo"):
+        entry["photo"] = data["ap_new_photo"]
+    posts.append(entry)
     set_setting("ap_posts", json.dumps(posts, ensure_ascii=False))
     await state.clear()
     log_action(call.from_user.id, f"افزودن پست کانال ({AP_KIND_LABELS[kind]})")
     out, markup = ap_item_view(key, 0)
     await edit_or_send(call, "✅ پست اضافه شد و روشن است.\n\n" + out, markup)
-
 
 
 JOBS = [
