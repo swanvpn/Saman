@@ -5280,7 +5280,7 @@ async def admin_setting_save(message: types.Message, state: FSMContext):
                 await message.answer("چند عدد (حداکثر ۱۲ تا) با کاما جدا کنید. مثال: 200000,400000")
                 return
             value = ",".join(nums)
-        if key == "post_times" and value:
+        if key in ("post_times", "ap_times") and value:
             times = parse_times(value)
             if not times:
                 await message.answer("ساعت نامعتبر است. مثال: 10:00,20:00")
@@ -12490,6 +12490,17 @@ def v3_page_extras(page):
             text_ += f"\n🔗 لینک: {esc(link)}"
         text_ += "\nℹ️ کانال خصوصی: ربات را ادمین کانال کنید تا ثبت خودکار پیشنهاد شود، یا یک پیام از کانال فوروارد کنید.\n"
         return text_, []
+    if page == "ap":
+        n_pool = len(_ap_pool())
+        text_ = (
+            f"\n📚 کتابخانهٔ فعلی: {n_pool} پست آماده (آموزش، نکته، جذب مشتری، اعتمادسازی، امنیت) + پست‌های دلخواه شما.\n"
+            "ℹ️ کانال از «📣 پست خودکار کانال» تنظیم می‌شود؛ ربات باید ادمین کانال باشد.\n"
+            "ℹ️ پست‌ها بدون تکرار می‌چرخند و تخفیف زمان‌دار فعال هم خودکار اعلام می‌شود.\n"
+        )
+        return text_, [
+            [b(text="👁 پیش‌نمایش پست بعدی", callback_data="ap_prev")],
+            [b(text="📤 ارسال یک پست همین الان", callback_data="ap_now")],
+        ]
     if page == "pay2":
         return "\nℹ️ ساعت کاری فقط برای نمایش وعدهٔ پاسخ و «پیام خودکار شب» استفاده می‌شود.\n", []
     return "", []
@@ -12651,6 +12662,255 @@ async def v3_backup_channel_skip(call: types.CallbackQuery):
     await edit_or_send(call, "باشه؛ ثبت نشد. هر وقت خواستید از تنظیمات ← «یادآوری، گزارش و نظرسنجی» انجام دهید.")
 
 
+# ---------------------------------------------------------------------------
+# 🤖 ادمین حرفه‌ای کانال: پست خودکار آموزشی، جذب مشتری، اعتمادسازی و امنیت
+# هر پست یک دکمهٔ شیشه‌ای «استارت ربات» دارد (با رهگیری منبع src_chpost در /sources)
+# ---------------------------------------------------------------------------
+DEFAULTS.update(
+    {
+        "ap_on": "0",
+        "ap_times": "12:00,18:00,22:00",
+        "ap_btn_text": "",
+        "ap_custom": "",
+        "ap_flash_on": "1",
+    }
+)
+SETTING_PAGES["ap"] = "🤖 ادمین حرفه‌ای کانال (پست خودکار)"
+SETTINGS.update(
+    {
+        "ap_on": dict(page="ap", type="toggle", label="پست خودکار محتوا در کانال"),
+        "ap_times": dict(page="ap", type="text", label="ساعت‌های پست (مثلاً 12:00,18:00,22:00)"),
+        "ap_btn_text": dict(page="ap", type="text", label="متن دکمهٔ زیر پست (خالی = پیش‌فرض بر اساس نوع پست)"),
+        "ap_flash_on": dict(page="ap", type="toggle", label="اعلام خودکار تخفیف زمان‌دار در کانال"),
+        "ap_custom": dict(
+            page="ap", type="text",
+            label="پست‌های دلخواه شما (چند پست را با خطی که فقط --- دارد جدا کنید؛ در چرخه می‌آید)",
+        ),
+    }
+)
+
+AP_KIND_LABELS = {"edu": "آموزش", "tip": "نکته", "sales": "جذب مشتری", "trust": "اعتمادسازی", "security": "امنیت", "tariff": "تعرفه", "custom": "پست شما"}
+AP_BTN_DEFAULT = {
+    "edu": "📲 شروع در ربات",
+    "tip": "🚀 استارت ربات",
+    "sales": "🛒 مشاهده تعرفه و خرید",
+    "trust": "🚀 استارت ربات",
+    "security": "🔒 ورود به ربات رسمی",
+    "tariff": "🛒 شروع خرید",
+    "custom": "🚀 استارت ربات",
+}
+# چرخهٔ نوع پست‌ها؛ «tariff» فقط وقتی پست خودکار تعرفه (post_on) خاموش باشد می‌آید
+AP_CYCLE = ["edu", "sales", "tip", "trust", "edu", "custom", "security", "tariff", "sales", "tip"]
+
+AP_LIBRARY = [
+    # (نوع, کلید یکتا, متن HTML, شرط نمایش)
+    ("edu", "e_android",
+     "📱 <b>آموزش اتصال در اندروید</b>\n\n1️⃣ برنامهٔ <b>v2rayNG</b> را نصب کنید.\n2️⃣ ساب‌لینک سرویس را از ربات کپی کنید.\n"
+     "3️⃣ در برنامه روی ➕ بزنید و گزینهٔ افزودن اشتراک (Subscription) را انتخاب کنید.\n4️⃣ سرور را انتخاب و دکمهٔ اتصال را بزنید.\n\n"
+     "💡 لینک سرویس‌تان را از بخش «📦 سرویس‌های من» در {bot} می‌گیرید.", None),
+    ("edu", "e_ios",
+     "🍎 <b>آموزش اتصال در آیفون</b>\n\n1️⃣ از App Store برنامهٔ <b>V2Box</b> یا <b>Streisand</b> را نصب کنید.\n2️⃣ ساب‌لینک را کپی کنید.\n"
+     "3️⃣ در بخش Configs گزینهٔ افزودن اشتراک را بزنید و لینک را وارد کنید.\n4️⃣ سرور را انتخاب و وصل شوید.\n\n"
+     "اگر گیر کردید، از «🆘 کمک می‌خواهم» در ربات کمک بگیرید.", None),
+    ("edu", "e_windows",
+     "💻 <b>آموزش اتصال در ویندوز</b>\n\n1️⃣ برنامهٔ <b>v2rayN</b> را نصب کنید.\n2️⃣ از منوی Subscription گزینهٔ Add subscription را بزنید.\n"
+     "3️⃣ ساب‌لینک را وارد و ذخیره کنید.\n4️⃣ سرور را انتخاب و حالت <b>System Proxy</b> را فعال کنید.", None),
+    ("edu", "e_update",
+     "🔄 <b>اگر وصل نمی‌شود، اول این کار را بکنید</b>\n\nدر بیشتر موارد مشکل با «Update Subscription» (به‌روزرسانی اشتراک) حل می‌شود. "
+     "داخل برنامه اشتراک را آپدیت کنید و دوباره وصل شوید.\n\n"
+     "اگر نشد: برنامه را به آخرین نسخه ببرید و شبکه را عوض کنید (وای‌فای ↔ دیتا).", None),
+    ("edu", "e_sub",
+     "🔗 <b>ساب‌لینک چیست و چرا بهتر است؟</b>\n\nساب‌لینک یک لینک ثابت است که لیست سرورها را خودش به‌روز می‌کند؛ "
+     "اگر سروری عوض شود نیازی نیست دوباره کانفیگ بگیرید، فقط اشتراک را آپدیت کنید.\n\nیک بار اضافه کنید، همیشه به‌روز بمانید ✅", None),
+    ("edu", "e_speed",
+     "🐢 <b>سرعت پایین شد؟ این ۴ مورد را امتحان کنید</b>\n\n1️⃣ داخل برنامه سرور دیگری انتخاب کنید\n2️⃣ شبکه را عوض کنید (وای‌فای ↔ دیتا)\n"
+     "3️⃣ حالت هواپیما را یک بار روشن و خاموش کنید\n4️⃣ برنامه را آپدیت کنید\n\n"
+     "اگر مشکل ادامه داشت از «🩺 چک وضعیت سرویس من» در ربات استفاده کنید تا بفهمید مشکل از لینک است یا شبکه.", None),
+    ("edu", "e_usage",
+     "📊 <b>مصرف حجم‌تان را چطور ببینید؟</b>\n\nلازم نیست حساب‌وکتاب کنید: در {bot} وارد «📦 سرویس‌های من» شوید و روی سرویس بزنید؛ "
+     "مصرف، حجم باقی‌مانده و تاریخ پایان را همان‌جا می‌بینید. قبل از تمام شدن حجم هم خودکار هشدار می‌گیرید.", None),
+    ("edu", "e_renew",
+     "🔁 <b>تمدید سرویس فقط ۳ لمس است</b>\n\n«📦 سرویس‌های من» ← انتخاب سرویس ← «🔄 تمدید». "
+     "بدون ساخت سفارش جدید و بدون تغییر لینک؛ لینک قبلی‌تان همان می‌ماند.", None),
+    ("tip", "t_battery",
+     "🔋 <b>نکتهٔ اندروید: قطع شدن در پس‌زمینه</b>\n\nبعضی گوشی‌ها برنامه را برای صرفه‌جویی باتری می‌بندند. "
+     "در تنظیمات گوشی، برنامهٔ v2rayNG را از «بهینه‌سازی باتری» مستثنی کنید تا اتصال پایدار بماند.", None),
+    ("tip", "t_pick",
+     "🤔 <b>نمی‌دانید کدام پلن بخرید؟</b>\n\nدر {bot} دکمهٔ «نمی‌دونم کدوم رو بخرم؟» را بزنید؛ با ۳ سؤال ساده "
+     "(مصرف، هدف، تعداد نفرات) بهترین پلن را بر اساس نیاز واقعی‌تان پیشنهاد می‌دهد.", lambda: get_bool("pick_on")),
+    ("tip", "t_game",
+     "🎮 <b>برای بازی آنلاین</b>\n\nبرای بازی، ثبات از حجم مهم‌تر است. پلن‌های «گیمینگ» برای همین ساخته شده‌اند. "
+     "قبل از بازی اتصال را چک کنید و از وای‌فای یا دیتای پایدار استفاده کنید.", None),
+    ("tip", "t_dev",
+     "👨‍👩‍👧 <b>یک سرویس برای چند نفر؟</b>\n\nاگر چند نفرید، پلن‌های چندکاربره یا نامحدود انتخاب مناسب‌تری هستند. "
+     "راهنمای انتخاب پلن در ربات تعداد نفرات را هم در نظر می‌گیرد.", None),
+    ("sales", "s_ref",
+     "🎁 <b>دوستانتان را دعوت کنید، اعتبار بگیرید</b>\n\nبا هر دوستی که با لینک اختصاصی شما وارد ربات شود و اولین خریدش تأیید شود، "
+     "<b>{ref} تومان</b> به کیف پول شما اضافه می‌شود.\n\nلینک دعوت را از «🎁 دعوت دوستان» در ربات بگیرید.",
+     lambda: get_bool("referral_on") and get_int("referral_reward") > 0),
+    ("sales", "s_trial",
+     "🆓 <b>اول امتحان کنید، بعد بخرید</b>\n\nکاربران جدید می‌توانند یک سرویس تست <b>{trial_days} روزه</b> رایگان بگیرند. "
+     "فقط ربات را استارت کنید و دکمهٔ «🎁 سرویس تست رایگان» را بزنید.", lambda: get_bool("trial_on")),
+    ("sales", "s_club",
+     "🏆 <b>باشگاه مشتریان</b>\n\nبا هر خرید امتیاز می‌گیرید و امتیازها را به اعتبار کیف پول تبدیل می‌کنید. "
+     "هر ماه چند خرید کنید، سطح وفاداری (برنزی، نقره‌ای، طلایی) و تخفیف بیشتری می‌گیرید.", lambda: get_bool("club_on")),
+    ("sales", "s_bonus",
+     "💳 <b>شارژ کیف پول با پاداش</b>\n\nهر چه بیشتر شارژ کنید، پاداش بیشتری می‌گیرید و خریدهای بعدی‌تان سریع‌تر (بدون ارسال رسید) انجام می‌شود.",
+     lambda: get_bool("bonus_on")),
+    ("sales", "s_first",
+     "👋 <b>خرید اول؟ تخفیف دارید!</b>\n\nکاربران جدید روی اولین خرید تخفیف ویژه می‌گیرند. همین حالا ربات را استارت کنید و تعرفه را ببینید.",
+     lambda: get_bool("first_on") and get_int("first_percent") > 0),
+    ("sales", "s_custom",
+     "✨ <b>پلن دلخواه خودتان را بسازید</b>\n\nحجم و تعداد روز را خودتان انتخاب کنید و قیمت را همان لحظه ببینید؛ بدون پرداخت اضافه برای چیزی که لازم ندارید.",
+     lambda: get_bool("custom_on") and get_int("custom_price_per_gb") > 0),
+    ("trust", "tr_support",
+     "🎧 <b>پشتیبانی واقعی، نه ربات بی‌جواب</b>\n\nتیکت بزنید (متن، عکس یا ویس) و جواب را همان‌جا در ربات بگیرید. "
+     "اگر مشکلی از سمت سرور باشد خودمان اطلاع می‌دهیم و نیازی به نوشتن چندباره نیست.", None),
+    ("trust", "tr_status",
+     "📡 <b>شفافیت دربارهٔ وضعیت سرورها</b>\n\nوضعیت سرویس‌ها و تاریخچهٔ قطعی‌ها را خودتان در ربات ببینید. "
+     "اگر قطعی پیش بیاید، پنهانش نمی‌کنیم؛ اعلام می‌کنیم و بعد از رفع هم خبر می‌دهیم.", lambda: get_bool("status_page_on")),
+    ("trust", "tr_reviews",
+     "💬 <b>نظر مشتری‌ها را خودتان بخوانید</b>\n\nنظرهای واقعی مشتری‌ها (ناشناس و با اجازهٔ خودشان) در بخش «نظرات مشتریان» ربات هست؛ قبل از خرید مطمئن شوید.",
+     lambda: get_bool("reviews_on")),
+    ("trust", "tr_refund",
+     "🛡 <b>پرداخت امن و شفاف</b>\n\nبعد از ارسال رسید، فاکتور رسمی با شمارهٔ پیگیری می‌گیرید. اگر سفارشی تأیید نشود، "
+     "مبلغ پرداخت‌شده از کیف پول به حسابتان برمی‌گردد.", None),
+    ("security", "sec_link",
+     "🔐 <b>لینک سرویس‌تان را به کسی ندهید</b>\n\nساب‌لینک مثل رمز عبور است. هر کس آن را داشته باشد از حجم شما مصرف می‌کند. "
+     "اگر فکر می‌کنید لو رفته، از پشتیبانی بخواهید.", None),
+    ("security", "sec_phish",
+     "⚠️ <b>هشدار کلاهبرداری</b>\n\nما هرگز رمز، کد پیامک یا اطلاعات بانکی (رمز دوم، CVV2) نمی‌خواهیم. "
+     "پرداخت فقط از طریق همین ربات رسمی انجام می‌شود؛ اگر کسی در خصوصی از طرف ما پرداخت خواست، گزارشش کنید.", None),
+    ("security", "sec_public",
+     "📶 <b>وای‌فای عمومی؟ حواستان باشد</b>\n\nدر شبکه‌های عمومی (کافه، فرودگاه) قبل از ورود به حساب‌ها اتصال امن را فعال کنید و از واردکردن اطلاعات حساس در سایت‌های ناشناس خودداری کنید.", None),
+]
+
+
+def _ap_fill(text_):
+    return (
+        text_.replace("{bot}", f"@{BOT_USERNAME}")
+        .replace("{ref}", f"{get_int('referral_reward'):,}")
+        .replace("{trial_days}", str(max(1, get_int("trial_days"))))
+    )
+
+
+def _ap_pool():
+    pool = [(k, key, text_) for k, key, text_, cond in AP_LIBRARY if cond is None or cond()]
+    for block in re.split(r"\n\s*-{3,}\s*\n", (get_setting("ap_custom") or "").replace("\r", "")):
+        block = block.strip()
+        if block:
+            pool.append(("custom", "c" + hashlib.md5(block.encode()).hexdigest()[:6], esc(block)))
+    return pool
+
+
+def ap_next_post():
+    """(seq جدید, (kind, key, متن) یا None, مجموعهٔ استفاده‌شده‌ها)؛ بدون تغییر دادن تنظیمات."""
+    seq = get_int("ap_seq")
+    pool = _ap_pool()
+    try:
+        used = set(json.loads(get_setting("ap_used") or "[]"))
+    except ValueError:
+        used = set()
+    n = len(AP_CYCLE)
+    for off in range(n):
+        kind = AP_CYCLE[(seq + off) % n]
+        if kind == "tariff":
+            if get_bool("post_on"):
+                continue  # پست خودکار تعرفه جداگانه کار می‌کند
+            return seq + off + 1, ("tariff", "tariff", channel_post_text()), used
+        cands = [p for p in pool if p[0] == kind]
+        if not cands:
+            continue
+        fresh = [p for p in cands if p[1] not in used]
+        if not fresh:
+            used = used - {p[1] for p in cands}
+            fresh = cands
+        pick = secrets.choice(fresh)
+        return seq + off + 1, pick, used | {pick[1]}
+    return seq, None, used
+
+
+def ap_markup(kind):
+    label = (get_setting("ap_btn_text") or "").strip() or AP_BTN_DEFAULT.get(kind, "🚀 استارت ربات")
+    url = f"https://t.me/{BOT_USERNAME}?start=src_chpost"
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label[:60], url=url)]])
+
+
+def ap_flash_post():
+    left = flash_remaining()
+    if left is None or not get_bool("ap_flash_on") or get_setting("ap_last_flash") == get_setting("flash_until"):
+        return None
+    return (
+        "🔥 <b>تخفیف ویژه زمان‌دار!</b>\n\n"
+        f"🎁 {get_int('flash_percent')}٪ تخفیف روی همهٔ پلن‌ها\n"
+        f"⏳ فقط {fmt_remaining(left)} فرصت دارید.\n\n"
+        "همین الان ربات را استارت کنید 👇"
+    )
+
+
+async def ap_publish(bot, dry=False):
+    """یک پست را در کانال می‌فرستد (dry=True: فقط (kind, متن) را برمی‌گرداند)."""
+    flash = ap_flash_post()
+    if flash:
+        kind, body, commit = "sales", flash, None
+    else:
+        seq, post, used = ap_next_post()
+        if post is None:
+            raise ValueError("پستی برای ارسال نیست (کتابخانه خالی است).")
+        kind, body, commit = post[0], _ap_fill(post[2]), (seq, used)
+    if dry:
+        return kind, body
+    await bot.send_message(chat_id=channel_chat_id(), text=body, reply_markup=ap_markup(kind), disable_web_page_preview=True)
+    if flash:
+        set_setting("ap_last_flash", get_setting("flash_until"))
+    else:
+        set_setting("ap_seq", str(commit[0]))
+        set_setting("ap_used", json.dumps(sorted(commit[1])))
+    return kind, body
+
+
+async def job_autoposts(bot):
+    if not get_bool("ap_on") or not get_setting("post_channel").strip() or not BOT_USERNAME:
+        return
+    now = now_iran()
+    today = now.date().isoformat()
+    for t in parse_times(get_setting("ap_times")):
+        h, m = (int(x) for x in t.split(":"))
+        diff = (now.hour * 60 + now.minute) - (h * 60 + m)
+        if 0 <= diff <= 15 and get_setting(f"last_ap_{t}") != today:
+            set_setting(f"last_ap_{t}", today)
+            try:
+                await ap_publish(bot)
+            except Exception as e:  # noqa: BLE001
+                logging.error("autopost failed: %s", e)
+                await gsend(bot, ADMIN_ID, f"❌ پست خودکار کانال ناموفق بود: {err_text(e)}\nمطمئن شوید ربات در کانال ادمین است.")
+
+
+@dp.callback_query(F.data == "ap_now", MainAdmin())
+async def ap_now_cb(call: types.CallbackQuery):
+    try:
+        kind, _body = await ap_publish(call.bot)
+        log_action(call.from_user.id, f"ارسال دستی پست خودکار ({AP_KIND_LABELS.get(kind, kind)})")
+        await call.answer(f"✅ پست «{AP_KIND_LABELS.get(kind, kind)}» در کانال ارسال شد.", show_alert=True)
+    except Exception as e:  # noqa: BLE001
+        await call.answer(f"ناموفق: {e}"[:190], show_alert=True)
+
+
+@dp.callback_query(F.data == "ap_prev", MainAdmin())
+async def ap_prev_cb(call: types.CallbackQuery):
+    try:
+        kind, body = await ap_publish(call.bot, dry=True)
+    except Exception as e:  # noqa: BLE001
+        await call.answer(f"ناموفق: {e}"[:190], show_alert=True)
+        return
+    await call.answer()
+    await call.bot.send_message(
+        chat_id=call.from_user.id,
+        text=f"👁 <b>پیش‌نمایش پست بعدی ({AP_KIND_LABELS.get(kind, kind)}):</b>\n\n{body}",
+        reply_markup=ap_markup(kind),
+    )
+
+
 JOBS = [
     ("backup", 3, 0, job_backup),
     ("reconcile", 3, 30, job_reconcile),
@@ -12684,6 +12944,7 @@ async def scheduler(bot):
             await run_jobs(bot)
             await job_scheduled_broadcasts(bot)
             await job_channel_posts(bot)
+            await job_autoposts(bot)
             await job_pending_reminder(bot)
             spawn(job_usage_alerts(bot))
             spawn(job_growth_tick(bot))
