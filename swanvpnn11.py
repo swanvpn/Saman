@@ -4992,27 +4992,106 @@ async def admin_broadcast_segment(call: types.CallbackQuery, state: FSMContext):
     )
 
 
+class BCState(StatesGroup):
+    photo = State()
+
+
+def bc_options_markup(can_photo=False, has_photo=False):
+    b = InlineKeyboardButton
+    rows = [
+        [b(text="📤 ارسال همین الان", callback_data="bc_now")],
+        [b(text="⏰ زمان‌بندی ارسال", callback_data="bc_sched")],
+        [b(text="🕒 ارسال هوشمند (ساعت فعالیت هر کاربر)", callback_data=CB.SBC_GO)],
+    ]
+    if can_photo:
+        rows.append([b(text=("🖼 تغییر عکس پیام" if has_photo else "🖼 افزودن عکس به این پیام"), callback_data="bc_photo")])
+    rows.append([b(text="❌ انصراف", callback_data="admin_broadcast_start")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @dp.message(PaymentState.broadcasting, Perm("broadcast"))
 async def process_broadcast_handler(message: types.Message, state: FSMContext):
     data = await state.get_data()
     seg = data.get("bc_seg", "all")
     await state.set_state(None)
-    await state.update_data(bc_chat=message.chat.id, bc_msg=message.message_id, bc_seg=seg)
+    # پیام فقط‌متن (کوتاه‌تر از سقف کپشن) را می‌شود بعداً با عکس ترکیب کرد
+    plain = bool(message.text) and not message.photo
+    text_html = (message.html_text or "").strip() if plain else ""
+    can_photo = bool(text_html) and _ap_plain_len(text_html) <= AP_CAPTION_MAX
+    await state.update_data(
+        bc_chat=message.chat.id, bc_msg=message.message_id, bc_seg=seg,
+        bc_text=text_html if can_photo else None, bc_has_photo=False,
+    )
     with SessionLocal() as s:
         count = len(segment_user_ids(s, seg))
-    b = InlineKeyboardButton
-    markup = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [b(text="📤 ارسال همین الان", callback_data="bc_now")],
-            [b(text="⏰ زمان‌بندی ارسال", callback_data="bc_sched")],
-            [b(text="🕒 ارسال هوشمند (ساعت فعالیت هر کاربر)", callback_data=CB.SBC_GO)],
-            [b(text="❌ انصراف", callback_data="admin_broadcast_start")],
-        ]
-    )
     await message.answer(
         f"پیام دریافت شد. مخاطب: <b>{esc(bc_segments().get(seg, seg))}</b> ({count} نفر)\nچطور ارسال شود؟",
-        reply_markup=markup,
+        reply_markup=bc_options_markup(can_photo),
     )
+
+
+@dp.callback_query(F.data == "bc_photo", Perm("broadcast"))
+async def broadcast_photo_start(call: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("bc_text"):
+        await call.answer("درخواست منقضی شده است.", show_alert=True)
+        return
+    await call.answer()
+    await state.set_state(BCState.photo)
+    b = InlineKeyboardButton
+    await edit_or_send(
+        call,
+        "🖼 <b>عکس</b> را بفرستید (به‌صورت عکس، نه فایل). متن پیام شما زیر عکس قرار می‌گیرد.",
+        InlineKeyboardMarkup(inline_keyboard=[[b(text="🔙 بازگشت", callback_data="bc_back")]]),
+    )
+
+
+@dp.callback_query(F.data == "bc_back", Perm("broadcast"))
+async def broadcast_photo_back(call: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("bc_msg"):
+        await call.answer("درخواست منقضی شده است.", show_alert=True)
+        return
+    await call.answer()
+    await state.set_state(None)
+    seg = data.get("bc_seg", "all")
+    with SessionLocal() as s:
+        count = len(segment_user_ids(s, seg))
+    await edit_or_send(
+        call,
+        f"مخاطب: <b>{esc(bc_segments().get(seg, seg))}</b> ({count} نفر)\nچطور ارسال شود؟",
+        bc_options_markup(bool(data.get("bc_text")), bool(data.get("bc_has_photo"))),
+    )
+
+
+@dp.message(BCState.photo, F.photo, Perm("broadcast"))
+async def broadcast_photo_save(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    text_html = data.get("bc_text")
+    if not text_html:
+        await state.clear()
+        await message.answer("درخواست منقضی شده است.")
+        return
+    try:
+        sent = await message.bot.send_photo(chat_id=message.chat.id, photo=message.photo[-1].file_id, caption=text_html)
+    except Exception as e:  # noqa: BLE001
+        await message.answer(f"❌ ساخت پیام ناموفق بود: {err_text(e)}")
+        return
+    await state.set_state(None)
+    await state.update_data(bc_chat=sent.chat.id, bc_msg=sent.message_id, bc_has_photo=True)
+    seg = data.get("bc_seg", "all")
+    with SessionLocal() as s:
+        count = len(segment_user_ids(s, seg))
+    await message.answer(
+        "✅ عکس به پیام اضافه شد (پیام بالا همان چیزی است که ارسال می‌شود).\n"
+        f"مخاطب: <b>{esc(bc_segments().get(seg, seg))}</b> ({count} نفر)\nچطور ارسال شود؟",
+        reply_markup=bc_options_markup(True, True),
+    )
+
+
+@dp.message(BCState.photo, Perm("broadcast"))
+async def broadcast_photo_wrong(message: types.Message):
+    await message.answer("لطفاً یک عکس بفرستید، یا «🔙 بازگشت» را بزنید.")
 
 
 @dp.callback_query(F.data == "bc_now", Perm("broadcast"))
