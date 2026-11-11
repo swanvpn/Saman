@@ -12491,13 +12491,14 @@ def v3_page_extras(page):
         text_ += "\nℹ️ کانال خصوصی: ربات را ادمین کانال کنید تا ثبت خودکار پیشنهاد شود، یا یک پیام از کانال فوروارد کنید.\n"
         return text_, []
     if page == "ap":
-        n_pool = len(_ap_pool())
+        n_pool, n_all = len(_ap_pool()), len(_ap_all())
         text_ = (
-            f"\n📚 کتابخانهٔ فعلی: {n_pool} پست آماده (آموزش، نکته، جذب مشتری، اعتمادسازی، امنیت) + پست‌های دلخواه شما.\n"
+            f"\n📚 کتابخانهٔ فعلی: {n_pool} پست فعال از {n_all} پست (آموزش، نکته، جذب مشتری، اعتمادسازی، امنیت + پست‌های شما).\n"
             "ℹ️ کانال از «📣 پست خودکار کانال» تنظیم می‌شود؛ ربات باید ادمین کانال باشد.\n"
             "ℹ️ پست‌ها بدون تکرار می‌چرخند و تخفیف زمان‌دار فعال هم خودکار اعلام می‌شود.\n"
         )
         return text_, [
+            [b(text="📚 پست‌های پیش‌فرض (مشاهده، ویرایش، روشن/خاموش، افزودن)", callback_data="ap:l:0")],
             [b(text="👁 پیش‌نمایش پست بعدی", callback_data="ap_prev")],
             [b(text="📤 ارسال یک پست همین الان", callback_data="ap_now")],
         ]
@@ -12672,6 +12673,9 @@ DEFAULTS.update(
         "ap_times": "12:00,18:00,22:00",
         "ap_btn_text": "",
         "ap_custom": "",
+        "ap_posts": "[]",
+        "ap_disabled": "[]",
+        "ap_edits": "{}",
         "ap_flash_on": "1",
     }
 )
@@ -12682,10 +12686,6 @@ SETTINGS.update(
         "ap_times": dict(page="ap", type="text", label="ساعت‌های پست (مثلاً 12:00,18:00,22:00)"),
         "ap_btn_text": dict(page="ap", type="text", label="متن دکمهٔ زیر پست (خالی = پیش‌فرض بر اساس نوع پست)"),
         "ap_flash_on": dict(page="ap", type="toggle", label="اعلام خودکار تخفیف زمان‌دار در کانال"),
-        "ap_custom": dict(
-            page="ap", type="text",
-            label="پست‌های دلخواه شما (چند پست را با خطی که فقط --- دارد جدا کنید؛ در چرخه می‌آید)",
-        ),
     }
 )
 
@@ -12700,7 +12700,7 @@ AP_BTN_DEFAULT = {
     "custom": "🚀 استارت ربات",
 }
 # چرخهٔ نوع پست‌ها؛ «tariff» فقط وقتی پست خودکار تعرفه (post_on) خاموش باشد می‌آید
-AP_CYCLE = ["edu", "sales", "tip", "trust", "edu", "custom", "security", "tariff", "sales", "tip"]
+AP_CYCLE = ["sales", "edu", "sales", "tip", "sales", "edu", "trust", "sales", "custom", "sales", "edu", "security", "tariff"]
 
 AP_LIBRARY = [
     # (نوع, کلید یکتا, متن HTML, شرط نمایش)
@@ -12758,11 +12758,52 @@ AP_LIBRARY = [
      "💳 <b>شارژ کیف پول با پاداش</b>\n\nهر چه بیشتر شارژ کنید، پاداش بیشتری می‌گیرید و خریدهای بعدی‌تان سریع‌تر (بدون ارسال رسید) انجام می‌شود.",
      lambda: get_bool("bonus_on")),
     ("sales", "s_first",
-     "👋 <b>خرید اول؟ تخفیف دارید!</b>\n\nکاربران جدید روی اولین خرید تخفیف ویژه می‌گیرند. همین حالا ربات را استارت کنید و تعرفه را ببینید.",
+     "👋 <b>خرید اول؟ تخفیف دارید!</b>\n\nکاربران جدید روی اولین خرید <b>{first_percent}٪ تخفیف</b> می‌گیرند. همین حالا ربات را استارت کنید و تعرفه را ببینید.",
      lambda: get_bool("first_on") and get_int("first_percent") > 0),
     ("sales", "s_custom",
      "✨ <b>پلن دلخواه خودتان را بسازید</b>\n\nحجم و تعداد روز را خودتان انتخاب کنید و قیمت را همان لحظه ببینید؛ بدون پرداخت اضافه برای چیزی که لازم ندارید.",
      lambda: get_bool("custom_on") and get_int("custom_price_per_gb") > 0),
+    ("sales", "s_ref_calc",
+     "💰 <b>دوستانت را بیاور، خرجِ VPN خودت را درآور!</b>\n\nبا لینک اختصاصی‌ات دوستانت را دعوت کن؛ به ازای هر دعوت موفق <b>{ref} تومان</b> اعتبار می‌گیری:\n\n{ref_calc}\n\n"
+     "لینک دعوت: ربات ← «🎁 دعوت دوستان».",
+     lambda: get_bool("referral_on") and get_int("referral_reward") > 0),
+    ("sales", "s_ref_tiers",
+     "🏅 <b>هرچه بیشتر دعوت کنی، پاداشت بزرگ‌تر می‌شود</b>\n\nعلاوه بر پاداش هر دعوت، با رسیدن به هر پله پاداش ویژه می‌گیری:\n\n{ref_tiers}\n\n"
+     "اعتبار مستقیم به کیف پولت اضافه می‌شود و برای خرید و تمدید قابل استفاده است.",
+     lambda: get_bool("referral_on") and get_bool("ref_tiers_on") and bool(parse_tiers(get_setting("ref_tiers")))),
+    ("sales", "s_bonus_tiers",
+     "💳 <b>شارژ کن، پاداش بگیر</b>\n\nهرچه بیشتر کیف پولت را شارژ کنی، درصد پاداش بیشتری می‌گیری:\n\n{bonus_tiers}\n\n"
+     "پاداش هم‌زمان با شارژ اضافه می‌شود و خریدهای بعدی‌ات هم بدون ارسال رسید و فوری انجام می‌شود.",
+     lambda: get_bool("bonus_on") and bool(parse_tiers(get_setting("bonus_tiers")))),
+    ("sales", "s_loyalty",
+     "🥇 <b>مشتری وفادار، تخفیف بیشتر</b>\n\nهر ماه که بیشتر خرید کنی، تخفیف دائمی‌ات بیشتر می‌شود:\n\n"
+     "🥉 برنزی (۲ خرید در ماه): <b>{loy_b}٪</b>\n🥈 نقره‌ای (۴ خرید در ماه): <b>{loy_s}٪</b>\n🥇 طلایی (۶ خرید در ماه): <b>{loy_g}٪</b>",
+     lambda: get_bool("loyalty_on") and get_int("loyalty_bronze_percent") > 0),
+    ("sales", "s_club2",
+     "🏆 <b>با هر خرید امتیاز بگیر، به‌جای پول خرج کن</b>\n\nبه ازای هر <b>{club_earn} تومان</b> خرید، ۱ امتیاز می‌گیری و هر امتیاز <b>{club_value} تومان</b> اعتبار است. "
+     "امتیازها را از «🏆 باشگاه مشتریان» به کیف پول تبدیل کن.",
+     lambda: get_bool("club_on") and get_int("club_point_value") > 0),
+    ("sales", "s_general",
+     "🔥 <b>تخفیف ویژه روی همهٔ پلن‌ها</b>\n\nهم‌اکنون روی تعرفه‌ها <b>{general}٪ تخفیف</b> فعال است. قیمت نهایی را داخل ربات می‌بینی؛ قبل از تمام شدن تخفیف سفارش بده.",
+     lambda: get_int("discount_percent") > 0),
+    ("sales", "s_all_offers",
+     "🛍 <b>ارزان‌تر خریدن، چند راه دارد!</b>\n\n{all_offers}\n\nهمهٔ این‌ها در یک جا: ربات {bot}",
+     lambda: len(_ap_offers()) >= 2),
+    ("sales", "s_wallet",
+     "⚡️ <b>کیف پول = خرید و تمدید در چند ثانیه</b>\n\nیک‌بار شارژ کن؛ بعد هر خرید و تمدید فوری و بدون ارسال رسید انجام می‌شود. "
+     "اعتبار دعوت دوستان و امتیاز باشگاه هم به همین کیف پول می‌آید.", None),
+    ("edu", "e_hiddify",
+     "🌍 <b>یک برنامه برای همهٔ دستگاه‌ها</b>\n\nبرنامهٔ <b>Hiddify</b> برای اندروید، آیفون، ویندوز و مک موجود است. نصب کنید، ساب‌لینک را از ربات کپی کنید و گزینهٔ افزودن پروفایل از کلیپ‌بورد را بزنید.\n\n"
+     "اگر با برنامهٔ دیگری مشکل داشتید، این را امتحان کنید.", None),
+    ("edu", "e_android2",
+     "🤖 <b>اتصال در اندروید، در ۳۰ ثانیه</b>\n\n1️⃣ ساب‌لینک را در ربات کپی کنید\n2️⃣ v2rayNG را باز کنید ← ➕ ← Import config from clipboard یا افزودن اشتراک\n"
+     "3️⃣ روی دکمهٔ ▶️ پایین صفحه بزنید\n\nبرای دیدن سرعت، روی آیکن تست در بالای صفحه بزنید.", None),
+    ("edu", "e_ios2",
+     "📲 <b>اتصال در آیفون، قدم‌به‌قدم</b>\n\n1️⃣ <b>V2Box</b> یا <b>Streisand</b> را از App Store نصب کنید\n2️⃣ ساب‌لینک را در ربات کپی کنید\n"
+     "3️⃣ برنامه را باز کنید؛ لینک خودکار از کلیپ‌بورد پیشنهاد می‌شود، تأیید کنید\n4️⃣ اجازهٔ VPN را بدهید و وصل شوید.", None),
+    ("edu", "e_windows2",
+     "🖥 <b>اتصال در ویندوز، بدون دردسر</b>\n\n1️⃣ فایل v2rayN را دانلود و از حالت زیپ خارج کنید\n2️⃣ ساب‌لینک را از ربات کپی کنید\n"
+     "3️⃣ Subscription ← Subscription settings ← Add ← لینک را وارد کنید ← Update\n4️⃣ روی آیکن برنامه در تسک‌بار راست‌کلیک و System Proxy را روی Set system proxy بگذارید.", None),
     ("trust", "tr_support",
      "🎧 <b>پشتیبانی واقعی، نه ربات بی‌جواب</b>\n\nتیکت بزنید (متن، عکس یا ویس) و جواب را همان‌جا در ربات بگیرید. "
      "اگر مشکلی از سمت سرور باشد خودمان اطلاع می‌دهیم و نیازی به نوشتن چندباره نیست.", None),
@@ -12786,21 +12827,112 @@ AP_LIBRARY = [
 ]
 
 
+def _ap_ref_calc():
+    reward = get_int("referral_reward")
+    tiers = parse_tiers(get_setting("ref_tiers")) if get_bool("ref_tiers_on") else []
+    lines = []
+    for n in (1, 3, 5, 10, 25):
+        total = n * reward + sum(a for th, a in tiers if th <= n)
+        lines.append(f"👥 {n} دوست ← <b>{total:,} تومان</b>")
+    return "\n".join(lines)
+
+
+def _ap_offers():
+    """فهرست پویای تخفیف‌ها و پاداش‌هایی که الان فعال‌اند."""
+    o = []
+    if get_int("discount_percent") > 0:
+        o.append(f"🔥 تخفیف عمومی روی تعرفه‌ها: {get_int('discount_percent')}٪")
+    if flash_remaining():
+        o.append(f"⏳ تخفیف زمان‌دار: {get_int('flash_percent')}٪ (فرصت محدود)")
+    if get_bool("first_on") and get_int("first_percent") > 0:
+        o.append(f"👋 تخفیف خرید اول: {get_int('first_percent')}٪")
+    if get_bool("loyalty_on") and get_int("loyalty_bronze_percent") > 0:
+        o.append(f"🥇 تخفیف وفاداری تا {get_int('loyalty_gold_percent')}٪")
+    if get_bool("bonus_on") and parse_tiers(get_setting("bonus_tiers")):
+        o.append(f"💳 پاداش شارژ کیف پول تا {max(p for _a, p in parse_tiers(get_setting('bonus_tiers')))}٪")
+    if get_bool("referral_on") and get_int("referral_reward") > 0:
+        o.append(f"🎁 دعوت دوستان: {get_int('referral_reward'):,} تومان برای هر دعوت")
+    if get_bool("club_on") and get_int("club_point_value") > 0:
+        o.append("🏆 امتیاز باشگاه مشتریان و تبدیل به اعتبار")
+    if get_bool("trial_on"):
+        o.append(f"🆓 سرویس تست رایگان {max(1, get_int('trial_days'))} روزه")
+    if get_bool("custom_on") and get_int("custom_price_per_gb") > 0:
+        o.append("✨ ساخت پلن دلخواه (فقط برای همان حجم و روزی که لازم دارید)")
+    return o
+
+
 def _ap_fill(text_):
-    return (
-        text_.replace("{bot}", f"@{BOT_USERNAME}")
-        .replace("{ref}", f"{get_int('referral_reward'):,}")
-        .replace("{trial_days}", str(max(1, get_int("trial_days"))))
-    )
+    tiers_ref = "\n".join(f"🎯 {n} دعوت موفق ← <b>{a:,} تومان</b> پاداش ویژه" for n, a in parse_tiers(get_setting("ref_tiers")))
+    tiers_bonus = "\n".join(f"💰 شارژ {a:,} تومان به بالا ← <b>{p}٪</b> پاداش" for a, p in parse_tiers(get_setting("bonus_tiers")))
+    out = text_
+    reps = {
+        "{bot}": f"@{BOT_USERNAME}",
+        "{ref}": f"{get_int('referral_reward'):,}",
+        "{trial_days}": str(max(1, get_int("trial_days"))),
+        "{ref_calc}": _ap_ref_calc() if "{ref_calc}" in text_ else "",
+        "{ref_tiers}": tiers_ref,
+        "{bonus_tiers}": tiers_bonus,
+        "{loy_b}": str(get_int("loyalty_bronze_percent")),
+        "{loy_s}": str(get_int("loyalty_silver_percent")),
+        "{loy_g}": str(get_int("loyalty_gold_percent")),
+        "{club_earn}": f"{get_int('club_earn_per'):,}",
+        "{club_value}": f"{get_int('club_point_value'):,}",
+        "{general}": str(get_int("discount_percent")),
+        "{first_percent}": str(get_int("first_percent")),
+        "{all_offers}": "\n".join(_ap_offers()) if "{all_offers}" in text_ else "",
+    }
+    for k, v in reps.items():
+        out = out.replace(k, v)
+    return out
+
+
+def _ap_json(key, default):
+    try:
+        v = json.loads(get_setting(key) or "")
+        return v if isinstance(v, type(default)) else default
+    except ValueError:
+        return default
+
+
+def _ap_migrate():
+    """پست‌های دلخواهِ قدیمی (ap_custom) را یک‌بار به فهرست جدید پست‌ها منتقل می‌کند."""
+    old = (get_setting("ap_custom") or "").replace("\r", "")
+    if not old.strip():
+        return
+    posts = _ap_json("ap_posts", [])
+    have = {p.get("key") for p in posts}
+    for block in re.split(r"\n\s*-{3,}\s*\n", old):
+        block = block.strip()
+        key = "c" + hashlib.md5(block.encode()).hexdigest()[:6]
+        if block and key not in have:
+            posts.append({"key": key, "kind": "custom", "text": esc(block)})
+            have.add(key)
+    set_setting("ap_posts", json.dumps(posts, ensure_ascii=False))
+    set_setting("ap_custom", "")
+
+
+def _ap_all():
+    """همهٔ پست‌ها (کتابخانه + پست‌های خود ادمین) با وضعیت روشن/خاموش و ویرایش‌ها."""
+    _ap_migrate()
+    disabled = set(_ap_json("ap_disabled", []))
+    edits = _ap_json("ap_edits", {})
+    items = []
+    for kind, key, text_, cond in AP_LIBRARY:
+        try:
+            ok = cond is None or bool(cond())
+        except Exception:  # noqa: BLE001
+            ok = False
+        items.append(dict(kind=kind, key=key, text=edits.get(key) or text_, custom=False,
+                          edited=bool(edits.get(key)), enabled=key not in disabled, cond_ok=ok))
+    for p in _ap_json("ap_posts", []):
+        if p.get("key") and p.get("text"):
+            items.append(dict(kind=p.get("kind") or "custom", key=p["key"], text=p["text"], custom=True,
+                              edited=False, enabled=p["key"] not in disabled, cond_ok=True))
+    return items
 
 
 def _ap_pool():
-    pool = [(k, key, text_) for k, key, text_, cond in AP_LIBRARY if cond is None or cond()]
-    for block in re.split(r"\n\s*-{3,}\s*\n", (get_setting("ap_custom") or "").replace("\r", "")):
-        block = block.strip()
-        if block:
-            pool.append(("custom", "c" + hashlib.md5(block.encode()).hexdigest()[:6], esc(block)))
-    return pool
+    return [(i["kind"], i["key"], i["text"]) for i in _ap_all() if i["enabled"] and i["cond_ok"]]
 
 
 def ap_next_post():
@@ -12909,6 +13041,287 @@ async def ap_prev_cb(call: types.CallbackQuery):
         text=f"👁 <b>پیش‌نمایش پست بعدی ({AP_KIND_LABELS.get(kind, kind)}):</b>\n\n{body}",
         reply_markup=ap_markup(kind),
     )
+
+
+# ---------------------------------------------------------------------------
+# 📚 پست‌های پیش‌فرض: لیست، مشاهده، ویرایش، روشن/خاموش و افزودن پست
+# ---------------------------------------------------------------------------
+class APState(StatesGroup):
+    new_text = State()
+    new_kind = State()
+    edit_text = State()
+
+
+AP_PAGE_SIZE = 8
+AP_MAX_LEN = 3000
+AP_HINT = (
+    "💡 می‌توانید از قالب‌بندی تلگرام (بولد، ایتالیک و…) استفاده کنید.\n"
+    "جاگذاری‌های خودکار: <code>{bot}</code> آیدی ربات، <code>{ref}</code> پاداش دعوت، "
+    "<code>{trial_days}</code> روز تست، <code>{general}</code> درصد تخفیف عمومی."
+)
+
+
+def _ap_title(text_):
+    first = re.sub(r"<[^>]+>", "", text_).strip().split("\n")[0]
+    return html.unescape(first).strip()[:26]
+
+
+def _ap_find(key):
+    return next((i for i in _ap_all() if i["key"] == key), None)
+
+
+def ap_list_view(page):
+    items = _ap_all()
+    pages = max(1, -(-len(items) // AP_PAGE_SIZE))
+    page = min(max(page, 0), pages - 1)
+    on = sum(1 for i in items if i["enabled"])
+    out = (
+        "📚 <b>پست‌های پیش‌فرض</b>\n\n"
+        f"✅ روشن: {on} | ⬜ خاموش: {len(items) - on} | کل: {len(items)}\n\n"
+        "روی هر پست بزنید تا متنش را ببینید، ویرایشش کنید یا روشن/خاموشش کنید. "
+        "فقط پست‌های روشن در کانال منتشر می‌شوند.\n"
+        f"صفحهٔ {page + 1} از {pages}"
+    )
+    b = InlineKeyboardButton
+    kb = [[b(text="➕ افزودن پست جدید", callback_data="ap:a")]]
+    for i in items[page * AP_PAGE_SIZE:(page + 1) * AP_PAGE_SIZE]:
+        mark = "✅" if i["enabled"] else "⬜"
+        label = f"{mark} {AP_KIND_LABELS.get(i['kind'], i['kind'])} | {_ap_title(i['text'])}"
+        kb.append([b(text=label[:60], callback_data=f"ap:v:{i['key']}:{page}")])
+    nav = []
+    if page > 0:
+        nav.append(b(text="◀️ قبلی", callback_data=f"ap:l:{page - 1}"))
+    if page < pages - 1:
+        nav.append(b(text="بعدی ▶️", callback_data=f"ap:l:{page + 1}"))
+    if nav:
+        kb.append(nav)
+    kb.append([b(text="🔙 بازگشت", callback_data="spage_ap")])
+    return out, InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def ap_item_view(key, page):
+    item = _ap_find(key)
+    b = InlineKeyboardButton
+    if item is None:
+        return "پست پیدا نشد.", InlineKeyboardMarkup(inline_keyboard=[[b(text="🔙 لیست پست‌ها", callback_data=f"ap:l:{page}")]])
+    status = "✅ روشن (در چرخهٔ انتشار)" if item["enabled"] else "⬜ خاموش (منتشر نمی‌شود)"
+    out = f"📝 <b>{AP_KIND_LABELS.get(item['kind'], item['kind'])}</b>"
+    out += " — پست شما" if item["custom"] else (" — ویرایش‌شده" if item["edited"] else " — پیش‌فرض")
+    out += f"\nوضعیت: {status}\n"
+    if not item["cond_ok"]:
+        out += "⚠️ شرط نمایش این پست الان برقرار نیست (مثلاً ویژگی مربوطه خاموش است)؛ تا برقرار نشود منتشر نمی‌شود.\n"
+    out += "\n" + _ap_fill(item["text"])
+    kb = [
+        [b(text=("🔴 خاموش کردن" if item["enabled"] else "🟢 روشن کردن"), callback_data=f"ap:t:{key}:{page}")],
+        [b(text="✏️ ویرایش متن", callback_data=f"ap:e:{key}:{page}")],
+        [b(text="📤 ارسال همین پست به کانال", callback_data=f"ap:s:{key}:{page}")],
+    ]
+    if item["edited"]:
+        kb.append([b(text="↩️ بازگشت به متن پیش‌فرض", callback_data=f"ap:r:{key}:{page}")])
+    if item["custom"]:
+        kb.append([b(text="🗑 حذف پست", callback_data=f"ap:d:{key}:{page}")])
+    kb.append([b(text="🔙 لیست پست‌ها", callback_data=f"ap:l:{page}")])
+    return out, InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+@dp.callback_query(F.data.startswith("ap:l:"), MainAdmin())
+async def ap_list_cb(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    try:
+        page = int(call.data.split(":")[2])
+    except (ValueError, IndexError):
+        page = 0
+    out, markup = ap_list_view(page)
+    await edit_or_send(call, out, markup)
+
+
+@dp.callback_query(F.data.startswith("ap:v:"), MainAdmin())
+async def ap_view_cb(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    _, _, key, page = call.data.split(":")
+    out, markup = ap_item_view(key, int(page))
+    await edit_or_send(call, out, markup)
+
+
+@dp.callback_query(F.data.startswith("ap:t:"), MainAdmin())
+async def ap_toggle_cb(call: types.CallbackQuery):
+    _, _, key, page = call.data.split(":")
+    if _ap_find(key) is None:
+        await call.answer("پست پیدا نشد.", show_alert=True)
+        return
+    disabled = set(_ap_json("ap_disabled", []))
+    if key in disabled:
+        disabled.discard(key)
+        msg = "✅ پست روشن شد."
+    else:
+        disabled.add(key)
+        msg = "⬜ پست خاموش شد."
+    set_setting("ap_disabled", json.dumps(sorted(disabled)))
+    log_action(call.from_user.id, f"{msg} ({key})")
+    await call.answer(msg)
+    out, markup = ap_item_view(key, int(page))
+    await edit_or_send(call, out, markup)
+
+
+@dp.callback_query(F.data.startswith("ap:r:"), MainAdmin())
+async def ap_reset_cb(call: types.CallbackQuery):
+    _, _, key, page = call.data.split(":")
+    edits = _ap_json("ap_edits", {})
+    edits.pop(key, None)
+    set_setting("ap_edits", json.dumps(edits, ensure_ascii=False))
+    log_action(call.from_user.id, f"بازگشت پست به متن پیش‌فرض ({key})")
+    await call.answer("↩️ متن پیش‌فرض برگشت.", show_alert=True)
+    out, markup = ap_item_view(key, int(page))
+    await edit_or_send(call, out, markup)
+
+
+@dp.callback_query(F.data.startswith("ap:s:"), MainAdmin())
+async def ap_send_one_cb(call: types.CallbackQuery):
+    _, _, key, page = call.data.split(":")
+    item = _ap_find(key)
+    if item is None:
+        await call.answer("پست پیدا نشد.", show_alert=True)
+        return
+    try:
+        await call.bot.send_message(
+            chat_id=channel_chat_id(), text=_ap_fill(item["text"]),
+            reply_markup=ap_markup(item["kind"]), disable_web_page_preview=True,
+        )
+        log_action(call.from_user.id, f"ارسال دستی یک پست به کانال ({key})")
+        await call.answer("✅ در کانال ارسال شد.", show_alert=True)
+    except Exception as e:  # noqa: BLE001
+        await call.answer(f"ناموفق: {e}"[:190], show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("ap:d:"), MainAdmin())
+async def ap_delete_ask_cb(call: types.CallbackQuery):
+    await call.answer()
+    _, _, key, page = call.data.split(":")
+    b = InlineKeyboardButton
+    await edit_or_send(
+        call, "🗑 این پست برای همیشه حذف شود؟",
+        InlineKeyboardMarkup(inline_keyboard=[[
+            b(text="✅ بله، حذف کن", callback_data=f"ap:dy:{key}:{page}"),
+            b(text="انصراف", callback_data=f"ap:v:{key}:{page}"),
+        ]]),
+    )
+
+
+@dp.callback_query(F.data.startswith("ap:dy:"), MainAdmin())
+async def ap_delete_do_cb(call: types.CallbackQuery):
+    _, _, key, page = call.data.split(":")
+    _ap_migrate()
+    posts = [p for p in _ap_json("ap_posts", []) if p.get("key") != key]
+    set_setting("ap_posts", json.dumps(posts, ensure_ascii=False))
+    log_action(call.from_user.id, f"حذف پست کانال ({key})")
+    await call.answer("🗑 حذف شد.")
+    out, markup = ap_list_view(int(page))
+    await edit_or_send(call, out, markup)
+
+
+# --- ویرایش متن ---
+@dp.callback_query(F.data.startswith("ap:e:"), MainAdmin())
+async def ap_edit_start_cb(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    _, _, key, page = call.data.split(":")
+    if _ap_find(key) is None:
+        return
+    await state.set_state(APState.edit_text)
+    await state.update_data(ap_key=key, ap_page=int(page))
+    b = InlineKeyboardButton
+    await edit_or_send(
+        call, "✏️ <b>متن جدید پست</b> را بفرستید.\n\n" + AP_HINT,
+        InlineKeyboardMarkup(inline_keyboard=[[b(text="انصراف", callback_data=f"ap:v:{key}:{page}")]]),
+    )
+
+
+@dp.message(APState.edit_text, F.text, MainAdmin())
+async def ap_edit_save(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    key, page = data.get("ap_key"), int(data.get("ap_page") or 0)
+    new_text = (message.html_text or "").strip()
+    if not new_text:
+        await message.answer("لطفاً متن بفرستید.")
+        return
+    if len(new_text) > AP_MAX_LEN:
+        await message.answer(f"متن بیش از حد طولانی است (حداکثر {AP_MAX_LEN} نویسه). کوتاه‌تر بفرستید.")
+        return
+    item = _ap_find(key)
+    if item is None:
+        await state.clear()
+        return
+    if item["custom"]:
+        posts = _ap_json("ap_posts", [])
+        for p in posts:
+            if p.get("key") == key:
+                p["text"] = new_text
+        set_setting("ap_posts", json.dumps(posts, ensure_ascii=False))
+    else:
+        edits = _ap_json("ap_edits", {})
+        edits[key] = new_text
+        set_setting("ap_edits", json.dumps(edits, ensure_ascii=False))
+    await state.clear()
+    log_action(message.from_user.id, f"ویرایش متن پست کانال ({key})")
+    out, markup = ap_item_view(key, page)
+    await message.answer("✅ ذخیره شد.\n\n" + out, reply_markup=markup)
+
+
+# --- افزودن پست ---
+@dp.callback_query(F.data == "ap:a", MainAdmin())
+async def ap_add_start_cb(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.set_state(APState.new_text)
+    b = InlineKeyboardButton
+    await edit_or_send(
+        call, "➕ <b>متن پست جدید</b> را بفرستید.\n\n" + AP_HINT,
+        InlineKeyboardMarkup(inline_keyboard=[[b(text="انصراف", callback_data="ap:l:0")]]),
+    )
+
+
+@dp.message(APState.new_text, F.text, MainAdmin())
+async def ap_add_text(message: types.Message, state: FSMContext):
+    new_text = (message.html_text or "").strip()
+    if not new_text:
+        await message.answer("لطفاً متن بفرستید.")
+        return
+    if len(new_text) > AP_MAX_LEN:
+        await message.answer(f"متن بیش از حد طولانی است (حداکثر {AP_MAX_LEN} نویسه). کوتاه‌تر بفرستید.")
+        return
+    await state.update_data(ap_new_text=new_text)
+    await state.set_state(APState.new_kind)
+    b = InlineKeyboardButton
+    kinds = ["sales", "edu", "tip", "trust", "security"]
+    kb = [[b(text=AP_KIND_LABELS[k], callback_data=f"ap:k:{k}") for k in kinds[:3]],
+          [b(text=AP_KIND_LABELS[k], callback_data=f"ap:k:{k}") for k in kinds[3:]],
+          [b(text="انصراف", callback_data="ap:l:0")]]
+    await message.answer("این پست از چه نوعی باشد؟ (نوع، جای پست را در چرخهٔ انتشار و متن دکمهٔ زیرش را تعیین می‌کند)",
+                         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+
+@dp.callback_query(F.data.startswith("ap:k:"), APState.new_kind, MainAdmin())
+async def ap_add_kind_cb(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    kind = call.data.split(":")[2]
+    data = await state.get_data()
+    new_text = data.get("ap_new_text")
+    if kind not in AP_KIND_LABELS or not new_text:
+        await state.clear()
+        return
+    _ap_migrate()
+    posts = _ap_json("ap_posts", [])
+    have = {p.get("key") for p in posts}
+    key = "c" + secrets.token_hex(3)
+    while key in have:
+        key = "c" + secrets.token_hex(3)
+    posts.append({"key": key, "kind": kind, "text": new_text})
+    set_setting("ap_posts", json.dumps(posts, ensure_ascii=False))
+    await state.clear()
+    log_action(call.from_user.id, f"افزودن پست کانال ({AP_KIND_LABELS[kind]})")
+    out, markup = ap_item_view(key, 0)
+    await edit_or_send(call, "✅ پست اضافه شد و روشن است.\n\n" + out, markup)
+
 
 
 JOBS = [
