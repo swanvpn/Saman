@@ -190,6 +190,7 @@ class User(Base):
     referred_by = Column(BigInteger)
     referral_rewarded = Column(Boolean, default=False)
     joined_at = Column(String)
+    joined_iso = Column(String)  # زمان دقیق عضویت به وقت ایران (YYYY-MM-DDTHH:MM)
     trial_used = Column(Boolean, default=False)
     points = Column(Integer, default=0)  # امتیاز باشگاه مشتریان
     src = Column(String)  # منبع جذب (/start src_xxx)
@@ -812,6 +813,7 @@ def _migrate_columns():
             "referred_by": "BIGINT",
             "referral_rewarded": "BOOLEAN DEFAULT FALSE",
             "joined_at": "VARCHAR",
+            "joined_iso": "VARCHAR",
             "trial_used": "BOOLEAN DEFAULT FALSE",
             "points": "INTEGER DEFAULT 0",
             "src": "VARCHAR",
@@ -1011,6 +1013,21 @@ def jalali_from_iso(iso_date):
         return "-"
 
 
+def jalali_join_text(joined_at, joined_iso, short=False):
+    """تاریخ و ساعت عضویت به شمسی؛ برای کاربران قدیمی که ساعتشان ثبت نشده فقط تاریخ."""
+    try:
+        if joined_iso:
+            dt = datetime.strptime(joined_iso, "%Y-%m-%dT%H:%M")
+            return jdatetime.datetime.fromgregorian(datetime=dt).strftime("%Y/%m/%d - %H:%M")
+        if joined_at:
+            d = jalali_from_iso(joined_at)
+            if d != "-":
+                return d if short else f"{d} (ساعت ثبت نشده)"
+    except Exception:  # noqa: BLE001
+        pass
+    return "نامشخص"
+
+
 def log_action(admin_id, action):
     try:
         with SessionLocal() as s:
@@ -1114,6 +1131,7 @@ def get_or_create_user(session, user_id):
             has_monthly_discount=False,
             referral_rewarded=False,
             joined_at=today_iran().isoformat(),
+            joined_iso=now_iran().strftime("%Y-%m-%dT%H:%M"),
         )
         session.add(user)
         session.flush()
@@ -2623,6 +2641,7 @@ def _account_view(user_id):
         balance = (user.balance if user else 0) or 0
         count = (user.purchase_count_current_month if user else 0) or 0
         has_monthly = bool(user and user.has_monthly_discount)
+        joined_txt = jalali_join_text(user.joined_at, user.joined_iso) if user else "نامشخص"
         active_count = s.query(func.count(UserConfig.id)).filter(UserConfig.user_id == user_id).scalar()
 
     tier = tier_for_count(count) if has_monthly else None
@@ -2637,6 +2656,7 @@ def _account_view(user_id):
     out = (
         "👤 <b>حساب کاربری</b>\n\n"
         f"🆔 آیدی عددی: <code>{user_id}</code>\n"
+        f"📅 تاریخ و ساعت عضویت: {joined_txt}\n"
         f"💳 موجودی کیف پول: {balance:,} تومان\n"
         f"🟢 تعداد سرویس‌های فعال: {active_count}\n"
         f"🎁 وضعیت آفر وفاداری: {status_text}"
@@ -3404,14 +3424,25 @@ async def admin_users_list_handler(call: types.CallbackQuery, state: FSMContext)
         elif flt == "svc":
             q = q.filter(User.user_id.in_(select(UserConfig.user_id)))
         total = q.count()
-        users = q.order_by(User.user_id).offset(offset).limit(USERS_PER_PAGE).all()
-        rows = [(u.user_id, user_display(u), u.balance or 0, bool(u.is_banned)) for u in users]
+        users = (
+            q.order_by(
+                func.coalesce(User.joined_at, "").desc(),
+                func.coalesce(User.joined_iso, "").desc(),
+                User.user_id.desc(),
+            )
+            .offset(offset).limit(USERS_PER_PAGE).all()
+        )
+        rows = [
+            (u.user_id, user_display(u), u.balance or 0, bool(u.is_banned),
+             jalali_join_text(u.joined_at, u.joined_iso, short=True))
+            for u in users
+        ]
 
-    out = f"👥 <b>کاربران ({total} نفر) - صفحه {page}:</b>\n\n"
+    out = f"👥 <b>کاربران ({total} نفر) - صفحه {page}</b> (جدیدترین عضو اول):\n\n"
     keyboard = [users_filter_row(flt)]
-    for u_id, name, bal, banned in rows:
+    for u_id, name, bal, banned, joined in rows:
         icon = "🛑" if banned else "🟢"
-        out += f"{icon} <code>{u_id}</code> | {esc(name)} | {bal:,}\n"
+        out += f"{icon} <code>{u_id}</code> | {esc(name)} | {bal:,}\n      📅 {joined}\n"
         keyboard.append(
             [InlineKeyboardButton(text=f"👤 {name[:28]}", callback_data=f"manage_user_{u_id}")]
         )
@@ -3480,6 +3511,7 @@ async def _render_user_management(target, user_id: int):
         has_monthly = bool(user.has_monthly_discount)
         note = user.note or ""
         referred_by = user.referred_by
+        joined_txt = jalali_join_text(user.joined_at, user.joined_iso)
         configs = [
             (c.id, c.config_name, c.expires_at, c.config_details)
             for c in s.query(UserConfig).filter(UserConfig.user_id == user_id).all()
@@ -3488,7 +3520,8 @@ async def _render_user_management(target, user_id: int):
     status_text = "✅ فعال" if has_monthly else f"⏳ {count} خرید این ماه"
     out = (
         f"⚙️ <b>مدیریت کاربر <code>{user_id}</code></b>\n"
-        f"👤 {esc(name)}\n\n"
+        f"👤 {esc(name)}\n"
+        f"📅 عضویت: {joined_txt}\n\n"
         f"💳 موجودی فعلی: {balance:,} تومان\n"
         f"📋 وضعیت دسترسی: {'🔴 مسدود (بن)' if banned else '🟢 باز'}\n"
         f"🎁 آفر وفاداری: {status_text}\n"
