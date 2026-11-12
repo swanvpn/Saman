@@ -240,6 +240,7 @@ class Request(Base):
     remind_count = Column(Integer, default=0)
     custom_days = Column(Integer)  # مدت پلن دلخواه (روز)
     pay_amount = Column(Integer)  # مبلغ دقیق واریزی (قیمت ± عدد تصادفی)
+    after_buy = Column(Text)  # JSON سفارشِ در انتظار شارژ (مسیر «شارژ و خرید»)
 
 
 class KV(Base):
@@ -847,6 +848,7 @@ def _migrate_columns():
             "remind_count": "INTEGER DEFAULT 0",
             "custom_days": "INTEGER",
             "pay_amount": "INTEGER",
+            "after_buy": "TEXT",
         },
         "ticket_messages": {
             "voice_id": "VARCHAR",
@@ -2181,8 +2183,15 @@ async def short_charge_handler(call: types.CallbackQuery, state: FSMContext):
         balance = (u.balance if u else 0) or 0
     amount = min(max(co["final"] - balance, get_int("min_charge"), 1), 100000000)
     await call.answer()
+    await state.update_data(
+        pending_order=dict(
+            service_id=data.get("service_id"), custom_gb=data.get("custom_gb"),
+            custom_days=data.get("custom_days"), code=data.get("code"),
+            renew_cfg_id=data.get("renew_cfg_id"),
+        )
+    )
     await send_charge_instructions(
-        call, state, amount, note="\n\n✅ بعد از تایید شارژ، دوباره از «خرید سرویس» پلن را انتخاب و از کیف پول پرداخت کنید."
+        call, state, amount, note="\n\n✅ بعد از تایید شارژ، سفارش شما خودکار از کیف پول پرداخت می‌شود و ادمین کانفیگ را ارسال می‌کند."
     )
 
 
@@ -2496,6 +2505,7 @@ async def process_charge_receipt_handler(message: types.Message, state: FSMConte
                 created_at=get_current_jalali(), created_iso=iso_now_minute(), receipt_file_id=photo_id,
                 price=amount, paid_wallet=False,
                 pay_amount=(int(data["chg_amount"]) if data.get("chg_base") == amount and data.get("chg_amount") else None),
+                after_buy=(json.dumps(data["pending_order"]) if data.get("pending_order") else None),
             )
             s.add(req)
             s.flush()
@@ -3261,6 +3271,7 @@ async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
             await call.answer("این درخواست قبلاً بررسی شده است.", show_alert=True)
             return
         rtype, uid, plan, price = r.req_type, r.user_id, r.plan_name, r.price or 0
+        auto = None  # خرید خودکار بعد از شارژ
 
         if rtype == "charge":
             user = get_or_create_user(s, uid)
@@ -3270,8 +3281,32 @@ async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
             wlog(s, uid, _b0, user.balance, "charge_confirmed", req_id, call.from_user.id)
             r.status = "answered"
             r.answered_at = get_current_jalali()
+            if r.after_buy:
+                try:
+                    od = json.loads(r.after_buy)
+                    co = compute_checkout(uid, od)
+                    if co is not None and (user.balance or 0) >= co["final"]:
+                        nreq = build_request(s, uid, co, True, "None")
+                        _b1 = user.balance or 0
+                        user.balance = _b1 - co["final"]
+                        wlog(s, uid, _b1, user.balance, "wallet_purchase", nreq.id)
+                        auto = dict(req_id=nreq.id, rtype=nreq.req_type, plan=nreq.plan_name,
+                                    sid=nreq.service_id, co=co)
+                except Exception as e:  # noqa: BLE001
+                    logging.error("auto purchase after charge failed: %s", e)
+                    s.rollback()
+                    auto = None
+                    # شارژ را دوباره ثبت می‌کنیم تا اگر خرید خودکار خطا داد، شارژ از دست نرود
+                    user = get_or_create_user(s, uid)
+                    r = s.get(Request, req_id)
+                    if r.status != "answered":
+                        _b0 = user.balance or 0
+                        user.balance = _b0 + price + bonus
+                        wlog(s, uid, _b0, user.balance, "charge_confirmed", req_id, call.from_user.id)
+                        r.status = "answered"
+                        r.answered_at = get_current_jalali()
             s.commit()
-            result = ("charge", uid, price, (bonus, bonus_pct), None)
+            result = ("charge", uid, price, (bonus, bonus_pct), auto)
 
         elif rtype == "renew":
             cfg = s.get(UserConfig, r.config_id) if r.config_id else None
@@ -3327,10 +3362,25 @@ async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
             user_text = fill_text("t_charge_ok", amount=f"{a:,}")
             if b_ and b_[0]:
                 user_text += f"\n\n🎁 پاداش شارژ: {b_[0]:,} تومان ({b_[1]}٪) هم به اعتبار شما اضافه شد."
-            await call.bot.send_message(chat_id=uid, text=user_text)
+            if extra:
+                user_text += "\n\n" + fill_text("t_wallet_paid") + "\n\n" + pending_notice()
+            await call.bot.send_message(chat_id=uid, text=user_text, reply_markup=status_markup(extra["req_id"]) if extra else None)
             await send_sticker(call.bot, uid, "sticker_charge")
         except Exception as e:  # noqa: BLE001
             logging.error("notify charge failed: %s", e)
+        if extra:  # مرحله بعد: ارسال کانفیگ توسط همین ادمین
+            nid = extra["req_id"]
+            log_action(call.from_user.id, f"خرید خودکار از کیف پول بعد از شارژ #{req_id} → #{nid}")
+            if extra["rtype"] == "renew":
+                await notify_staff(call.bot, request_caption(nid, types.User(id=uid, is_bot=False, first_name=str(uid)), extra["co"], "renew", True), admin_request_markup(nid))
+                await call.message.answer(f"🔄 سفارش تمدید #{nid} از کیف پول کاربر پرداخت شد؛ برای تایید نهایی دکمه تایید را بزنید.")
+            else:
+                await state.update_data(target_user_id=uid, plan_name=extra["plan"], req_id=nid, service_id=extra["sid"])
+                await state.set_state(PaymentState.waiting_for_admin_config)
+                await call.message.answer(
+                    f"🛒 سفارش «{esc(extra['plan'])}» (#{nid}) از کیف پول کاربر پرداخت شد.\n"
+                    "⬇️ متن کانفیگ یا ساب‌لینک را برای ارسال به کاربر بفرستید:"
+                )
     elif kind == "addon":
         await v3_addon_confirmed(call, uid, a, b_, extra, markup, req_id)
     else:
@@ -8719,6 +8769,7 @@ async def _finish_config_delivery(bot, chat_id, admin_id, state, config_text, no
         reply_markup=get_admin_main_keyboard(admin_id),
     )
 
+    post_merged = merged_check = merged_inv = False
     try:
         config_html = f"<code>{esc(config_text)}</code>"
         template = (get_setting("t_config_ready") or "").strip() or DEFAULTS["t_config_ready"]
@@ -8731,25 +8782,91 @@ async def _finish_config_delivery(bot, chat_id, admin_id, state, config_text, no
         extra_text = get_setting("config_extra_text").strip()
         if extra_text:
             notify += "\n\n" + esc(extra_text)
+        compact = (
+            f"🎉 سفارشت آماده شد!\n\n📦 {esc(plan_name or '')}\n"
+            f"📅 تا {jalali_from_iso(end_date.isoformat())} ({days} روزه)\n\n{config_html}"
+        )
+
+        def _compact_markup():
+            base = delivery_markup()
+            rows_ = list(base.inline_keyboard) if base else []
+            rows_.insert(0, [InlineKeyboardButton(text="ℹ️ جزئیات و راهنما", callback_data=CB.MORE)])
+            return InlineKeyboardMarkup(inline_keyboard=rows_)
+
         dmarkup = delivery_markup()
         if get_bool("short_msgs_on"):
-            notify = (
-                f"🎉 سفارشت آماده شد!\n\n📦 {esc(plan_name or '')}\n"
-                f"📅 تا {jalali_from_iso(end_date.isoformat())} ({days} روزه)\n\n{config_html}"
-            )
-            rows = list(dmarkup.inline_keyboard) if dmarkup else []
-            rows.insert(0, [InlineKeyboardButton(text="ℹ️ جزئیات و راهنما", callback_data=CB.MORE)])
-            dmarkup = InlineKeyboardMarkup(inline_keyboard=rows)
-        await bot.send_message(chat_id=target_user_id, text=notify, reply_markup=dmarkup)
+            notify, dmarkup = compact, _compact_markup()
+
+        # یک پیام واحد: عکس QR (بالا) + متن تأیید سفارش + فاکتور + سؤال «وصل شدی؟» با دکمه‌ها
+        qr_png = None
+        if get_bool("qr_on"):
+            m_ = LINK_RE.search(config_text or "")
+            if m_:
+                qr_png = make_qr_png(m_.group(0))
+        qr_hint = "\n📷 QR بالا را هم می‌توانید اسکن کنید."
+        check_on = (not is_trial) and get_bool("connect_check_on")
+        inv_line = invoice_line(req_id, target_user_id) if (not is_trial and get_bool("invoice_on")) else ""
+        ck_text = "🔌 خب، با آموزش وصل شدی؟" if check_on else ""
+        b_ = InlineKeyboardButton
+        ck_rows = (
+            [[b_(text="✅ وصل شدم", callback_data=f"{CB.CK_OK}{req_id}"),
+              b_(text="❌ وصل نشدم", callback_data=f"{CB.CK_NO}{req_id}")]]
+            if check_on else []
+        )
+
+        def _mk(base):
+            rows_ = [list(r_) for r_ in ck_rows] + (list(base.inline_keyboard) if base else [])
+            return InlineKeyboardMarkup(inline_keyboard=rows_) if rows_ else None
+
+        def _join(body, with_inv, with_qr):
+            parts = [body + (qr_hint if with_qr else "")]
+            if with_inv and inv_line:
+                parts.append(inv_line)
+            if ck_text:
+                parts.append(ck_text)
+            return "\n\n".join(parts)
+
+        sent_photo = False
+        inv_included = False
+        if qr_png:
+            # سقف کپشن تلگرام ۱۰۲۴ نویسه است؛ اگر جا نشد: بدون فاکتور، بعد نسخهٔ کوتاه
+            for body, base, with_inv in (
+                (notify, dmarkup, True), (notify, dmarkup, False),
+                (compact, _compact_markup(), True), (compact, _compact_markup(), False),
+            ):
+                cap = _join(body, with_inv, True)
+                if _ap_plain_len(cap) <= 1020:
+                    await bot.send_photo(
+                        chat_id=target_user_id, photo=BufferedInputFile(qr_png, filename="qr.png"),
+                        caption=cap, reply_markup=_mk(base),
+                    )
+                    sent_photo = True
+                    inv_included = with_inv and bool(inv_line)
+                    break
+        if not sent_photo:
+            await bot.send_message(chat_id=target_user_id, text=_join(notify, True, False), reply_markup=_mk(dmarkup))
+            inv_included = bool(inv_line)
+        post_merged, merged_check, merged_inv = True, check_on, inv_included
         await send_sticker(bot, target_user_id, "sticker_config")
-        await send_config_qr(bot, target_user_id, config_text)
+        if qr_png and not sent_photo:
+            await send_config_qr(bot, target_user_id, config_text)
     except Exception as e:  # noqa: BLE001
         logging.error("Error notifying user about config delivery: %s", e)
     await post_purchase_notifications(bot, target_user_id, monthly_notif, reward)
     if not is_trial:
         spawn(post_sale_feed(bot, plan_name, sale_req_type))
     if not is_trial:
-        await v3_post_delivery(bot, target_user_id, req_id)
+        if not post_merged:
+            await v3_post_delivery(bot, target_user_id, req_id)
+        else:
+            # فاکتور و سؤال «وصل شدی؟» داخل پیام تحویل بودند؛ هرچه جا نشده جدا ارسال می‌شود
+            if get_bool("invoice_on") and not merged_inv:
+                try:
+                    await send_invoice(bot, target_user_id, req_id)
+                except Exception as e:  # noqa: BLE001
+                    logging.warning("invoice send failed: %s", e)
+            if not merged_check:
+                await send_rating_request(bot, target_user_id, req_id)
 
 
 @dp.message(PaymentState.waiting_for_admin_config, Staff())
@@ -10914,6 +11031,16 @@ def invoice_text(req_id, uid=None):
     return out
 
 
+def invoice_line(req_id, uid):
+    """خلاصهٔ یک‌خطی فاکتور برای قرارگرفتن داخل پیام تحویل سرویس."""
+    with SessionLocal() as s:
+        r = s.get(Request, req_id)
+        if r is None or r.user_id != uid:
+            return ""
+        price, wallet = r.price or 0, bool(r.paid_wallet)
+    return f"🧾 فاکتور <code>SW-{req_id:06d}</code> | {price:,} تومان | {'کیف پول' if wallet else 'کارت‌به‌کارت'}"
+
+
 async def send_invoice(bot, uid, req_id):
     if not get_bool("invoice_on"):
         return
@@ -11596,6 +11723,23 @@ async def v3_post_delivery(bot, uid, req_id):
     await send_rating_request(bot, uid, req_id)
 
 
+async def ck_reply(call, text_, markup=None):
+    """جواب «وصل شدم/نشدم». اگر دکمه‌ها داخل پیام تحویل (QR/کانفیگ) باشند، آن پیام ویرایش نمی‌شود؛
+    فقط ردیف دکمه‌ها برداشته می‌شود و جواب در پیام جدا می‌آید تا کانفیگ کاربر پاک نشود."""
+    m = call.message
+    merged = bool(getattr(m, "photo", None)) or len(getattr(m, "text", None) or "") > 80
+    if not merged:
+        await edit_or_send(call, text_, markup)
+        return
+    try:
+        old = m.reply_markup.inline_keyboard if m.reply_markup else []
+        rows = [r for r in old if not any((x.callback_data or "").startswith((CB.CK_OK, CB.CK_NO)) for x in r)]
+        await m.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None)
+    except Exception as e:  # noqa: BLE001
+        logging.info("ck row removal failed: %s", e)
+    await call.bot.send_message(chat_id=call.from_user.id, text=text_, reply_markup=markup)
+
+
 @dp.callback_query(F.data.regexp(r"^v3_ckok_\d+$"))
 async def v3_connect_ok(call: types.CallbackQuery):
     req_id = int(call.data.split("_")[2])
@@ -11607,7 +11751,7 @@ async def v3_connect_ok(call: types.CallbackQuery):
                 s.commit()
     except Exception as e:  # noqa: BLE001
         logging.warning("ck_ok log failed: %s", e)
-    await edit_or_send(call, "🎉 عالیه! لذت ببر 🙌")
+    await ck_reply(call, "🎉 عالیه! لذت ببر 🙌")
     await send_rating_request(call.bot, call.from_user.id, req_id)
 
 
@@ -11644,7 +11788,7 @@ async def v3_connect_no(call: types.CallbackQuery):
             [b(text="🎫 ارسال تیکت", callback_data="ticket_new")],
         ]
     )
-    await edit_or_send(call, "😕 ناراحت شدیم! یه چند قدم ساده رو امتحان کن؛ پشتیبانی هم باخبر شد و پیگیری می‌کنه:", markup)
+    await ck_reply(call, "😕 ناراحت شدیم! یه چند قدم ساده رو امتحان کن؛ پشتیبانی هم باخبر شد و پیگیری می‌کنه:", markup)
 
 
 # ---------------------------------------------------------------------------
