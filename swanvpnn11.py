@@ -394,6 +394,7 @@ class CustomButton(Base):
 
     parent_id = 0 یعنی دکمه زیر منوی اصلی؛ در غیر این صورت دکمه‌ای در «مرحله بعدِ» دکمه‌ی والد.
     kind: msg = نمایش پیام (+عکس) و دکمه‌های مرحله بعد | url = باز کردن لینک
+          | buy = رفتن مستقیم به پرداخت یک پلن (آیدی پلن در ستون url) و بعد تایید ادمین و تحویل
     """
 
     __tablename__ = "custom_buttons"
@@ -5873,8 +5874,35 @@ async def present_view(call: types.CallbackQuery, text_, photo, markup):
     await edit_or_send(call, text_, markup)
 
 
+def cb_buy_target(node_id):
+    """None = دکمه از نوع خرید نیست | 0 = خرید است ولی پلن/دکمه در دسترس نیست | در غیر این صورت آیدی پلن."""
+    with SessionLocal() as s:
+        node = s.get(CustomButton, node_id)
+        if node is None or node.kind != "buy":
+            return None
+        if not cb_is_visible(s, node):
+            return 0
+        try:
+            sid = int(node.url or 0)
+        except ValueError:
+            return 0
+        return sid if sid and s.get(Service, sid) is not None else 0
+
+
 @dp.callback_query(F.data.regexp(r"^cb_\d+$"))
 async def cb_user_open(call: types.CallbackQuery, state: FSMContext):
+    sid = cb_buy_target(int(call.data[3:]))
+    if sid is not None:  # دکمه‌ی خرید: همان مسیر خرید سرویس (تسویه ← پرداخت ← رسید ← تایید ادمین ← تحویل)
+        if not sid:
+            await call.answer("این گزینه دیگر در دسترس نیست.", show_alert=True)
+            return
+        await call.answer()
+        await state.clear()
+        await state.set_state(PaymentState.waiting_for_receipt)
+        await state.update_data(service_id=sid, renew_cfg_id=None, code=None)
+        fstep(call.from_user.id, "plan")
+        await send_checkout(call, state, call.from_user.id)
+        return
     view = cb_user_view(int(call.data[3:]))
     if view is None:
         await call.answer("این گزینه دیگر در دسترس نیست.", show_alert=True)
@@ -5909,7 +5937,7 @@ def cb_list_view(pid):
     b = InlineKeyboardButton
     keyboard = []
     for cid, kind, label, active, n in items:
-        out += f"{'🟢' if active else '⚪️'} {'💬' if kind == 'msg' else '🔗'} {esc(label)}"
+        out += f"{'🟢' if active else '⚪️'} {'💬' if kind == 'msg' else '🛒' if kind == 'buy' else '🔗'} {esc(label)}"
         out += f" — {n} زیردکمه\n" if kind == "msg" and n else "\n"
         keyboard.append([b(text=f"⚙️ {label}"[:60], callback_data=f"acbn_{cid}")])
     if not items:
@@ -5940,9 +5968,18 @@ def cb_node_view(node_id):
         kind, label, text_, has_photo = c.kind, c.label or "", c.text or "", bool(c.photo_id)
         url, active, parent = c.url or "", bool(c.is_active), c.parent_id or 0
         n = s.query(func.count(CustomButton.id)).filter(CustomButton.parent_id == node_id).scalar() or 0
+        svc_line = ""
+        if kind == "buy":
+            try:
+                svc = s.get(Service, int(url or 0))
+            except ValueError:
+                svc = None
+            svc_line = (
+                f"{cat_label(svc.category)} - {svc.name} — {svc.price:,} تومان" if svc is not None else "⚠️ پلن پیدا نشد (حذف شده؟) — پلن دیگری انتخاب کنید"
+            )
     out = (
         f"🔘 <b>{esc(label)}</b>\n\n"
-        f"نوع: {'💬 پیام (با امکان مرحله بعد)' if kind == 'msg' else '🔗 لینک'}\n"
+        f"نوع: {'💬 پیام (با امکان مرحله بعد)' if kind == 'msg' else '🛒 خرید (رفتن به پرداخت)' if kind == 'buy' else '🔗 لینک'}\n"
         f"وضعیت: {'🟢 فعال' if active else '⚪️ غیرفعال (مخفی از کاربر)'}\n"
     )
     b = InlineKeyboardButton
@@ -5956,6 +5993,9 @@ def cb_node_view(node_id):
         rows.append(
             [b(text="📝 متن", callback_data=f"acbed_text_{node_id}"), b(text="🖼 عکس", callback_data=f"acbed_photo_{node_id}")]
         )
+    elif kind == "buy":
+        out += f"پلن: {esc(svc_line)}\nکاربر با زدن این دکمه مستقیم وارد مرحله پرداخت همین پلن می‌شود."
+        rows.append([b(text="🔁 تغییر پلن", callback_data=f"acbchg_{node_id}")])
     else:
         out += f"لینک: {esc(url)}"
         rows.append([b(text="🔗 تغییر لینک", callback_data=f"acbed_url_{node_id}")])
@@ -6051,6 +6091,7 @@ async def cb_add_start(call: types.CallbackQuery, state: FSMContext):
         inline_keyboard=[
             [b(text="💬 دکمه پیام (قابل ساخت مرحله بعد)", callback_data=f"acbk_msg_{pid}")],
             [b(text="🔗 دکمه لینک (باز کردن مستقیم)", callback_data=f"acbk_url_{pid}")],
+            [b(text="🛒 دکمه خرید (رفتن به پرداخت یک پلن)", callback_data=f"acbk_buy_{pid}")],
             [b(text="انصراف", callback_data=f"acbs_{pid}")],
         ]
     )
@@ -6058,12 +6099,14 @@ async def cb_add_start(call: types.CallbackQuery, state: FSMContext):
         call,
         "➕ <b>دکمه جدید</b>\n\nنوع دکمه را انتخاب کنید:\n\n"
         "💬 <b>پیام:</b> با زدن دکمه، متن (و در صورت تمایل عکس) نمایش داده می‌شود و می‌توانید برایش دکمه‌های مرحله بعد بسازید.\n\n"
-        "🔗 <b>لینک:</b> با زدن دکمه، لینک (کانال، سایت، آیدی...) باز می‌شود.",
+        "🔗 <b>لینک:</b> با زدن دکمه، لینک (کانال، سایت، آیدی...) باز می‌شود.\n\n"
+        "🛒 <b>خرید:</b> با زدن دکمه، کاربر مستقیم وارد پرداخت پلنی که انتخاب می‌کنید می‌شود؛ بعد از رسید، تایید ادمین و تحویل کانفیگ مثل خرید معمولی است. "
+        "می‌توانید این دکمه را آخرین مرحله‌ی چند دکمه‌ی پیام (مرحله‌به‌مرحله) بگذارید.",
         markup,
     )
 
 
-@dp.callback_query(F.data.regexp(r"^acbk_(msg|url)_-?\d+$"), MainAdmin())
+@dp.callback_query(F.data.regexp(r"^acbk_(msg|url|buy)_-?\d+$"), MainAdmin())
 async def cb_add_kind(call: types.CallbackQuery, state: FSMContext):
     _, kind, pid = call.data.split("_")
     await call.answer()
@@ -6086,6 +6129,10 @@ async def cb_add_label(message: types.Message, state: FSMContext):
     data = await state.get_data()
     pid, kind = int(data.get("cb_pid", 0)), data.get("cb_kind", "msg")
     await state.update_data(cb_label=label)
+    if kind == "buy":
+        out_, markup_ = cb_service_picker(f"acbsv_{{sid}}", cb_cancel_markup(pid))
+        await message.answer("🛒 <b>مرحله ۲:</b> پلنی را که این دکمه باید بفروشد انتخاب کنید:\n" + out_, reply_markup=markup_)
+        return
     if kind == "url":
         await state.set_state(PaymentState.cb_url)
         await message.answer(
@@ -6099,6 +6146,68 @@ async def cb_add_label(message: types.Message, state: FSMContext):
             "💡 اگر می‌خواهید عکس هم داشته باشد، می‌توانید همین‌جا یک عکس همراه کپشن (متن) بفرستید.",
             reply_markup=cb_cancel_markup(pid),
         )
+
+
+def cb_service_picker(cb_fmt, cancel_markup):
+    """دکمه‌ی انتخاب پلن؛ cb_fmt مثل 'acbsv_{sid}' ← (متن توضیح, کیبورد)."""
+    b = InlineKeyboardButton
+    with SessionLocal() as s:
+        cmap = category_map()
+        svcs = [(r.id, r.category, r.name, r.price) for r in s.query(Service).order_by(Service.category, Service.id).limit(60).all()]
+    if not svcs:
+        return "\n⚠️ هنوز پلنی تعریف نشده است. اول از بخش مدیریت پلن‌ها پلن بسازید.", cancel_markup
+    rows = [
+        [b(text=f"{cat_label(cat, cmap)} - {name} — {price:,}"[:60], callback_data=cb_fmt.format(sid=sid))]
+        for sid, cat, name, price in svcs
+    ]
+    rows.extend(list(cancel_markup.inline_keyboard))
+    return "", InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(PaymentState.cb_label, F.data.regexp(r"^acbsv_\d+$"), MainAdmin())
+async def cb_add_buy_pick(call: types.CallbackQuery, state: FSMContext):
+    sid = int(call.data.split("_")[1])
+    data = await state.get_data()
+    if data.get("cb_kind") != "buy":
+        await call.answer()
+        return
+    with SessionLocal() as s:
+        if s.get(Service, sid) is None:
+            await call.answer("این پلن پیدا نشد.", show_alert=True)
+            return
+    await call.answer()
+    await _cb_finish_add(call, state, "", "", url=str(sid))
+
+
+@dp.callback_query(F.data.regexp(r"^acbchg_\d+$"), MainAdmin())
+async def cb_buy_change_start(call: types.CallbackQuery, state: FSMContext):
+    nid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        c = s.get(CustomButton, nid)
+        if c is None or c.kind != "buy":
+            await call.answer("دکمه یافت نشد.", show_alert=True)
+            return
+    await call.answer()
+    await state.clear()
+    out_, markup_ = cb_service_picker(f"acbsc_{nid}_{{sid}}", InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data=f"acbn_{nid}")]]))
+    await edit_or_send(call, "🔁 پلن جدید این دکمه را انتخاب کنید:\n" + out_, markup_)
+
+
+@dp.callback_query(F.data.regexp(r"^acbsc_\d+_\d+$"), MainAdmin())
+async def cb_buy_change_do(call: types.CallbackQuery, state: FSMContext):
+    _, nid, sid = call.data.split("_")
+    nid, sid = int(nid), int(sid)
+    with SessionLocal() as s:
+        c = s.get(CustomButton, nid)
+        if c is None or c.kind != "buy" or s.get(Service, sid) is None:
+            await call.answer("دکمه یا پلن یافت نشد.", show_alert=True)
+            return
+        c.url = str(sid)
+        s.commit()
+    log_action(call.from_user.id, f"تغییر پلن دکمه خرید #{nid} به پلن {sid}")
+    await call.answer("پلن دکمه تغییر کرد ✅")
+    await cb_show_node(call, nid)
 
 
 async def _cb_finish_add(event, state: FSMContext, text_, photo_id, url=""):
@@ -6131,6 +6240,11 @@ async def _cb_finish_add(event, state: FSMContext, text_, photo_id, url=""):
         if depth < CB_MAX_DEPTH:
             rows.append([b(text="➕ ساخت دکمه برای مرحله بعد", callback_data=f"acbadd_{cid}")])
         rows.append([b(text="👁 پیش‌نمایش", callback_data=f"acbprev_{cid}")])
+    elif kind == "buy":
+        out = (
+            f"✅ دکمه خرید «{esc(label)}» ساخته شد و همین الان برای کاربران فعال است.\n"
+            "کاربر با زدن آن مستقیم وارد پرداخت می‌شود؛ بعد از رسید، تایید ادمین و تحویل کانفیگ مثل خرید معمولی است."
+        )
     else:
         out = f"✅ دکمه لینک «{esc(label)}» ساخته شد و همین الان برای کاربران فعال است."
     rows.append([b(text="➕ دکمه دیگر در همین سطح", callback_data=f"acbadd_{pid}")])
