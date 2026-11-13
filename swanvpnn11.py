@@ -2638,6 +2638,9 @@ async def view_config_detail_handler(call: types.CallbackQuery):
     if ul:
         out += "\n" + ul
     out += f"\n🔗 <b>ساب‌لینک / کانفیگ</b> (برای کپی، روی متن بزن):\n<code>{esc((details or '')[:3000])}</code>"
+    udesc = get_setting(f"cudesc_{cfg_id}").strip()
+    if udesc:
+        out += f"\n{esc(udesc[:500])}"
     ctx = {"id": cfg_id, "sid": sid, "has_link": bool(LINK_RE.search(details or ""))}
     rows = ub_build_rows("svc", call.from_user.id, ctx)
     await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=rows))
@@ -3350,7 +3353,8 @@ async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
         await state.set_state(PaymentState.waiting_for_admin_config)
         await append_status(
             call, "✅ درخواست تایید شد.\n⬇️ متن کانفیگ یا ساب‌لینک را برای ارسال به کاربر بفرستید.\n"
-            "📝 اگر زیر ساب‌لینک توضیحی هم بنویسید، فقط ساب‌لینک برای کاربر می‌رود و توضیح در مشخصات همین سرویس (مدیریت کاربران) فقط برای شما می‌ماند:", None
+            "📝 قالب پیام:\nساب‌لینک\nتوضیح کاربر (اختیاری، زیر لینک برای کاربر می‌رود)\n---\nتوضیح ادمین (اختیاری، فقط برای شما)\n\n"
+            "اگر خط --- ننویسید، هر متن بعد از لینک «توضیح ادمین» حساب می‌شود و برای کاربر نمی‌رود:", None
         )
         return
 
@@ -3380,7 +3384,8 @@ async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
                 await state.set_state(PaymentState.waiting_for_admin_config)
                 await call.message.answer(
                     f"🛒 سفارش «{esc(extra['plan'])}» (#{nid}) از کیف پول کاربر پرداخت شد.\n"
-                    "⬇️ متن کانفیگ یا ساب‌لینک را برای ارسال به کاربر بفرستید:"
+                    "⬇️ متن کانفیگ یا ساب‌لینک را برای ارسال به کاربر بفرستید.\n"
+                    "📝 توضیح کاربر زیر لینک؛ بعد از خط --- توضیح ادمین (فقط برای شما):"
                 )
     elif kind == "addon":
         await v3_addon_confirmed(call, uid, a, b_, extra, markup, req_id)
@@ -3721,6 +3726,9 @@ async def _render_user_config(call, cfg_id, user_id, fresh=True):
         out += f"<code>{esc((details or '').strip()[:800])}</code>\n" if details else "ثبت نشده\n"
         out += "ℹ️ ساب‌لینک پیدا نشد، بررسی وضعیت ممکن نیست.\n"
 
+    udesc = get_setting(f"cudesc_{cfg_id}").strip()
+    if udesc:
+        out += f"\n💬 <b>توضیح کاربر (زیر ساب‌لینک به کاربر نمایش داده می‌شود):</b>\n{esc(udesc[:500])}\n"
     desc = get_setting(f"cdesc_{cfg_id}").strip()
     if desc:
         out += f"\n📝 <b>توضیحات (فقط برای ادمین):</b>\n{esc(desc[:1200])}\n"
@@ -3758,6 +3766,8 @@ async def delete_config_user_action(call: types.CallbackQuery):
             s.commit()
     if get_setting(f"cdesc_{cfg_id}"):
         set_setting(f"cdesc_{cfg_id}", "")
+    if get_setting(f"cudesc_{cfg_id}"):
+        set_setting(f"cudesc_{cfg_id}", "")
     log_action(call.from_user.id, f"حذف کانفیگ {cfg_id} کاربر {target_user_id}")
     await call.answer("کانفیگ کاربر حذف شد.", show_alert=True)
     try:
@@ -8081,21 +8091,32 @@ def find_sub_url(text_):
 CFG_SCHEME_RE = re.compile(r"\b(?:vless|vmess|trojan|ssr?|hysteria2?|hy2|tuic|wireguard)://", re.I)
 
 
+SEP_RE = re.compile(r"^[ \t]*(?:-{3,}|—{2,}|_{3,}|={3,})[ \t]*$", re.M)
+
+
 def split_config_text(text_):
-    """(متنی که برای کاربر می‌رود, توضیحات فقط-برای-ادمین).
-    اگر پیام ادمین یک ساب‌لینک + توضیح باشد، فقط ساب‌لینک برای کاربر می‌رود و باقی‌مانده به‌عنوان توضیح ذخیره می‌شود.
+    """(متن کانفیگ/ساب‌لینک, توضیح کاربر, توضیح فقط-برای-ادمین).
+    قالب پیام ادمین:
+        ساب‌لینک
+        توضیح کاربر (اختیاری)
+        ---
+        توضیح ادمین (اختیاری)
+    بدون خط جداکننده (---) همه‌ی متن بعد از لینک «توضیح ادمین» حساب می‌شود (امن‌ترین حالت).
     اگر پیام کانفیگ مستقیم (vless:// ...) یا چند لینک دارد، هیچ‌چیز جدا نمی‌شود تا چیزی از کاربر گم نشود."""
     raw = (text_ or "").strip()
     url = find_sub_url(raw)
     if not url:
-        return raw, ""
+        return raw, "", ""
     rest = raw.replace(url, "", 1)
     if CFG_SCHEME_RE.search(rest) or SUB_URL_RE.search(rest):
-        return raw, ""
-    rest = rest.strip(" \n\t\r-–—:،,.؛;")
-    if not rest:
-        return url, ""
-    return url, rest[:1500]
+        return raw, "", ""
+    strip_chars = " \n\t\r-–—:،,.؛;"
+    parts = SEP_RE.split(rest, maxsplit=1)
+    if len(parts) == 2:
+        user_desc, admin_desc = parts[0].strip(strip_chars), parts[1].strip(strip_chars)
+    else:
+        user_desc, admin_desc = "", rest.strip(strip_chars)
+    return url, user_desc[:500], admin_desc[:1500]
 
 
 def sub_host(url):
@@ -8850,7 +8871,7 @@ async def _finish_config_delivery(bot, chat_id, admin_id, state, config_text, no
     plan_name = data.get("plan_name")
     service_id = data.get("service_id")
     start_date = today_iran()
-    config_text, admin_desc = split_config_text(config_text)  # توضیحات ادمین به کاربر نمی‌رسد
+    config_text, user_desc, admin_desc = split_config_text(config_text)  # توضیح ادمین به کاربر نمی‌رسد
 
     with SessionLocal() as s:
         r = s.get(Request, req_id) if req_id else None
@@ -8877,6 +8898,8 @@ async def _finish_config_delivery(bot, chat_id, admin_id, state, config_text, no
         set_setting(f"cbuy_{new_cfg_id}", get_current_jalali())
         if admin_desc:
             set_setting(f"cdesc_{new_cfg_id}", admin_desc)
+        if user_desc:
+            set_setting(f"cudesc_{new_cfg_id}", user_desc)
     except Exception as e:  # noqa: BLE001
         logging.warning("save purchase date failed: %s", e)
 
@@ -8885,13 +8908,16 @@ async def _finish_config_delivery(bot, chat_id, admin_id, state, config_text, no
     await bot.send_message(
         chat_id=chat_id,
         text=f"✅ کانفیگ با موفقیت برای کاربر {target_user_id} ارسال و ثبت شد.{note}"
-        + ("\n📝 توضیحات شما فقط در مشخصات سرویس (مدیریت کاربران) ذخیره شد و برای کاربر ارسال نشد." if admin_desc else ""),
+        + ("\n💬 توضیح کاربر زیر ساب‌لینک برای کاربر ارسال شد." if user_desc else "")
+        + ("\n📝 توضیح ادمین فقط در مشخصات سرویس (مدیریت کاربران) ذخیره شد و برای کاربر ارسال نشد." if admin_desc else ""),
         reply_markup=get_admin_main_keyboard(admin_id),
     )
 
     post_merged = merged_check = merged_inv = False
     try:
         config_html = f"<code>{esc(config_text)}</code>"
+        if user_desc:
+            config_html += f"\n{esc(user_desc)}"  # توضیح کاربر، زیر ساب‌لینک
         template = (get_setting("t_config_ready") or "").strip() or DEFAULTS["t_config_ready"]
         notify = fill_text(
             "t_config_ready", plan=esc(plan_name or ""), start=jalali_from_iso(start_date.isoformat()),
