@@ -976,6 +976,10 @@ class PaymentState(StatesGroup):
     custom_days = State()
     cb_label = State()
     layout_pattern = State()
+    cb_prod_name = State()
+    cb_prod_price = State()
+    cb_prod_days = State()
+    cb_prod_edit = State()
     cb_text = State()
     cb_photo = State()
     cb_url = State()
@@ -1859,6 +1863,9 @@ def compute_checkout(user_id, data):
                 return None
             label = f"{cat_label(svc.category)} - {svc.name}"
             base = svc.price
+            if svc.category == BTN_CAT:  # محصول اختصاصی دکمه خرید: فقط نام و مدت خودش
+                label = svc.name
+                custom_days = btn_product_days(svc.id) or None
         code, code_pct = None, 0
         if data.get("code"):
             dc, _err = validate_code(s, data["code"], user_id)
@@ -5747,10 +5754,6 @@ def cb_children(s, pid, only_active=False):
     return q.order_by(CustomButton.sort_order, CustomButton.id).all()
 
 
-def cb_cols(pid):
-    return 2 if get_setting(f"cbcols_{pid}").strip() == "2" else 1
-
-
 def cb_depth(s, node_id):
     """عمق دکمه (دکمه‌های منوی اصلی = ۱ ؛ خودِ منوی اصلی = ۰)."""
     depth = 0
@@ -5787,7 +5790,7 @@ def cb_is_visible(s, node):
 # ----- چیدمان دلخواه با الگو: هر عدد = تعداد دکمه در یک ردیف (مثلاً 1 2 3 1) -----
 LAYOUT_MAX_PER_ROW = 4
 LAYOUT_MAX_ROWS = 20
-LAYOUT_PRESETS = ["122", "233", "1221", "2332", "2442", "1331", "123", "221"]
+LAYOUT_PRESETS = ["1", "2", "122", "221", "1221", "233", "2332", "2442"]
 _DIGIT_MAP = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 
 
@@ -5831,13 +5834,13 @@ def layout_menu_view(key, set_fmt, custom_cb, back_cb, title):
     if pat:
         out += f"الگوی فعلی: <b>{layout_text(pat)}</b>\n{layout_preview(pat)}\n\n"
     else:
-        out += "الگوی دلخواه فعال نیست (چیدمان پیش‌فرض/ستونی استفاده می‌شود).\n\n"
+        out += "الگوی دلخواه فعال نیست (چیدمان پیش‌فرض استفاده می‌شود).\n\n"
     out += (
         "هر عدد = تعداد دکمه در یک ردیف.\n"
         "۱ = دکمه‌ی بزرگ و تمام‌عرض | ۲ = دو‌تایی | ۳ و ۴ = ردیف‌های فشرده\n"
         "مثال: <code>1 2 2 1</code> ← یکی بزرگ بالا، دو ردیف دوتایی وسط، یکی بزرگ پایین.\n"
         "اگر دکمه‌ها بیشتر از الگو بود، عدد آخر الگو تکرار می‌شود.\n\n"
-        "یکی از الگوهای آماده را بزنید یا الگوی خودتان را بنویسید 👇"
+        "یکی از الگوهای آماده را بزنید (<b>1</b> = همه تک‌ستونه، <b>2</b> = همه دوستونه) یا الگوی خودتان را بنویسید 👇"
     )
     rows, cur = [], []
     for code in LAYOUT_PRESETS:
@@ -5882,7 +5885,7 @@ def cb_user_rows(pid):
                 btns.append(InlineKeyboardButton(text=label[:64], url=safe))
         else:
             btns.append(InlineKeyboardButton(text=label[:64], callback_data=f"cb_{cid}"))
-    return cb_layout(btns, cb_cols(pid), parse_layout(get_setting(f"cbpat_{pid}")))
+    return cb_layout(btns, 1, parse_layout(get_setting(f"cbpat_{pid}")))  # پیش‌فرض ۱ ستونه؛ با «چیدمان دلخواه» عوض می‌شود
 
 
 def cb_main_rows():
@@ -6023,10 +6026,6 @@ def cb_list_view(pid):
     else:
         out += f"\nℹ️ حداکثر {CB_MAX_DEPTH} مرحله پشت‌سرهم مجاز است."
     if len(items) > 1:
-        keyboard.append(
-            [b(text=f"↔️ چیدمان: {'۲ ستونه' if cb_cols(pid) == 2 else '۱ ستونه'} (تغییر)", callback_data=f"acbcols_{pid}")]
-        )
-    if len(items) > 1:
         cur_pat = layout_text(parse_layout(get_setting(f"cbpat_{pid}")))
         keyboard.append([b(text="🧩 چیدمان دلخواه" + (f": {cur_pat}" if cur_pat else ""), callback_data=f"acblay_{pid}")])
     if pid == 0:
@@ -6045,14 +6044,20 @@ def cb_node_view(node_id):
         url, active, parent = c.url or "", bool(c.is_active), c.parent_id or 0
         n = s.query(func.count(CustomButton.id)).filter(CustomButton.parent_id == node_id).scalar() or 0
         svc_line = ""
+        own_prod = False
         if kind == "buy":
             try:
                 svc = s.get(Service, int(url or 0))
             except ValueError:
                 svc = None
-            svc_line = (
-                f"{cat_label(svc.category)} - {svc.name} — {svc.price:,} تومان" if svc is not None else "⚠️ پلن پیدا نشد (حذف شده؟) — پلن دیگری انتخاب کنید"
-            )
+            own_prod = svc is not None and svc.category == BTN_CAT
+            if svc is None:
+                svc_line = "⚠️ پلن پیدا نشد (حذف شده؟) — پلن دیگری انتخاب کنید"
+            elif own_prod:
+                days_ = btn_product_days(svc.id) or 30
+                svc_line = f"🛍 محصول اختصاصی: {svc.name} — {svc.price:,} تومان — {days_} روزه"
+            else:
+                svc_line = f"{cat_label(svc.category)} - {svc.name} — {svc.price:,} تومان"
     out = (
         f"🔘 <b>{esc(label)}</b>\n\n"
         f"نوع: {'💬 پیام (با امکان مرحله بعد)' if kind == 'msg' else '🛒 خرید (رفتن به پرداخت)' if kind == 'buy' else '🔗 لینک'}\n"
@@ -6071,7 +6076,13 @@ def cb_node_view(node_id):
         )
     elif kind == "buy":
         out += f"پلن: {esc(svc_line)}\nکاربر با زدن این دکمه مستقیم وارد مرحله پرداخت همین پلن می‌شود."
-        rows.append([b(text="🔁 تغییر پلن", callback_data=f"acbchg_{node_id}")])
+        if own_prod:
+            rows.append([
+                b(text="✏️ نام محصول", callback_data=f"acbpe_name_{node_id}"),
+                b(text="💰 قیمت", callback_data=f"acbpe_price_{node_id}"),
+                b(text="📅 مدت", callback_data=f"acbpe_days_{node_id}"),
+            ])
+        rows.append([b(text="🔁 تغییر پلن / محصول", callback_data=f"acbchg_{node_id}")])
     else:
         out += f"لینک: {esc(url)}"
         rows.append([b(text="🔗 تغییر لینک", callback_data=f"acbed_url_{node_id}")])
@@ -6133,14 +6144,6 @@ async def cb_admin_preview(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
     await state.clear()
     await present_view(call, *view)
-
-
-@dp.callback_query(F.data.regexp(r"^acbcols_\d+$"), MainAdmin())
-async def cb_admin_cols(call: types.CallbackQuery):
-    pid = int(call.data.split("_")[1])
-    set_setting(f"cbcols_{pid}", "1" if cb_cols(pid) == 2 else "2")
-    await call.answer("چیدمان تغییر کرد.")
-    await cb_show_list(call, pid)
 
 
 @dp.callback_query(F.data.regexp(r"^acblay_\d+$"), MainAdmin())
@@ -6263,8 +6266,11 @@ async def cb_add_label(message: types.Message, state: FSMContext):
     pid, kind = int(data.get("cb_pid", 0)), data.get("cb_kind", "msg")
     await state.update_data(cb_label=label)
     if kind == "buy":
-        out_, markup_ = cb_service_picker(f"acbsv_{{sid}}", cb_cancel_markup(pid))
-        await message.answer("🛒 <b>مرحله ۲:</b> پلنی را که این دکمه باید بفروشد انتخاب کنید:\n" + out_, reply_markup=markup_)
+        out_, markup_ = cb_service_picker(f"acbsv_{{sid}}", cb_cancel_markup(pid), new_cb="acbpnew")
+        await message.answer(
+            "🛒 <b>مرحله ۲:</b> یکی از پلن‌های موجود را انتخاب کنید، یا «محصول جدید» بزنید تا یک محصول مستقل (فقط برای همین دکمه) تعریف شود:\n" + out_,
+            reply_markup=markup_,
+        )
         return
     if kind == "url":
         await state.set_state(PaymentState.cb_url)
@@ -6281,20 +6287,38 @@ async def cb_add_label(message: types.Message, state: FSMContext):
         )
 
 
-def cb_service_picker(cb_fmt, cancel_markup):
-    """دکمه‌ی انتخاب پلن؛ cb_fmt مثل 'acbsv_{sid}' ← (متن توضیح, کیبورد)."""
+BTN_CAT = "btnprod"  # دسته‌ی مخفی (غیرفعال) برای محصول‌هایی که فقط از «دکمه خرید» فروخته می‌شوند
+
+
+def ensure_btn_category(session):
+    if session.query(Category).filter(Category.key == BTN_CAT).first() is None:
+        session.add(Category(key=BTN_CAT, label="محصولات دکمه‌ساز", emoji="🔘", sort_order=9999, is_active=False))
+        session.flush()
+
+
+def btn_product_days(sid):
+    try:
+        return max(0, int(get_setting(f"sdays_{sid}") or 0))
+    except ValueError:
+        return 0
+
+
+def cb_service_picker(cb_fmt, cancel_markup, new_cb=None):
+    """دکمه‌ی انتخاب پلن؛ cb_fmt مثل 'acbsv_{sid}' ← (متن توضیح, کیبورد). new_cb = دکمه‌ی «محصول جدید»."""
     b = InlineKeyboardButton
     with SessionLocal() as s:
         cmap = category_map()
         svcs = [(r.id, r.category, r.name, r.price) for r in s.query(Service).order_by(Service.category, Service.id).limit(60).all()]
-    if not svcs:
-        return "\n⚠️ هنوز پلنی تعریف نشده است. اول از بخش مدیریت پلن‌ها پلن بسازید.", cancel_markup
-    rows = [
+    rows = []
+    if new_cb:
+        rows.append([b(text="➕ محصول جدید (فقط برای همین دکمه)", callback_data=new_cb)])
+    rows.extend(
         [b(text=f"{cat_label(cat, cmap)} - {name} — {price:,}"[:60], callback_data=cb_fmt.format(sid=sid))]
         for sid, cat, name, price in svcs
-    ]
+    )
     rows.extend(list(cancel_markup.inline_keyboard))
-    return "", InlineKeyboardMarkup(inline_keyboard=rows)
+    note = "" if svcs else "\n⚠️ هنوز پلنی تعریف نشده است."
+    return note, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @dp.callback_query(PaymentState.cb_label, F.data.regexp(r"^acbsv_\d+$"), MainAdmin())
@@ -6323,7 +6347,7 @@ async def cb_buy_change_start(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
     await state.clear()
     out_, markup_ = cb_service_picker(f"acbsc_{nid}_{{sid}}", InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data=f"acbn_{nid}")]]))
+        inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data=f"acbn_{nid}")]]), new_cb=f"acbpnew_{nid}")
     await edit_or_send(call, "🔁 پلن جدید این دکمه را انتخاب کنید:\n" + out_, markup_)
 
 
@@ -6341,6 +6365,153 @@ async def cb_buy_change_do(call: types.CallbackQuery, state: FSMContext):
     log_action(call.from_user.id, f"تغییر پلن دکمه خرید #{nid} به پلن {sid}")
     await call.answer("پلن دکمه تغییر کرد ✅")
     await cb_show_node(call, nid)
+
+
+@dp.callback_query(F.data.regexp(r"^acbpnew(_\d+)?$"), MainAdmin())
+async def cb_prod_start(call: types.CallbackQuery, state: FSMContext):
+    parts = call.data.split("_")
+    nid = int(parts[1]) if len(parts) == 2 else 0
+    data = await state.get_data()
+    if nid == 0 and data.get("cb_kind") != "buy":
+        await call.answer("این مرحله منقضی شده؛ دوباره دکمه را بسازید.", show_alert=True)
+        return
+    if nid:
+        with SessionLocal() as s:
+            c = s.get(CustomButton, nid)
+            if c is None or c.kind != "buy":
+                await call.answer("دکمه یافت نشد.", show_alert=True)
+                return
+        await state.clear()
+    await call.answer()
+    await state.set_state(PaymentState.cb_prod_name)
+    await state.update_data(cb_prod_node=nid)
+    await edit_or_send(
+        call,
+        "🛍 <b>محصول جدید — مرحله ۱ از ۳</b>\n\nنام محصول را بفرستید (حداکثر ۶۰ کاراکتر).\nمثال: <code>اشتراک ۳ ماهه</code>",
+        InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data=f"acbn_{nid}" if nid else f"acbs_{int(data.get('cb_pid') or 0)}")]]),
+    )
+
+
+@dp.message(PaymentState.cb_prod_name, MainAdmin())
+async def cb_prod_name_in(message: types.Message, state: FSMContext):
+    name = (message.text or "").strip()
+    if not name or len(name) > 60:
+        await message.answer("یک نام معتبر (حداکثر ۶۰ کاراکتر) بفرستید.")
+        return
+    await state.update_data(cb_prod_name=name)
+    await state.set_state(PaymentState.cb_prod_price)
+    await message.answer("💰 <b>مرحله ۲ از ۳:</b> قیمت محصول را به تومان بفرستید.\nمثال: <code>250000</code>")
+
+
+@dp.message(PaymentState.cb_prod_price, MainAdmin())
+async def cb_prod_price_in(message: types.Message, state: FSMContext):
+    price = parse_int_input(message.text)
+    if not price or price > 100_000_000:
+        await message.answer("قیمت معتبر (عدد بزرگ‌تر از صفر، به تومان) بفرستید.")
+        return
+    await state.update_data(cb_prod_price=price)
+    await state.set_state(PaymentState.cb_prod_days)
+    await message.answer(
+        "📅 <b>مرحله ۳ از ۳:</b> مدت اعتبار محصول چند روز باشد؟\nعدد بفرستید، یا <code>-</code> برای ۳۰ روز."
+    )
+
+
+@dp.message(PaymentState.cb_prod_days, MainAdmin())
+async def cb_prod_days_in(message: types.Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    days = 30 if raw == "-" else parse_int_input(raw)
+    if not days or days > 3650:
+        await message.answer("عدد معتبر (۱ تا ۳۶۵۰ روز) بفرستید، یا <code>-</code> برای ۳۰ روز.")
+        return
+    data = await state.get_data()
+    name, price, nid = data.get("cb_prod_name"), data.get("cb_prod_price"), int(data.get("cb_prod_node") or 0)
+    if not name or not price:
+        await state.clear()
+        await message.answer("اطلاعات محصول ناقص بود؛ دوباره از اول شروع کنید.")
+        return
+    with SessionLocal() as s:
+        ensure_btn_category(s)
+        svc = Service(category=BTN_CAT, name=name, price=price)
+        s.add(svc)
+        s.flush()
+        sid = svc.id
+        s.commit()
+    set_setting(f"sdays_{sid}", str(days))
+    log_action(message.from_user.id, f"تعریف محصول دکمه خرید «{name}» ({price:,} تومان، {days} روز)")
+    if nid:
+        with SessionLocal() as s:
+            c = s.get(CustomButton, nid)
+            if c is not None and c.kind == "buy":
+                c.url = str(sid)
+                s.commit()
+        await state.clear()
+        await message.answer("✅ محصول جدید تعریف و به دکمه وصل شد.")
+        await cb_show_node(message, nid)
+        return
+    await _cb_finish_add(message, state, "", "", url=str(sid))
+
+
+_PROD_EDIT_ASK = {
+    "name": "✏️ نام جدید محصول را بفرستید (حداکثر ۶۰ کاراکتر):",
+    "price": "💰 قیمت جدید را به تومان بفرستید:",
+    "days": "📅 مدت اعتبار جدید (روز) را بفرستید:",
+}
+
+
+@dp.callback_query(F.data.regexp(r"^acbpe_(name|price|days)_\d+$"), MainAdmin())
+async def cb_prod_edit_start(call: types.CallbackQuery, state: FSMContext):
+    _, field, nid = call.data.split("_")
+    nid = int(nid)
+    with SessionLocal() as s:
+        c = s.get(CustomButton, nid)
+        svc = s.get(Service, int(c.url)) if c is not None and c.kind == "buy" and (c.url or "").isdigit() else None
+        if svc is None or svc.category != BTN_CAT:
+            await call.answer("این دکمه محصول اختصاصی ندارد.", show_alert=True)
+            return
+    await call.answer()
+    await state.clear()
+    await state.set_state(PaymentState.cb_prod_edit)
+    await state.update_data(cb_prod_node=nid, cb_prod_field=field)
+    await edit_or_send(
+        call, _PROD_EDIT_ASK[field],
+        InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data=f"acbn_{nid}")]]),
+    )
+
+
+@dp.message(PaymentState.cb_prod_edit, MainAdmin())
+async def cb_prod_edit_save(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    nid, field = int(data.get("cb_prod_node") or 0), data.get("cb_prod_field")
+    raw = (message.text or "").strip()
+    if field == "name":
+        if not raw or len(raw) > 60:
+            await message.answer("یک نام معتبر (حداکثر ۶۰ کاراکتر) بفرستید.")
+            return
+        value = raw
+    else:
+        value = parse_int_input(raw)
+        if not value or (field == "price" and value > 100_000_000) or (field == "days" and value > 3650):
+            await message.answer("عدد معتبر بفرستید.")
+            return
+    with SessionLocal() as s:
+        c = s.get(CustomButton, nid)
+        svc = s.get(Service, int(c.url)) if c is not None and (c.url or "").isdigit() else None
+        if svc is None or svc.category != BTN_CAT:
+            await state.clear()
+            await message.answer("محصول یافت نشد.")
+            return
+        if field == "name":
+            svc.name = value
+        elif field == "price":
+            svc.price = value
+        s.commit()
+        sid = svc.id
+    if field == "days":
+        set_setting(f"sdays_{sid}", str(value))
+    await state.clear()
+    log_action(message.from_user.id, f"ویرایش محصول دکمه خرید #{nid} ({field})")
+    await message.answer("✅ ذخیره شد. (سفارش‌های بعدی با مقدار جدید ثبت می‌شوند.)")
+    await cb_show_node(message, nid)
 
 
 async def _cb_finish_add(event, state: FSMContext, text_, photo_id, url=""):
@@ -6568,8 +6739,25 @@ async def cb_delete_do(call: types.CallbackQuery):
             return
         pid, label = c.parent_id or 0, c.label or ""
         ids = cb_descendants(s, nid)
+        gone_sids = [
+            int(u) for (u,) in s.query(CustomButton.url).filter(CustomButton.id.in_(ids), CustomButton.kind == "buy").all()
+            if (u or "").isdigit()
+        ]
         s.query(CustomButton).filter(CustomButton.id.in_(ids)).delete(synchronize_session=False)
         s.query(KV).filter(KV.key.in_([f"cbcols_{i}" for i in ids] + [f"cbpat_{i}" for i in ids])).delete(synchronize_session=False)
+        for sid_ in gone_sids:  # محصول اختصاصی بدون سفارش/سرویس/دکمه‌ی دیگر پاک می‌شود
+            svc_ = s.get(Service, sid_)
+            if svc_ is None or svc_.category != BTN_CAT:
+                continue
+            used = (
+                s.query(Request.id).filter(Request.service_id == sid_).first()
+                or s.query(UserConfig.id).filter(UserConfig.service_id == sid_).first()
+                or s.query(CustomButton.id).filter(CustomButton.kind == "buy", CustomButton.url == str(sid_)).first()
+            )
+            if not used:
+                s.delete(svc_)
+                s.query(KV).filter(KV.key == f"sdays_{sid_}").delete(synchronize_session=False)
+                _cache.pop(f"sdays_{sid_}", None)
         s.commit()
     for i in ids:
         _cache.pop(f"cbcols_{i}", None)
@@ -7461,7 +7649,7 @@ def ub_move(screen, token, up):
 def ub_build_rows(screen, user_id=None, ctx=None):
     """ردیف‌های دکمه‌ی شیشه‌ای یک منو برای کاربر (با احتساب تغییر نام، مخفی‌سازی، ترتیب و دکمه‌های دلخواه)."""
     ctx = ctx or {}
-    mode = get_setting(f"ucols_{screen}").strip()
+    mode = ""  # چیدمان پیش‌فرض خودکار؛ فقط با «چیدمان دلخواه» (الگو) عوض می‌شود
     items = {i["key"]: i for i in UB_ITEMS[screen]}
     with SessionLocal() as s:
         customs = {
@@ -7528,9 +7716,6 @@ def ub_build_rows(screen, user_id=None, ctx=None):
 
 
 # ----- نمای ادمین -----
-UB_MODE_LABELS = {"": "خودکار (پیش‌فرض)", "1": "۱ ستونه", "2": "۲ ستونه", "3": "۳ ستونه"}
-
-
 def ub_screen_view(screen):
     pid = SCREENS[screen]["pid"]
     items = {i["key"]: i for i in UB_ITEMS[screen]}
@@ -7561,11 +7746,7 @@ def ub_screen_view(screen):
                 b(text="⬇️", callback_data=f"ubmv_dn_{screen}_{tok}"),
             ]
         )
-    mode = get_setting(f"ucols_{screen}").strip()
-    if mode not in UB_MODE_LABELS:
-        mode = ""
     rows.append([b(text="➕ افزودن دکمه جدید", callback_data=f"acbadd_{pid}")])
-    rows.append([b(text=f"↔️ چیدمان: {UB_MODE_LABELS[mode]} (تغییر)", callback_data=f"ubcols_{screen}")])
     cur_pat = layout_text(parse_layout(get_setting(f"upat_{screen}")))
     rows.append([b(text="🧩 چیدمان دلخواه" + (f": {cur_pat}" if cur_pat else ""), callback_data=f"ublay_{screen}")])
     rows.append([b(text="♻️ بازنشانی نام‌ها، ترتیب و نمایش", callback_data=f"ubreset_{screen}")])
@@ -7706,16 +7887,6 @@ async def ub_move_handler(call: types.CallbackQuery):
     _, direction, screen, token = call.data.split("_")
     ub_move(screen, token, direction == "up")
     await call.answer("ترتیب تغییر کرد.")
-    await ub_show_screen(call, screen)
-
-
-@dp.callback_query(F.data.regexp(rf"^ubcols_{UB_SCREEN_RE}$"), MainAdmin())
-async def ub_cols_handler(call: types.CallbackQuery):
-    screen = call.data.split("_")[1]
-    cycle = {"": "1", "1": "2", "2": "3", "3": ""}
-    cur = get_setting(f"ucols_{screen}").strip()
-    set_setting(f"ucols_{screen}", cycle.get(cur, ""))
-    await call.answer("چیدمان تغییر کرد.")
     await ub_show_screen(call, screen)
 
 
