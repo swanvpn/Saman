@@ -975,6 +975,7 @@ class PaymentState(StatesGroup):
     custom_gb = State()
     custom_days = State()
     cb_label = State()
+    layout_pattern = State()
     cb_text = State()
     cb_photo = State()
     cb_url = State()
@@ -5783,7 +5784,79 @@ def cb_is_visible(s, node):
     return False
 
 
-def cb_layout(buttons, cols):
+# ----- چیدمان دلخواه با الگو: هر عدد = تعداد دکمه در یک ردیف (مثلاً 1 2 3 1) -----
+LAYOUT_MAX_PER_ROW = 4
+LAYOUT_MAX_ROWS = 20
+LAYOUT_PRESETS = ["122", "233", "1221", "2332", "2442", "1331", "123", "221"]
+_DIGIT_MAP = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+def parse_layout(raw):
+    """متن الگو ← لیست عددها (None اگر خالی/نامعتبر). جداکننده: فاصله، - ، ویرگول، خط جدید."""
+    txt = (raw or "").translate(_DIGIT_MAP)
+    nums = re.findall(r"\d+", txt)
+    if not nums or len(nums) > LAYOUT_MAX_ROWS:
+        return None
+    out = [int(n) for n in nums]
+    if any(n < 1 or n > LAYOUT_MAX_PER_ROW for n in out):
+        return None
+    return out
+
+
+def layout_text(pattern):
+    return "-".join(str(n) for n in pattern) if pattern else ""
+
+
+def layout_preview(pattern):
+    shapes = {1: "▬▬▬▬▬▬", 2: "▬▬▬ ▬▬▬", 3: "▬▬ ▬▬ ▬▬", 4: "▬ ▬ ▬ ▬"}
+    return "\n".join(shapes.get(n, "▬") for n in pattern)
+
+
+def apply_layout(buttons, pattern):
+    """دکمه‌ها را طبق الگو ردیف‌بندی می‌کند؛ بعد از تمام‌شدن الگو، عدد آخر تکرار می‌شود."""
+    rows, i, k = [], 0, 0
+    while i < len(buttons):
+        n = pattern[k] if k < len(pattern) else pattern[-1]
+        rows.append(buttons[i : i + n])
+        i += n
+        k += 1
+    return rows
+
+
+def layout_menu_view(key, set_fmt, custom_cb, back_cb, title):
+    """منوی انتخاب چیدمان. set_fmt مثل 'acblset_5_{code}' (code=0 یعنی پیش‌فرض)."""
+    b = InlineKeyboardButton
+    pat = parse_layout(get_setting(key))
+    out = f"🧩 <b>چیدمان دلخواه {esc(title)}</b>\n\n"
+    if pat:
+        out += f"الگوی فعلی: <b>{layout_text(pat)}</b>\n{layout_preview(pat)}\n\n"
+    else:
+        out += "الگوی دلخواه فعال نیست (چیدمان پیش‌فرض/ستونی استفاده می‌شود).\n\n"
+    out += (
+        "هر عدد = تعداد دکمه در یک ردیف.\n"
+        "۱ = دکمه‌ی بزرگ و تمام‌عرض | ۲ = دو‌تایی | ۳ و ۴ = ردیف‌های فشرده\n"
+        "مثال: <code>1 2 2 1</code> ← یکی بزرگ بالا، دو ردیف دوتایی وسط، یکی بزرگ پایین.\n"
+        "اگر دکمه‌ها بیشتر از الگو بود، عدد آخر الگو تکرار می‌شود.\n\n"
+        "یکی از الگوهای آماده را بزنید یا الگوی خودتان را بنویسید 👇"
+    )
+    rows, cur = [], []
+    for code in LAYOUT_PRESETS:
+        cur.append(b(text="-".join(code), callback_data=set_fmt.format(code=code)))
+        if len(cur) == 2:
+            rows.append(cur)
+            cur = []
+    if cur:
+        rows.append(cur)
+    rows.append([b(text="✍️ نوشتن الگوی دلخواه", callback_data=custom_cb)])
+    if pat:
+        rows.append([b(text="♻️ حذف الگو (برگشت به پیش‌فرض)", callback_data=set_fmt.format(code="0"))])
+    rows.append([b(text="🔙 بازگشت", callback_data=back_cb)])
+    return out, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def cb_layout(buttons, cols, pattern=None):
+    if pattern:
+        return apply_layout(buttons, pattern)
     rows, cur = [], []
     for btn in buttons:
         cur.append(btn)
@@ -5809,7 +5882,7 @@ def cb_user_rows(pid):
                 btns.append(InlineKeyboardButton(text=label[:64], url=safe))
         else:
             btns.append(InlineKeyboardButton(text=label[:64], callback_data=f"cb_{cid}"))
-    return cb_layout(btns, cb_cols(pid))
+    return cb_layout(btns, cb_cols(pid), parse_layout(get_setting(f"cbpat_{pid}")))
 
 
 def cb_main_rows():
@@ -5953,6 +6026,9 @@ def cb_list_view(pid):
         keyboard.append(
             [b(text=f"↔️ چیدمان: {'۲ ستونه' if cb_cols(pid) == 2 else '۱ ستونه'} (تغییر)", callback_data=f"acbcols_{pid}")]
         )
+    if len(items) > 1:
+        cur_pat = layout_text(parse_layout(get_setting(f"cbpat_{pid}")))
+        keyboard.append([b(text="🧩 چیدمان دلخواه" + (f": {cur_pat}" if cur_pat else ""), callback_data=f"acblay_{pid}")])
     if pid == 0:
         keyboard.append([b(text="🔙 بازگشت به پنل", callback_data="admin_home")])
     else:
@@ -6065,6 +6141,63 @@ async def cb_admin_cols(call: types.CallbackQuery):
     set_setting(f"cbcols_{pid}", "1" if cb_cols(pid) == 2 else "2")
     await call.answer("چیدمان تغییر کرد.")
     await cb_show_list(call, pid)
+
+
+@dp.callback_query(F.data.regexp(r"^acblay_\d+$"), MainAdmin())
+async def cb_layout_menu(call: types.CallbackQuery, state: FSMContext):
+    pid = int(call.data.split("_")[1])
+    await call.answer()
+    await state.clear()
+    out, markup = layout_menu_view(f"cbpat_{pid}", f"acblset_{pid}_{{code}}", f"acblcus_{pid}", f"acbs_{pid}", "این مرحله")
+    await edit_or_send(call, out, markup)
+
+
+@dp.callback_query(F.data.regexp(r"^acblset_\d+_\d+$"), MainAdmin())
+async def cb_layout_set(call: types.CallbackQuery, state: FSMContext):
+    _, pid, code = call.data.split("_")
+    set_setting(f"cbpat_{pid}", "" if code == "0" else layout_text(parse_layout(" ".join(code))))
+    log_action(call.from_user.id, f"چیدمان دکمه‌ها (مرحله {pid}) ← {code}")
+    await call.answer("چیدمان ذخیره شد ✅")
+    out, markup = layout_menu_view(f"cbpat_{pid}", f"acblset_{pid}_{{code}}", f"acblcus_{pid}", f"acbs_{pid}", "این مرحله")
+    await edit_or_send(call, out, markup)
+
+
+@dp.callback_query(F.data.regexp(r"^acblcus_\d+$"), MainAdmin())
+async def cb_layout_custom(call: types.CallbackQuery, state: FSMContext):
+    pid = call.data.split("_")[1]
+    await call.answer()
+    await state.set_state(PaymentState.layout_pattern)
+    await state.update_data(pat_key=f"cbpat_{pid}", pat_back=f"acblay_{pid}")
+    await edit_or_send(call, LAYOUT_ASK, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data=f"acblay_{pid}")]]))
+
+
+LAYOUT_ASK = (
+    "✍️ الگو را بفرستید؛ عددها را با فاصله یا - جدا کنید.\n"
+    "هر عدد = تعداد دکمه در یک ردیف (حداکثر ۴، حداکثر ۲۰ ردیف).\n\n"
+    "مثال‌ها:\n<code>1 2 2 1</code> ← بزرگ بالا، دو ردیف دوتایی، بزرگ پایین\n"
+    "<code>2 3 3 2</code> ← دو بزرگ بالا، دو ردیف سه‌تایی، دو بزرگ پایین\n"
+    "<code>1 2 2</code> ← یکی بزرگ بالا، بقیه دوتایی"
+)
+
+
+@dp.message(PaymentState.layout_pattern, MainAdmin())
+async def layout_pattern_save(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    key, back = data.get("pat_key"), data.get("pat_back")
+    pat = parse_layout(message.text)
+    if not key or not back:
+        await state.clear()
+        return
+    if pat is None:
+        await message.answer("الگو معتبر نیست. فقط عدد ۱ تا ۴ با فاصله یا - بفرستید؛ مثال: <code>1 2 2 1</code>")
+        return
+    set_setting(key, layout_text(pat))
+    await state.clear()
+    log_action(message.from_user.id, f"چیدمان دلخواه {key} ← {layout_text(pat)}")
+    await message.answer(
+        f"✅ چیدمان ذخیره شد: <b>{layout_text(pat)}</b>\n{layout_preview(pat)}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت", callback_data=back)]]),
+    )
 
 
 # ----- ساخت دکمه‌ی جدید (مرحله‌به‌مرحله) -----
@@ -6436,10 +6569,11 @@ async def cb_delete_do(call: types.CallbackQuery):
         pid, label = c.parent_id or 0, c.label or ""
         ids = cb_descendants(s, nid)
         s.query(CustomButton).filter(CustomButton.id.in_(ids)).delete(synchronize_session=False)
-        s.query(KV).filter(KV.key.in_([f"cbcols_{i}" for i in ids])).delete(synchronize_session=False)
+        s.query(KV).filter(KV.key.in_([f"cbcols_{i}" for i in ids] + [f"cbpat_{i}" for i in ids])).delete(synchronize_session=False)
         s.commit()
     for i in ids:
         _cache.pop(f"cbcols_{i}", None)
+        _cache.pop(f"cbpat_{i}", None)
     await call.answer("حذف شد.")
     log_action(call.from_user.id, f"حذف دکمه دلخواه «{label}» ({len(ids)} مورد)")
     await cb_show_list(call, pid)
@@ -7372,6 +7506,9 @@ def ub_build_rows(screen, user_id=None, ctx=None):
             else:
                 btn = InlineKeyboardButton(text=label[:64], callback_data=f"cb_{tok[1:]}")
             entries.append((True, btn))
+    pat = parse_layout(get_setting(f"upat_{screen}"))
+    if pat:
+        return apply_layout([btn for _, btn in entries], pat)
     per = 3 if (mode == "3" or (mode == "" and screen == "svc")) else 2
     rows, pending = [], []
     for wide, btn in entries:
@@ -7429,6 +7566,8 @@ def ub_screen_view(screen):
         mode = ""
     rows.append([b(text="➕ افزودن دکمه جدید", callback_data=f"acbadd_{pid}")])
     rows.append([b(text=f"↔️ چیدمان: {UB_MODE_LABELS[mode]} (تغییر)", callback_data=f"ubcols_{screen}")])
+    cur_pat = layout_text(parse_layout(get_setting(f"upat_{screen}")))
+    rows.append([b(text="🧩 چیدمان دلخواه" + (f": {cur_pat}" if cur_pat else ""), callback_data=f"ublay_{screen}")])
     rows.append([b(text="♻️ بازنشانی نام‌ها، ترتیب و نمایش", callback_data=f"ubreset_{screen}")])
     rows.append([b(text="🔙 بازگشت", callback_data="ubh")])
     return out, InlineKeyboardMarkup(inline_keyboard=rows)
@@ -7580,6 +7719,34 @@ async def ub_cols_handler(call: types.CallbackQuery):
     await ub_show_screen(call, screen)
 
 
+@dp.callback_query(F.data.regexp(rf"^ublay_{UB_SCREEN_RE}$"), MainAdmin())
+async def ub_layout_menu(call: types.CallbackQuery, state: FSMContext):
+    screen = call.data.split("_")[1]
+    await call.answer()
+    await state.clear()
+    out, markup = layout_menu_view(f"upat_{screen}", f"ublset_{screen}_{{code}}", f"ublcus_{screen}", f"ubs_{screen}", SCREENS[screen]["title"])
+    await edit_or_send(call, out, markup)
+
+
+@dp.callback_query(F.data.regexp(rf"^ublset_{UB_SCREEN_RE}_\d+$"), MainAdmin())
+async def ub_layout_set(call: types.CallbackQuery, state: FSMContext):
+    _, screen, code = call.data.split("_")
+    set_setting(f"upat_{screen}", "" if code == "0" else layout_text(parse_layout(" ".join(code))))
+    log_action(call.from_user.id, f"چیدمان دکمه‌های {screen} ← {code}")
+    await call.answer("چیدمان ذخیره شد ✅")
+    out, markup = layout_menu_view(f"upat_{screen}", f"ublset_{screen}_{{code}}", f"ublcus_{screen}", f"ubs_{screen}", SCREENS[screen]["title"])
+    await edit_or_send(call, out, markup)
+
+
+@dp.callback_query(F.data.regexp(rf"^ublcus_{UB_SCREEN_RE}$"), MainAdmin())
+async def ub_layout_custom(call: types.CallbackQuery, state: FSMContext):
+    screen = call.data.split("_")[1]
+    await call.answer()
+    await state.set_state(PaymentState.layout_pattern)
+    await state.update_data(pat_key=f"upat_{screen}", pat_back=f"ublay_{screen}")
+    await edit_or_send(call, LAYOUT_ASK, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data=f"ublay_{screen}")]]))
+
+
 @dp.callback_query(F.data.regexp(rf"^ubreset_{UB_SCREEN_RE}$"), MainAdmin())
 async def ub_reset_handler(call: types.CallbackQuery):
     screen = call.data.split("_")[1]
@@ -7588,6 +7755,7 @@ async def ub_reset_handler(call: types.CallbackQuery):
         set_setting(f"ub_hide_{screen}_{it['key']}", "")
     set_setting(f"uorder_{screen}", "")
     set_setting(f"ucols_{screen}", "")
+    set_setting(f"upat_{screen}", "")
     log_action(call.from_user.id, f"بازنشانی دکمه‌های {screen}")
     await call.answer("بازنشانی شد (دکمه‌های ساخته‌شده توسط شما حذف نشدند).", show_alert=True)
     await ub_show_screen(call, screen)
