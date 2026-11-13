@@ -476,6 +476,7 @@ DEFAULTS = {
     "referral_reward": "20000",
     "reminder_days": "3",
     "report_on": "1",
+    "report_excluded": "",
     "backup_on": "1",
     "faq_text": DEFAULT_FAQ,
     "sub_admins": "",
@@ -4701,6 +4702,34 @@ async def ticket_close(call: types.CallbackQuery):
 # ---------------------------------------------------------------------------
 # پنل ادمین: آمار، گزارش روزانه، لاگ
 # ---------------------------------------------------------------------------
+class RXState(StatesGroup):
+    waiting_id = State()
+
+
+def report_excluded_ids():
+    """آیدی کاربرانی که ادمین نمی‌خواهد در حساب‌وکتاب گزارش‌ها بیایند."""
+    out = set()
+    for x in (get_setting("report_excluded") or "").split(","):
+        x = x.strip()
+        if x.lstrip("-").isdigit():
+            out.add(int(x))
+    return out
+
+
+def _save_excluded(ids):
+    set_setting("report_excluded", ",".join(str(i) for i in sorted(ids)))
+
+
+def _excl():
+    ids = report_excluded_ids()
+    return [Request.user_id.notin_(ids)] if ids else []
+
+
+def _excl_note():
+    n = len(report_excluded_ids())
+    return f"\n\n🚫 {n} کاربر از محاسبات این گزارش کنار گذاشته شده‌اند." if n else ""
+
+
 def stats_numbers():
     today = jalali_today().strftime("%Y/%m/%d")
     month = jalali_today().strftime("%Y/%m")
@@ -4708,19 +4737,19 @@ def stats_numbers():
     with SessionLocal() as s:
         def revenue(*extra):
             q = s.query(func.coalesce(func.sum(Request.price), 0)).filter(
-                Request.status == "answered", Request.req_type.in_(sale_types), *extra
+                Request.status == "answered", Request.req_type.in_(sale_types), *_excl(), *extra
             )
             return int(q.scalar() or 0)
 
         def sales_count(*extra):
             q = s.query(func.count(Request.id)).filter(
-                Request.status == "answered", Request.req_type.in_(sale_types), *extra
+                Request.status == "answered", Request.req_type.in_(sale_types), *_excl(), *extra
             )
             return int(q.scalar() or 0)
 
         charged_today = int(
             s.query(func.coalesce(func.sum(Request.price), 0))
-            .filter(Request.status == "answered", Request.req_type == "charge", Request.answered_at.like(f"{today}%"))
+            .filter(Request.status == "answered", Request.req_type == "charge", *_excl(), Request.answered_at.like(f"{today}%"))
             .scalar() or 0
         )
         return dict(
@@ -4755,6 +4784,7 @@ async def admin_sales_stats_handler(call: types.CallbackQuery):
         f"🟢 بررسی‌شده: {n['processed']}\n"
         f"🎫 تیکت باز: {n['open_tickets']}\n"
         f"⭐ میانگین امتیاز: {n['avg_rating']:.2f} ({n['rating_count']} نظر)"
+        + _excl_note()
     )
     b = InlineKeyboardButton
     markup = InlineKeyboardMarkup(
@@ -4763,6 +4793,7 @@ async def admin_sales_stats_handler(call: types.CallbackQuery):
                 b(text="📈 نمودار هفتگی", callback_data="sreport_week"),
                 b(text="📈 نمودار ماهانه", callback_data="sreport_month"),
             ],
+            [b(text=f"🚫 کاربران خارج از گزارش ({len(report_excluded_ids())})", callback_data="rx_menu")],
             [b(text="🔙 بازگشت به پنل", callback_data="admin_home")],
         ]
     )
@@ -4776,7 +4807,7 @@ def _rev_for_prefixes(s, prefixes):
     conds = [Request.answered_at.like(f"{p}%") for p in prefixes]
     total, cnt = (
         s.query(func.coalesce(func.sum(Request.price), 0), func.count(Request.id))
-        .filter(Request.status == "answered", Request.req_type.in_(SALE_TYPES), or_(*conds))
+        .filter(Request.status == "answered", Request.req_type.in_(SALE_TYPES), *_excl(), or_(*conds))
         .one()
     )
     return int(total or 0), int(cnt or 0)
@@ -4812,7 +4843,7 @@ def build_sales_report(period):
             total, cnt = _rev_for_prefixes(s, ps)
             series.append((label, total, cnt))
         cond = or_(*[Request.answered_at.like(f"{p}%") for p in rank_prefixes])
-        base = (Request.status == "answered", Request.req_type.in_(SALE_TYPES), cond)
+        base = (Request.status == "answered", Request.req_type.in_(SALE_TYPES), cond, *_excl())
         plans = (
             s.query(Request.plan_name, func.count(Request.id), func.coalesce(func.sum(Request.price), 0))
             .filter(*base).group_by(Request.plan_name)
@@ -4844,7 +4875,7 @@ def build_sales_report(period):
         out += f"{i}. {esc(names.get(uid, str(uid)))} (<code>{uid}</code>) — {c} خرید | {int(total):,}\n"
     if not custs:
         out += "—\n"
-    return out
+    return out + _excl_note()
 
 
 @dp.callback_query(F.data.in_({"sreport_week", "sreport_month"}), Perm("stats"))
@@ -4858,10 +4889,98 @@ async def admin_sales_report(call: types.CallbackQuery):
                 b(text=("• " if period == "week" else "") + "هفتگی", callback_data="sreport_week"),
                 b(text=("• " if period == "month" else "") + "ماهانه", callback_data="sreport_month"),
             ],
+            [b(text=f"🚫 کاربران خارج از گزارش ({len(report_excluded_ids())})", callback_data="rx_menu")],
             [b(text="🔙 آمار کلی", callback_data="admin_sales_stats")],
         ]
     )
     await edit_or_send(call, build_sales_report(period), markup)
+
+
+# --- مدیریت کاربرانی که در حساب‌وکتاب گزارش‌ها نمی‌آیند ---
+def _rx_text_markup():
+    ids = sorted(report_excluded_ids())
+    names = {}
+    if ids:
+        with SessionLocal() as s:
+            for u in s.query(User).filter(User.user_id.in_(ids)).all():
+                names[u.user_id] = user_display(u)
+    b = InlineKeyboardButton
+    out = (
+        "🚫 <b>کاربران خارج از گزارش</b>\n\n"
+        "خرید، تمدید و شارژِ این کاربران در آمار کلی، فروش روزانه، گزارش روزانه/هفتگی و نمودار ماهانه "
+        "(درآمد، تعداد فروش، پرفروش‌ترین پلن و بهترین مشتری) حساب نمی‌شود. "
+        "خود خرید و کیف پولشان هیچ تغییری نمی‌کند.\n\n"
+    )
+    rows = []
+    for uid in ids:
+        nm = esc(names.get(uid, "—"))
+        out += f"• <code>{uid}</code> {nm}\n"
+        rows.append([b(text=f"❌ حذف {uid}", callback_data=f"rx_del_{uid}")])
+    if not ids:
+        out += "هنوز کسی ثبت نشده است.\n"
+    rows.append([b(text="➕ افزودن کاربر", callback_data="rx_add")])
+    rows.append([b(text="🔙 آمار کلی", callback_data="admin_sales_stats")])
+    return out, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(F.data == "rx_menu", Perm("stats"))
+async def rx_menu_handler(call: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.answer()
+    text_, markup = _rx_text_markup()
+    await edit_or_send(call, text_, markup)
+
+
+@dp.callback_query(F.data == "rx_add", Perm("stats"))
+async def rx_add_handler(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.set_state(RXState.waiting_id)
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 انصراف", callback_data="rx_menu")]]
+    )
+    await edit_or_send(
+        call,
+        "آیدی عددی کاربر (یا چند آیدی با فاصله/ویرگول/خط جدید) را بفرستید.\n"
+        "یا یک پیام از آن کاربر را برای من فوروارد کنید.",
+        markup,
+    )
+
+
+@dp.message(RXState.waiting_id, Perm("stats"))
+async def rx_add_save(message: types.Message, state: FSMContext):
+    found = set()
+    fwd = getattr(message, "forward_from", None)
+    if fwd is not None:
+        found.add(fwd.id)
+    txt = (message.text or message.caption or "").translate(DIGITS_FA)
+    for tok in re.split(r"[\s,،;]+", txt):
+        if tok.isdigit():
+            found.add(int(tok))
+    if not found:
+        await message.answer("آیدی عددی معتبر پیدا نشد. دوباره بفرستید یا «🔙 انصراف» را بزنید.")
+        return
+    ids = report_excluded_ids() | found
+    _save_excluded(ids)
+    await state.clear()
+    log_action(message.from_user.id, "افزودن به لیست خارج از گزارش: " + ", ".join(str(i) for i in sorted(found)))
+    text_, markup = _rx_text_markup()
+    await message.answer("✅ ثبت شد.\n\n" + text_, reply_markup=markup)
+
+
+@dp.callback_query(F.data.startswith("rx_del_"), Perm("stats"))
+async def rx_del_handler(call: types.CallbackQuery):
+    try:
+        uid = int(call.data.split("_")[2])
+    except (IndexError, ValueError):
+        await call.answer()
+        return
+    ids = report_excluded_ids()
+    ids.discard(uid)
+    _save_excluded(ids)
+    log_action(call.from_user.id, f"حذف از لیست خارج از گزارش: {uid}")
+    await call.answer("از لیست حذف شد.")
+    text_, markup = _rx_text_markup()
+    await edit_or_send(call, text_, markup)
 
 
 def daily_report_text():
@@ -4873,6 +4992,7 @@ def daily_report_text():
         f"👥 کاربر جدید: {n['new_today']} | کل کاربران: {n['total_users']}\n"
         f"🔴 درخواست در انتظار: {n['unanswered']}\n"
         f"🎫 تیکت باز: {n['open_tickets']}"
+        + _excl_note()
     )
 
 
@@ -7360,7 +7480,7 @@ def _week_stats(s, start):
     answered = [Request.answered_at.like(f"{p}%") for p in prefixes]
     charged = int(
         s.query(func.coalesce(func.sum(Request.price), 0))
-        .filter(Request.status == "answered", Request.req_type == "charge", or_(*answered))
+        .filter(Request.status == "answered", Request.req_type == "charge", *_excl(), or_(*answered))
         .scalar()
         or 0
     )
