@@ -9156,7 +9156,7 @@ async def admin_backup_menu(call: types.CallbackQuery, state: FSMContext):
     b = InlineKeyboardButton
     markup = InlineKeyboardMarkup(
         inline_keyboard=[
-            [b(text="📤 دریافت بکاپ همین الان", callback_data="backup_now")],
+            [b(text="📤 دریافت بکاپ (ربات + کانال)", callback_data="backup_now")],
             [b(text="📤 ارسال بکاپ به کانال خصوصی", callback_data="backup_to_channel")],
             [b(text="📥 بازیابی از فایل بکاپ", callback_data="backup_restore")],
             [b(text="🔙 بازگشت به پنل", callback_data="admin_home")],
@@ -9172,12 +9172,36 @@ async def admin_backup_menu(call: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "backup_now", MainAdmin())
 async def backup_now(call: types.CallbackQuery):
+    """بکاپ همین الان: هم برای ادمین (داخل ربات) و هم برای کانال بکاپ (اگر ثبت شده باشد)."""
     await call.answer("در حال ساخت بکاپ...")
+    back = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin_backup")]])
+    caption = f"🧰 بکاپ دستی - {get_current_jalali()}"
     try:
-        await send_backup(call.bot, call.message.chat.id, f"🧰 بکاپ دستی - {get_current_jalali()}")
+        data = await asyncio.to_thread(build_backup_bytes)
+        await send_backup(call.bot, call.message.chat.id, caption, data)
         log_action(call.from_user.id, "دریافت بکاپ دستی")
     except Exception as e:  # noqa: BLE001
-        await call.message.answer(f"❌ ساخت بکاپ ناموفق بود: {err_text(e)}")
+        await call.message.answer(f"❌ ساخت بکاپ ناموفق بود: {err_text(e)}", reply_markup=back)
+        return
+    chan = get_setting("backup_channel").strip()
+    if not chan:
+        await call.message.answer(
+            "ℹ️ کانال بکاپ ثبت نشده است؛ بکاپ فقط برای شما ارسال شد.\n"
+            "برای ارسال به کانال: تنظیمات ← پایش و اعلان ← بکاپ و نگهداری.",
+            reply_markup=back,
+        )
+        return
+    try:
+        await send_backup(call.bot, chat_ref(chan), caption, data)
+        log_action(call.from_user.id, "ارسال بکاپ دستی به کانال")
+        await call.message.answer("✅ بکاپ برای کانال هم ارسال شد.", reply_markup=back)
+    except Exception as e:  # noqa: BLE001
+        logging.warning("manual backup to channel failed: %s", e)
+        await call.message.answer(
+            f"⚠️ بکاپ برای شما ارسال شد ولی ارسال به کانال ناموفق بود: {err_text(e)}\n"
+            "مطمئن شوید ربات در کانال «ادمین» است و آیدی کانال درست ثبت شده.",
+            reply_markup=back,
+        )
 
 
 @dp.callback_query(F.data == "backup_restore", MainAdmin())
