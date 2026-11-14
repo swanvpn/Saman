@@ -165,7 +165,8 @@ BTN_TARIFFS = "📈 تعرفه سرویس‌ها"
 BTN_WALLET = "💳 شارژ کیف پول"
 BTN_ACCOUNT = "👤 حساب کاربری"
 BTN_SUPPORT = "🎧 پشتیبانی"
-MENU_TEXTS = {BTN_BUY, BTN_MY, BTN_TARIFFS, BTN_WALLET, BTN_ACCOUNT, BTN_SUPPORT}
+BTN_HOME = "🏠 صفحه اصلی"
+MENU_TEXTS = {BTN_BUY, BTN_MY, BTN_TARIFFS, BTN_WALLET, BTN_ACCOUNT, BTN_SUPPORT, BTN_HOME}
 
 CATEGORY_LABELS = {"economic": "اقتصادی", "vip": "VIP", "gaming": "گیمینگ"}
 MAX_DISCOUNT = 90
@@ -463,6 +464,11 @@ DEFAULTS = {
     "post_times": "10:00,20:00",
     "post_title": "",
     "maintenance_on": "0",
+    "maint_allow": "",
+    "discount_cap": "90",
+    "bonus_direct_on": "1",
+    "bonus_short_on": "1",
+    "bonus_max": "0",
     "maintenance_text": "🔧 ربات در حال بروزرسانی است. لطفاً کمی بعد دوباره تلاش کنید.",
     "welcome_text": "",
     "welcome_banner": "",
@@ -583,6 +589,11 @@ SETTINGS = {
     "min_charge": dict(page="pay", type="num", label="حداقل مبلغ شارژ (تومان)", min=0, max=100000000),
     "maintenance_on": dict(page="maint", type="toggle", label="حالت تعمیر"),
     "maintenance_text": dict(page="maint", type="text", label="پیام حالت تعمیر"),
+    "maint_allow": dict(page="maint", type="text", label="آیدی عددی کاربران مجاز در حالت تعمیر (تستر؛ با کاما جدا کنید)"),
+    "discount_cap": dict(page="scope", type="num", label="سقف مجموع تخفیف‌ها (٪)", min=5, max=MAX_DISCOUNT),
+    "bonus_direct_on": dict(page="scope", type="toggle", label="پاداش برای شارژ مستقیم کیف پول"),
+    "bonus_short_on": dict(page="scope", type="toggle", label="پاداش برای «شارژ و خرید» (کمبود موجودی)"),
+    "bonus_max": dict(page="scope", type="num", label="سقف مبلغ پاداش هر شارژ (تومان؛ ۰ = بدون سقف)", min=0, max=100000000),
     "welcome_text": dict(page="start", type="text", label="متن خوش‌آمدگویی ({name} = اسم کاربر)"),
     "welcome_banner": dict(page="start", type="photo", label="بنر پیام شروع"),
     "channel_link": dict(page="start", type="text", label="لینک کانال"),
@@ -596,15 +607,15 @@ SETTINGS = {
     "referral_reward": dict(page="ref", type="num", label="پاداش دعوت (تومان)", min=0, max=100000000),
     "reminder_days": dict(page="auto", type="num", label="یادآوری تمدید (روز مانده)", min=1, max=30),
     "report_on": dict(page="auto", type="toggle", label="گزارش روزانه برای ادمین"),
-    "backup_on": dict(page="auto", type="toggle", label="بکاپ شبانه خودکار"),
+    "backup_on": dict(page="backup", type="toggle", label="بکاپ شبانه خودکار"),
     "pending_text": dict(page="deliv", type="text", label="پیام «در حال آماده‌سازی» بعد از ثبت سفارش (زمان تخمینی)"),
     "connect_guide": dict(page="deliv", type="text", label="متن آموزش اتصال"),
     "config_extra_text": dict(page="deliv", type="text", label="متن ثابت زیر کانفیگ (اختیاری)"),
     "qr_on": dict(page="deliv", type="toggle", label="ارسال QR همراه کانفیگ"),
     "admin_remind_on": dict(page="deliv", type="toggle", label="یادآوری سفارش معطل‌مانده به ادمین"),
     "admin_remind_minutes": dict(page="deliv", type="num", label="یادآوری بعد از (دقیقه)", min=5, max=1440),
-    "trial_on": dict(page="deliv", type="toggle", label="سرویس تست رایگان"),
-    "trial_days": dict(page="deliv", type="num", label="مدت سرویس تست (روز)", min=1, max=30),
+    "trial_on": dict(page="trial", type="toggle", label="سرویس تست رایگان"),
+    "trial_days": dict(page="trial", type="num", label="مدت سرویس تست (روز)", min=1, max=30),
     "custom_on": dict(page="custom", type="toggle", label="پلن دلخواه (حجم و روز)"),
     "custom_price_per_gb": dict(page="custom", type="num", label="قیمت هر گیگ (تومان)", min=0, max=100000000),
     "custom_base_days": dict(page="custom", type="num", label="قیمت گیگ برای چند روز است؟ (۰ = مستقل از روز)", min=0, max=365),
@@ -613,10 +624,10 @@ SETTINGS = {
     "custom_min_days": dict(page="custom", type="num", label="حداقل روز", min=1, max=3650),
     "custom_max_days": dict(page="custom", type="num", label="حداکثر روز", min=1, max=3650),
     # --- مبلغ تصادفی پرداخت ---
-    "payrand_on": dict(page="pay", type="toggle", label="مبلغ تصادفی انتهای پرداخت کارت‌به‌کارت"),
-    "payrand_min": dict(page="pay", type="num", label="حداقل عدد تصادفی (تومان)", min=1, max=100000),
-    "payrand_max": dict(page="pay", type="num", label="حداکثر عدد تصادفی (تومان؛ ۰ = خاموش)", min=0, max=100000),
-    "payrand_down": dict(page="pay", type="toggle", label="اجازه‌ی مبلغ کمتر از قیمت (بالا و پایین)"),
+    "payrand_on": dict(page="payrand", type="toggle", label="مبلغ تصادفی انتهای پرداخت کارت‌به‌کارت"),
+    "payrand_min": dict(page="payrand", type="num", label="حداقل عدد تصادفی (تومان)", min=1, max=100000),
+    "payrand_max": dict(page="payrand", type="num", label="حداکثر عدد تصادفی (تومان؛ ۰ = خاموش)", min=0, max=100000),
+    "payrand_down": dict(page="payrand", type="toggle", label="اجازه‌ی مبلغ کمتر از قیمت (بالا و پایین)"),
     # --- باشگاه و پاداش شارژ ---
     "club_on": dict(page="club", type="toggle", label="باشگاه مشتریان (امتیاز)"),
     "club_earn_per": dict(page="club", type="num", label="هر چند تومان خرید = ۱ امتیاز", min=1000, max=100000000),
@@ -632,10 +643,10 @@ SETTINGS = {
     "force_join_channel": dict(page="join", type="text", label="کانال (@username یا آیدی عددی -100...؛ ربات باید ادمین کانال باشد)"),
     "force_join_text": dict(page="join", type="text", label="متن درخواست عضویت"),
     # --- بکاپ، گزارش، نگهداری، خطا ---
-    "backup_channel": dict(page="auto", type="text", label="کانال بکاپ (@username، -100... یا یک پیام فورواردشده از کانال خصوصی؛ ربات باید ادمین باشد)"),
+    "backup_channel": dict(page="backup", type="text", label="کانال بکاپ (@username، -100... یا یک پیام فورواردشده از کانال خصوصی؛ ربات باید ادمین باشد)"),
     "weekly_report_on": dict(page="auto", type="toggle", label="گزارش هفتگی خودکار (شنبه‌ها)"),
-    "cleanup_on": dict(page="auto", type="toggle", label="پاکسازی خودکار آمار و لاگ قدیمی"),
-    "log_keep_days": dict(page="auto", type="num", label="نگهداری لاگ و تیکت بسته (روز)", min=7, max=3650),
+    "cleanup_on": dict(page="backup", type="toggle", label="پاکسازی خودکار آمار و لاگ قدیمی"),
+    "log_keep_days": dict(page="backup", type="num", label="نگهداری لاگ و تیکت بسته (روز)", min=7, max=3650),
     "err_report_on": dict(page="auto", type="toggle", label="ارسال خطای ربات به تلگرام ادمین"),
     # --- امنیت ---
     "twostep_on": dict(page="sec", type="toggle", label="تأیید دومرحله‌ای کارهای حساس (بازیابی بکاپ، حذف ادمین)"),
@@ -690,6 +701,10 @@ SETTING_PAGES = {
     "sec": "🔐 امنیت و تأیید دومرحله‌ای",
     "shop": "🛍 فروشگاه و راهنمای انتخاب",
     "usage": "📊 مصرف و هشدار حجم (ساب‌لینک)",
+    "backup": "💾 بکاپ و نگهداری",
+    "trial": "🎟 سرویس تست رایگان",
+    "payrand": "🎲 مبلغ تصادفی پرداخت",
+    "scope": "🎯 دامنه‌ی تخفیف و پاداش",
 }
 
 _cache = {}
@@ -735,6 +750,7 @@ KB_ITEMS = [
     dict(key="support", label=BTN_SUPPORT, default_on=True),
     dict(key="wallet", label=BTN_WALLET, default_on=False),
     dict(key="account", label=BTN_ACCOUNT, default_on=False),
+    dict(key="home", label=BTN_HOME, default_on=True),
 ]
 
 
@@ -976,6 +992,8 @@ class PaymentState(StatesGroup):
     custom_days = State()
     cb_label = State()
     layout_pattern = State()
+    settings_search = State()
+    settings_import = State()
     cb_prod_name = State()
     cb_prod_price = State()
     cb_prod_days = State()
@@ -1185,33 +1203,108 @@ def tier_for_count(count):
     return None
 
 
-def discount_breakdown(user_id):
-    """(درصد کل, [(درصد, توضیح), ...]) برای کاربر؛ تخفیف‌ها جمع می‌شوند."""
+# ---------------------------------------------------------------------------
+# دامنه‌ی اعمال تخفیف‌ها و پاداش شارژ (برای هر تخفیف: نوع خرید + دسته‌ها)
+# ---------------------------------------------------------------------------
+DSC_KINDS = {
+    "gen": ("🎁", "تخفیف ویژه (عمومی)", "ویژه"),
+    "first": ("🆕", "تخفیف خرید اول", "خرید اول"),
+    "loyal": ("💎", "تخفیف وفاداری", "وفاداری"),
+    "flash": ("🔥", "تخفیف زمان‌دار", "زمان‌دار"),
+    "code": ("🏷", "کد تخفیف", "کد"),
+}
+DSC_TYPES = {
+    "new": "خرید سرویس جدید",
+    "renew": "تمدید سرویس",
+    "custom": "پلن دلخواه (حجم و روز)",
+    "button": "محصول دکمه‌ساز",
+}
+
+
+def dsc_types(kind):
+    """مجموعه‌ی نوع خریدهایی که این تخفیف رویشان اعمال می‌شود. خالی‌نوشتن = همه."""
+    raw = get_setting(f"dsc_{kind}_t").strip()
+    if raw == "":
+        return set(DSC_TYPES)
+    if raw == "-":
+        return set()
+    return {t for t in raw.split(",") if t in DSC_TYPES}
+
+
+def dsc_cats(kind):
+    """None = همه‌ی دسته‌ها؛ وگرنه مجموعه‌ی کلید دسته‌های مجاز (فقط برای خرید جدید و تمدید)."""
+    raw = get_setting(f"dsc_{kind}_c").strip()
+    if raw == "":
+        return None
+    if raw == "-":
+        return set()
+    return {c for c in raw.split(",") if c}
+
+
+def dsc_applies(kind, ptype, cat):
+    """آیا تخفیف kind روی خریدی از نوع ptype و دسته‌ی cat اعمال می‌شود؟ (ptype=None یعنی بدون فیلتر)."""
+    if ptype is None:
+        return True
+    if ptype not in dsc_types(kind):
+        return False
+    if ptype in ("new", "renew"):
+        cats = dsc_cats(kind)
+        if cats is not None and cat not in cats:
+            return False
+    return True
+
+
+def discount_cap():
+    return max(1, min(MAX_DISCOUNT, get_int("discount_cap") or MAX_DISCOUNT))
+
+
+def checkout_scope(data):
+    """(نوع خرید, کلید دسته) برای سفارشِ داخل state."""
+    if data.get("custom_gb") and data.get("custom_days"):
+        return "custom", ""
+    sid = data.get("service_id")
+    with SessionLocal() as s:
+        svc = s.get(Service, sid) if sid else None
+        cat = svc.category if svc is not None else ""
+    if svc is None:
+        return "new", ""
+    if data.get("renew_cfg_id"):
+        return "renew", cat
+    return ("button" if cat == BTN_CAT else "new"), cat
+
+
+def _discount_candidates(is_new, tier, ptype=None, cat=None):
+    """[(kind, درصد, برچسب)] بعد از اعمال دامنه؛ «خرید اول» و «وفاداری» با هم جمع نمی‌شوند (بزرگ‌تر)."""
+    first = get_int("first_percent") if (get_bool("first_on") and is_new) else 0
+    loyal = tier[2] if tier else 0
+    loyal_label = f"تخفیف وفاداری {tier[1]}" if tier else "تخفیف وفاداری"
+    fl = []
+    if first and dsc_applies("first", ptype, cat):
+        fl.append(("first", first, "تخفیف خرید اول"))
+    if loyal and dsc_applies("loyal", ptype, cat):
+        fl.append(("loyal", loyal, loyal_label))
+    out = []
+    if fl:
+        out.append(max(fl, key=lambda c: (c[1], c[0] == "first")))
+    general = get_int("discount_percent")
+    if general > 0 and dsc_applies("gen", ptype, cat):
+        out.append(("gen", general, "تخفیف ویژه"))
+    flash = flash_percent_now()
+    if flash > 0 and dsc_applies("flash", ptype, cat):
+        out.append(("flash", flash, "🔥 تخفیف زمان‌دار"))
+    return out
+
+
+def discount_breakdown(user_id, ptype=None, cat=None):
+    """(درصد کل, [(درصد, توضیح), ...]) برای کاربر؛ تخفیف‌ها جمع می‌شوند (با اعمال دامنه‌ی هر تخفیف)."""
     with SessionLocal() as s:
         user = s.get(User, user_id)
         is_new = bool(user.is_new_user) if user else True
         has_monthly = bool(user.has_monthly_discount) if user else False
         month_count = (user.purchase_count_current_month or 0) if user else 0
-
-    first = get_int("first_percent") if (get_bool("first_on") and is_new) else 0
     tier = tier_for_count(month_count) if (get_bool("loyalty_on") and has_monthly) else None
-    loyal = tier[2] if tier else 0
-    loyal_label = f"تخفیف وفاداری {tier[1]}" if tier else "تخفیف وفاداری"
-
-    parts = []
-    # «خرید اول» یا «وفاداری»؛ اگر هر دو بود، بزرگ‌تر اعمال می‌شود
-    if first or loyal:
-        if first >= loyal:
-            parts.append((first, "تخفیف خرید اول"))
-        else:
-            parts.append((loyal, loyal_label))
-    general = get_int("discount_percent")
-    if general > 0:
-        parts.append((general, "تخفیف ویژه"))
-    flash = flash_percent_now()
-    if flash > 0:
-        parts.append((flash, "🔥 تخفیف زمان‌دار"))
-    total = min(sum(p for p, _ in parts), MAX_DISCOUNT)
+    parts = [(p, label) for _k, p, label in _discount_candidates(is_new, tier, ptype, cat)]
+    total = min(sum(p for p, _ in parts), discount_cap())
     return total, parts
 
 
@@ -1382,6 +1475,15 @@ def back_home_markup():
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="🏠 بازگشت به منوی اصلی", callback_data="main_menu")]]
     )
+
+
+def nav_markup(back_cb=None, back_text="⬅️ انصراف", extra=None):
+    """دکمه‌ی برگشت/انصراف + «منوی اصلی» زیر پیام‌هایی که از کاربر ورودی می‌خواهند؛ تا کاربر بلاتکلیف نماند."""
+    rows = list(extra or [])
+    if back_cb:
+        rows.append([InlineKeyboardButton(text=back_text, callback_data=back_cb)])
+    rows.append([InlineKeyboardButton(text="🏠 منوی اصلی", callback_data="main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def iso_now_minute():
@@ -1568,7 +1670,7 @@ class AccessMiddleware(BaseMiddleware):
                 if isinstance(event, types.CallbackQuery):
                     await event.answer("دسترسی شما مسدود شده است.", show_alert=True)
                 return None
-            if get_bool("maintenance_on"):
+            if get_bool("maintenance_on") and not maint_allowed(user.id):
                 msg = get_setting("maintenance_text") or "ربات در حال بروزرسانی است."
                 if isinstance(event, types.CallbackQuery):
                     await event.answer(msg[:190], show_alert=True)
@@ -1728,12 +1830,20 @@ async def main_menu_handler_call(call: types.CallbackQuery, state: FSMContext):
     )
 
 
+@dp.message(KbBtn("home"))
+async def kb_home_message(message: types.Message, state: FSMContext):
+    """دکمه‌ی «🏠 صفحه اصلی» از کیبورد پایین: هر مرحله‌ای که باشد، کاربر به صفحه‌ی اصلی برمی‌گردد."""
+    await state.clear()
+    await message.answer(
+        build_welcome(message.from_user.id, message.from_user.first_name), reply_markup=main_inline_markup(message.from_user.id)
+    )
+
+
 # ---------------------------------------------------------------------------
 # تعرفه‌ها
 # ---------------------------------------------------------------------------
 def shop_view(user_id, cat_key=None):
     """تعرفه و خرید در یک صفحه؛ دسته‌ها به‌شکل تب."""
-    total, parts = discount_breakdown(user_id)
     with SessionLocal() as s:
         cats = [
             (c.key, c.label, c.emoji or "")
@@ -1752,6 +1862,7 @@ def shop_view(user_id, cat_key=None):
             for r in s.query(Service).filter(Service.category == cat_key).order_by(Service.id).all()
         ]
 
+    total, parts = discount_breakdown(user_id, "new", cat_key)
     b = InlineKeyboardButton
     cur = next(c for c in cats if c[0] == cat_key)
     out = "🛒 <b>خرید سرویس</b> | مرحله ۱ از ۳\nیه دسته انتخاب کن، بعدش پلن مورد نظرت رو بزن 👇\n"
@@ -1840,8 +1951,7 @@ def custom_price(gb, days):
 
 
 def parse_int_input(raw):
-    t = (raw or "").translate(DIGITS_FA).replace(",", "").replace("،", "").strip()
-    return int(t) if t.isdigit() else None
+    return parse_amount(raw)
 
 
 def compute_checkout(user_id, data):
@@ -1871,8 +1981,11 @@ def compute_checkout(user_id, data):
             dc, _err = validate_code(s, data["code"], user_id)
             if dc is not None:
                 code, code_pct = dc.code, dc.percent or 0
-    total, parts = discount_breakdown(user_id)
-    percent = min(total + code_pct, MAX_DISCOUNT)
+    ptype, cat = checkout_scope(data)
+    if code and not dsc_applies("code", ptype, cat):
+        code, code_pct = None, 0
+    total, parts = discount_breakdown(user_id, ptype, cat)
+    percent = min(total + code_pct, discount_cap())
     return dict(
         service_id=sid, label=label, base=base, percent=percent, parts=parts,
         code=code, code_pct=code_pct, final=price_with_percent(base, percent),
@@ -1951,7 +2064,7 @@ async def custom_gb_entered(message: types.Message, state: FSMContext):
     gmin, gmax, dmin, dmax = custom_limits()
     n = parse_int_input(message.text)
     if n is None or not (gmin <= n <= gmax):
-        await message.answer(f"یک عدد بین {gmin} تا {gmax} بفرستید.")
+        await message.answer(f"یک عدد بین {gmin} تا {gmax} بفرستید.", reply_markup=nav_markup("main_buy", "⬅️ انصراف"))
         return
     await state.update_data(custom_gb=n)
     await state.set_state(PaymentState.custom_days)
@@ -1973,7 +2086,7 @@ async def custom_days_entered(message: types.Message, state: FSMContext):
     _gmin, _gmax, dmin, dmax = custom_limits()
     n = parse_int_input(message.text)
     if n is None or not (dmin <= n <= dmax):
-        await message.answer(f"یک عدد بین {dmin} تا {dmax} بفرستید.")
+        await message.answer(f"یک عدد بین {dmin} تا {dmax} بفرستید.", reply_markup=nav_markup("main_buy", "⬅️ انصراف", extra=[[InlineKeyboardButton(text="✏️ تغییر حجم", callback_data="custom_start")]]))
         return
     await state.update_data(service_id=None, renew_cfg_id=None, code=None, custom_days=n)
     await state.set_state(PaymentState.waiting_for_receipt)
@@ -2025,7 +2138,7 @@ async def use_code_handler(call: types.CallbackQuery, state: FSMContext):
         await edit_or_send(call, "این سفارش دیگه معتبر نیست، دوباره از خرید شروع کن 🔄", back_home_markup())
         return
     await state.set_state(PaymentState.waiting_for_code)
-    await edit_or_send(call, "🏷 کد تخفیف خود را وارد کنید:")
+    await edit_or_send(call, "🏷 کد تخفیف خود را وارد کنید:", nav_markup("checkout_back", "⬅️ بازگشت به پرداخت"))
 
 
 _code_failures = {}  # user_id -> [زمان تلاش‌های ناموفق]
@@ -2039,7 +2152,7 @@ async def code_entered_handler(message: types.Message, state: FSMContext):
     recent = [t for t in _code_failures.get(uid, []) if now - t < CODE_WINDOW]
     if len(recent) >= CODE_MAX_FAILS:
         _code_failures[uid] = recent
-        await message.answer("⛔ تلاش‌های ناموفق زیاد بود. چند دقیقه دیگر دوباره امتحان کنید.")
+        await message.answer("⛔ تلاش‌های ناموفق زیاد بود. چند دقیقه دیگر دوباره امتحان کنید.", reply_markup=nav_markup("checkout_back", "⬅️ بازگشت به پرداخت"))
         return
     with SessionLocal() as s:
         dc, err = validate_code(s, message.text or "", uid)
@@ -2049,7 +2162,11 @@ async def code_entered_handler(message: types.Message, state: FSMContext):
         _code_failures[uid] = recent
         if len(_code_failures) > 5000:
             _code_failures.clear()
-        await message.answer(f"❌ {err}\nدوباره وارد کنید یا از منوی پایین خارج شوید.")
+        await message.answer(f"❌ {err}\nدوباره وارد کنید یا از منوی پایین خارج شوید.", reply_markup=nav_markup("checkout_back", "⬅️ بازگشت به پرداخت"))
+        return
+    ptype_, cat_ = checkout_scope(await state.get_data())
+    if not dsc_applies("code", ptype_, cat_):
+        await message.answer("❌ این کد برای این نوع خرید قابل استفاده نیست.\nکد دیگری وارد کنید یا از منوی پایین خارج شوید.", reply_markup=nav_markup("checkout_back", "⬅️ بازگشت به پرداخت"))
         return
     await state.update_data(code=code)
     await state.set_state(PaymentState.waiting_for_receipt)
@@ -2177,6 +2294,7 @@ async def confirm_payment_handler(call: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "checkout_back")
 async def checkout_back_handler(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
+    await state.update_data(payhelp=False)
     await state.set_state(PaymentState.waiting_for_receipt)
     await send_checkout(call, state, call.from_user.id)
 
@@ -2344,6 +2462,12 @@ def has_receipt_media(message: types.Message) -> bool:
     return bool(doc and (doc.mime_type or "").startswith("image/"))
 
 
+def _receipt_nav(cur):
+    if cur == PaymentState.waiting_for_receipt.state:
+        return nav_markup("checkout_back", "⬅️ بازگشت به پرداخت")
+    return nav_markup("wallet_menu", "⬅️ بازگشت به کیف پول")
+
+
 @dp.message(PaymentState.waiting_for_receipt)
 @dp.message(PaymentState.waiting_for_charge_receipt)
 async def receipt_router(message: types.Message, state: FSMContext):
@@ -2369,9 +2493,9 @@ async def receipt_router(message: types.Message, state: FSMContext):
                 await receipt_handler(message, state)
         return
     if message.document:
-        await message.answer("رسید رو به‌صورت «عکس» بفرست (فایل تصویری هم قبوله، PDF نه) 📸")
+        await message.answer("رسید رو به‌صورت «عکس» بفرست (فایل تصویری هم قبوله، PDF نه) 📸", reply_markup=_receipt_nav(cur))
         return
-    await message.answer("عکس رسیدت رو همینجا بفرست، خودم می‌رسم بهش 🙌")
+    await message.answer("عکس رسیدت رو همینجا بفرست، خودم می‌رسم بهش 🙌", reply_markup=_receipt_nav(cur))
 
 
 # ---------------------------------------------------------------------------
@@ -2420,7 +2544,7 @@ async def wallet_menu_callback(call: types.CallbackQuery, state: FSMContext):
 async def send_charge_instructions(target, state, amount, note=""):
     await state.update_data(charge_amount=amount)
     pay = await ensure_pay_amount(state, amount, key="chg")
-    bonus, bonus_pct = charge_bonus_for(amount)
+    bonus, bonus_pct = charge_bonus_for(amount, "short" if (await state.get_data()).get("pending_order") else "direct")
     bonus_line = f"🎁 پاداش شارژ: {bonus:,} تومان ({bonus_pct}٪) بعد از تایید به اعتبار شما اضافه می‌شود.\n" if bonus else ""
     pay_line = f"💳 مبلغ قابل واریز: <b>{pay:,}</b> تومان (اعتبار شما {amount:,} تومان ثبت می‌شود)\n" if pay != amount else ""
     note = pay_note(amount, pay) + note
@@ -2462,10 +2586,10 @@ async def charge_custom_handler(call: types.CallbackQuery, state: FSMContext):
 async def charge_custom_amount(message: types.Message, state: FSMContext):
     amount = parse_int_input(message.text)
     if amount is None:
-        await message.answer("فقط عدد بفرست 🙂")
+        await message.answer("فقط عدد بفرست 🙂", reply_markup=nav_markup("wallet_menu", "⬅️ بازگشت به کیف پول"))
         return
     if amount < get_int("min_charge") or amount > 100000000:
-        await message.answer(f"مبلغ باید بین {get_int('min_charge'):,} تا ۱۰۰,۰۰۰,۰۰۰ تومان باشه.")
+        await message.answer(f"مبلغ باید بین {get_int('min_charge'):,} تا ۱۰۰,۰۰۰,۰۰۰ تومان باشه.", reply_markup=nav_markup("wallet_menu", "⬅️ بازگشت به کیف پول"))
         return
     await state.set_state(None)
     await send_charge_instructions(message, state, amount)
@@ -2489,7 +2613,7 @@ async def prompt_charge_receipt_handler(call: types.CallbackQuery, state: FSMCon
         await edit_or_send(call, "لطفاً ابتدا مبلغ شارژ را انتخاب کنید.", back_home_markup())
         return
     await state.set_state(PaymentState.waiting_for_charge_receipt)
-    await edit_or_send(call, "عکس رسید واریزیت رو همینجا بفرست، خودم می‌رسم بهش 🙌")
+    await edit_or_send(call, "عکس رسید واریزیت رو همینجا بفرست، خودم می‌رسم بهش 🙌", nav_markup("wallet_menu", "⬅️ بازگشت به کیف پول"))
 
 
 async def process_charge_receipt_handler(message: types.Message, state: FSMContext):
@@ -2908,7 +3032,7 @@ async def ticket_new(call: types.CallbackQuery, state: FSMContext):
         return
     await state.set_state(PaymentState.ticket_waiting_text)
     await state.update_data(ticket_id=None)
-    await edit_or_send(call, "✍️ پیام یا مشکل خود را بنویسید (عکس و 🎤 ویس هم می‌توانید بفرستید):")
+    await edit_or_send(call, "✍️ پیام یا مشکل خود را بنویسید (عکس و 🎤 ویس هم می‌توانید بفرستید):", nav_markup("support_menu", "⬅️ انصراف"))
 
 
 @dp.callback_query(F.data.startswith("ticket_ureply_"))
@@ -2921,7 +3045,7 @@ async def ticket_user_reply(call: types.CallbackQuery, state: FSMContext):
             return
     await state.set_state(PaymentState.ticket_waiting_text)
     await state.update_data(ticket_id=tid)
-    await call.message.answer(f"✍️ پاسخ شما برای تیکت #{tid} را بنویسید (متن، عکس یا 🎤 ویس):")
+    await call.message.answer(f"✍️ پاسخ شما برای تیکت #{tid} را بنویسید (متن، عکس یا 🎤 ویس):", reply_markup=nav_markup("support_menu", "⬅️ انصراف"))
 
 
 _ticket_times = {}  # user_id -> [زمان ساخت تیکت‌های جدید]
@@ -2932,11 +3056,11 @@ TICKET_MAX_PER_HOUR = 5
 async def ticket_text_received(message: types.Message, state: FSMContext):
     body = message.caption if (message.photo or message.voice) else message.text
     if not body and not message.photo and not message.voice:
-        await message.answer("لطفاً متن، عکس یا ویس بفرستید.")
+        await message.answer("لطفاً متن، عکس یا ویس بفرستید.", reply_markup=nav_markup("support_menu", "⬅️ انصراف"))
         return
     problem = voice_problem(message)
     if problem:
-        await message.answer(problem)
+        await message.answer(problem, reply_markup=nav_markup("support_menu", "⬅️ انصراف"))
         return
     if not is_staff(message.from_user.id) and await v3_triage_intercept(message, state):
         return
@@ -2947,7 +3071,7 @@ async def ticket_text_received(message: types.Message, state: FSMContext):
         recent = [t for t in _ticket_times.get(message.from_user.id, []) if now - t < 3600]
         if len(recent) >= TICKET_MAX_PER_HOUR:
             _ticket_times[message.from_user.id] = recent
-            await message.answer("⛔ تعداد تیکت‌های ارسالی شما در یک ساعت گذشته زیاد بوده؛ لطفاً کمی بعد دوباره تلاش کنید.")
+            await message.answer("⛔ تعداد تیکت‌های ارسالی شما در یک ساعت گذشته زیاد بوده؛ لطفاً کمی بعد دوباره تلاش کنید.", reply_markup=nav_markup("support_menu", "🎧 پشتیبانی"))
             return
         recent.append(now)
         _ticket_times[message.from_user.id] = recent
@@ -2971,7 +3095,7 @@ async def ticket_text_received(message: types.Message, state: FSMContext):
         s.commit()
 
     await state.clear()
-    await message.answer(f"✅ تیکت #{tid} ثبت شد. پاسخ پشتیبانی همین‌جا برایتان ارسال می‌شود.")
+    await message.answer(f"✅ تیکت #{tid} ثبت شد. پاسخ پشتیبانی همین‌جا برایتان ارسال می‌شود.", reply_markup=nav_markup("support_menu", "🎧 پشتیبانی"))
 
     b = InlineKeyboardButton
     markup = InlineKeyboardMarkup(
@@ -3268,7 +3392,7 @@ async def rating_handler(call: types.CallbackQuery):
     elif get_bool("reviews_on") and score >= 4:
         await v3_ask_review(call, req_id, score)
     else:
-        await edit_or_send(call, f"🙏 ممنون از امتیاز شما ({score} ⭐)!")
+        await edit_or_send(call, f"🙏 ممنون از امتیاز شما ({score} ⭐)!", back_home_markup())
 
 
 @dp.callback_query(F.data.startswith("admin_confirm_"), Staff())
@@ -3288,7 +3412,7 @@ async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
 
         if rtype == "charge":
             user = get_or_create_user(s, uid)
-            bonus, bonus_pct = charge_bonus_for(price)
+            bonus, bonus_pct = charge_bonus_for(price, "short" if r.after_buy else "direct")
             _b0 = user.balance or 0
             user.balance = _b0 + price + bonus
             wlog(s, uid, _b0, user.balance, "charge_confirmed", req_id, call.from_user.id)
@@ -5432,18 +5556,225 @@ def setting_display(key):
     return esc(value if len(value) <= 40 else value[:40] + "…")
 
 
-def render_settings_page(page):
-    out = f"<b>{SETTING_PAGES[page]}</b>\n\n"
-    keyboard = []
+# ===========================================================================
+# تنظیمات ربات: گروه‌بندی، هشدار، دامنه‌ی تخفیف، جستجو، تاریخچه، خروجی/ورودی، سلامت
+# ===========================================================================
+SETTING_GROUPS = [
+    ("sales", "💰 فروش و پرداخت", ["pay", "pay2", "payrand", "grow_c", "shop", "custom", "disc", "flash", "scope", "sales2"]),
+    ("cust", "🎁 مشتریان و بازاریابی", ["ref", "club", "grow_a", "grow_b", "chpost", "ap", "join"]),
+    ("deliv", "📦 تحویل و سرویس", ["deliv", "trial", "usage", "guide", "guide2"]),
+    ("msg", "💬 پیام‌ها و پشتیبانی", ["start", "texts", "support", "supp2", "trust"]),
+    ("mon", "📡 پایش و اعلان", ["mon", "auto", "backup", "maint"]),
+    ("sec", "🔐 امنیت و مالی", ["sec", "fin"]),
+]
+
+# گزینه‌های «تنظیم ریز» که فقط وقتی کلید اصلی‌شان روشن است در صفحه دیده می‌شوند (با دکمه‌ی «نمایش همه»)
+SETTING_DEPENDS = {
+    "first_percent": "first_on",
+    "loyalty_bronze_percent": "loyalty_on", "loyalty_silver_percent": "loyalty_on", "loyalty_gold_percent": "loyalty_on",
+    "rating_low_max": "rating_on", "monitor_fails": "monitor_on", "referral_reward": "referral_on",
+    "custom_price_per_gb": "custom_on", "custom_base_days": "custom_on", "custom_min_gb": "custom_on",
+    "custom_max_gb": "custom_on", "custom_min_days": "custom_on", "custom_max_days": "custom_on",
+    "payrand_min": "payrand_on", "payrand_max": "payrand_on", "payrand_down": "payrand_on",
+    "club_earn_per": "club_on", "club_point_value": "club_on", "club_min_redeem": "club_on",
+    "bonus_tiers": "bonus_on", "trial_days": "trial_on", "admin_remind_minutes": "admin_remind_on",
+    "bestseller_label": "bestseller_on", "bestseller_min": "bestseller_on", "log_keep_days": "cleanup_on",
+    "usage_warn_percent": "usage_alerts_on", "usage_group_min": "usage_group_on", "usage_group_pct": "usage_group_on",
+}
+SENSITIVE_ON = {"maintenance_on", "force_join_on"}  # روشن‌کردن این‌ها تایید می‌خواهد
+SENSITIVE_TEXT = {"card_number", "card_holder"}  # تغییر این‌ها تایید می‌خواهد
+RESET_PROTECTED = {
+    "card_number", "card_holder", "support_info", "force_join_channel", "backup_channel", "post_channel",
+    "monitor_urls", "maint_allow",
+}
+SAMPLE_VALUES = {
+    "name": "علی", "plan": "VPN ۱ ماهه", "start": "۱۴۰۵/۰۸/۲۳", "end": "۱۴۰۵/۰۹/۲۳", "days": "30",
+    "config": "https://sub.example.com/abc123", "price": "250,000", "amount": "500,000",
+    "date": "۱۴۰۵/۰۸/۲۳", "percent": "10",
+}
+
+
+def group_title(gk):
+    for k, t, _p in SETTING_GROUPS:
+        if k == gk:
+            return t
+    return "🧩 سایر"
+
+
+def group_of_page(page):
+    for k, _t, pages in SETTING_GROUPS:
+        if page in pages:
+            return k
+    return "other"
+
+
+def group_pages(gk):
+    known = {p for _k, _t, ps in SETTING_GROUPS for p in ps}
+    if gk == "other":
+        return [p for p in SETTING_PAGES if p not in known]
+    for k, _t, ps in SETTING_GROUPS:
+        if k == gk:
+            return [p for p in ps if p in SETTING_PAGES]
+    return []
+
+
+def all_groups():
+    gs = [(k, t) for k, t, _p in SETTING_GROUPS]
+    if group_pages("other"):
+        gs.append(("other", "🧩 سایر"))
+    return gs
+
+
+def page_toggle_stats(page):
+    on = n = 0
+    for key, meta in SETTINGS.items():
+        if meta["page"] == page and meta["type"] == "toggle":
+            n += 1
+            on += 1 if get_bool(key) else 0
+    return on, n
+
+
+def setting_warnings(page):
+    """لیست هشدار «تنظیم ناقص / خطرناک» برای یک صفحه."""
+    g, w = get_setting, []
+    if page == "pay" and (not g("card_number").strip() or not g("card_holder").strip()):
+        w.append("شماره کارت یا نام صاحب کارت ثبت نشده؛ پرداخت کارت‌به‌کارت درست کار نمی‌کند.")
+    if page == "support" and not g("support_info").strip():
+        w.append("اطلاعات پشتیبانی خالی است.")
+    if page == "join" and get_bool("force_join_on") and not g("force_join_channel").strip():
+        w.append("عضویت اجباری روشن است ولی کانالی ثبت نشده.")
+    if page == "chpost" and get_bool("post_on") and (not g("post_channel").strip() or not g("post_times").strip()):
+        w.append("پست خودکار روشن است ولی کانال یا ساعت‌ها خالی است.")
+    if page == "mon" and get_bool("monitor_on") and not g("monitor_urls").strip():
+        w.append("مانیتور روشن است ولی آدرسی ثبت نشده.")
+    if page == "custom" and get_bool("custom_on") and get_int("custom_price_per_gb") <= 0:
+        w.append("پلن دلخواه روشن است ولی قیمت هر گیگ صفر است؛ برای کاربران نمایش داده نمی‌شود.")
+    if page == "club" and get_bool("bonus_on") and not parse_tiers(g("bonus_tiers")):
+        w.append("پاداش شارژ روشن است ولی پله‌ای ثبت نشده.")
+    if page == "ref" and get_bool("ref_tiers_on") and not parse_tiers(g("ref_tiers")):
+        w.append("پاداش پله‌ای دعوت روشن است ولی پله‌ای ثبت نشده.")
+    if page == "backup" and get_bool("backup_on") and not g("backup_channel").strip():
+        w.append("بکاپ شبانه روشن است ولی کانال بکاپ ثبت نشده.")
+    if page == "maint" and get_bool("maintenance_on"):
+        w.append("حالت تعمیر روشن است؛ کاربران عادی نمی‌توانند از ربات استفاده کنند.")
+    if page == "scope":
+        for kind, (_e, name, _s) in DSC_KINDS.items():
+            if not dsc_types(kind):
+                w.append(f"«{name}» روی هیچ نوع خریدی فعال نیست.")
+            elif dsc_cats(kind) is not None and not dsc_cats(kind):
+                w.append(f"«{name}» هیچ دسته‌ای ندارد.")
+        if get_bool("bonus_on") and not get_bool("bonus_direct_on") and not get_bool("bonus_short_on"):
+            w.append("پاداش شارژ روشن است ولی روی هیچ مسیر شارژی فعال نیست.")
+    return w
+
+
+def page_badge(page):
+    on, n = page_toggle_stats(page)
+    txt = SETTING_PAGES[page]
+    if n:
+        txt += f" ({on}/{n})"
+    if setting_warnings(page):
+        txt += " ⚠️"
+    return txt[:60]
+
+
+def parse_amount(raw):
+    """عدد با ویرگول/ارقام فارسی یا عبارت‌هایی مثل «250 هزار»، «1.5 میلیون»؛ در غیر این صورت None."""
+    t = (raw or "").translate(DIGITS_FA).replace("٫", ".").replace(",", "").replace("،", "").strip().lower()
+    if t.isdigit():
+        return int(t)
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(هزار|میلیون|میلیارد|k|m)(?:\s*(?:تومان|تومن))?", t)
+    if not m:
+        return None
+    mult = {"هزار": 10**3, "k": 10**3, "میلیون": 10**6, "m": 10**6, "میلیارد": 10**9}[m.group(2)]
+    return int(round(float(m.group(1)) * mult))
+
+
+def _norm_fa(s):
+    return (s or "").replace("ي", "ی").replace("ك", "ک").lower()
+
+
+# ----- تاریخچه‌ی تغییر تنظیمات (با امکان برگرداندن) -----
+def _shist_load():
+    try:
+        v = json.loads(get_setting("shist") or "[]")
+        return v if isinstance(v, list) else []
+    except (ValueError, TypeError):
+        return []
+
+
+def shist_add(actor, key, old, new):
+    meta = SETTINGS.get(key) or {}
+    media = meta.get("type") in ("photo", "sticker", "video")
+    items = _shist_load()
+    nid = (items[-1].get("i", 0) + 1) if items else 1
+    items.append({
+        "i": nid, "t": now_iran().strftime("%m/%d %H:%M"), "a": actor, "k": key,
+        "o": "" if media else str(old)[:2000], "n": "" if media else str(new)[:2000],
+        "r": 0 if (media or len(str(old)) > 2000) else 1,
+    })
+    set_setting("shist", json.dumps(items[-30:], ensure_ascii=False))
+
+
+def set_setting_logged(actor, key, new):
+    old = get_setting(key)
+    new = "" if new is None else str(new)
+    if str(old) == new:
+        return False
+    set_setting(key, new)
+    shist_add(actor, key, old, new)
+    return True
+
+
+async def channel_access_report(bot, ref):
+    try:
+        ref = str(ref).strip()
+        cid = int(ref) if re.fullmatch(r"-?\d+", ref) else ref
+        chat = await bot.get_chat(cid)
+        me = await bot.get_me()
+        m = await bot.get_chat_member(chat.id, me.id)
+        st = str(getattr(m.status, "value", m.status))
+        title = esc(getattr(chat, "title", None) or ref)
+        if st in ("administrator", "creator"):
+            return f"✅ ربات در «{title}» ادمین است."
+        return f"⚠️ ربات در «{title}» حضور دارد ولی ادمین نیست ({st})؛ برای این قابلیت باید ادمین باشد."
+    except Exception as e:  # noqa: BLE001
+        return f"❌ نتوانستم کانال را بررسی کنم: {esc(str(e))[:150]}"
+
+
+def maint_allowed(uid):
+    ids = set(re.findall(r"\d+", get_setting("maint_allow") or ""))
+    return str(uid) in ids
+
+
+# ----- صفحه‌ی تنظیمات (جایگزین نسخه‌ی قبلی) -----
+def render_settings_page(page, show_all=False):
+    if page == "scope":
+        return scope_home_view()
+    gk = group_of_page(page)
+    out = f"⚙️ تنظیمات › {group_title(gk)}\n<b>{SETTING_PAGES[page]}</b>\n"
+    for wmsg in setting_warnings(page):
+        out += f"⚠️ <i>{wmsg}</i>\n"
+    out += "\n"
+    keyboard, hidden = [], 0
     for key, meta in SETTINGS.items():
         if meta["page"] != page:
             continue
-        out += f"• {meta['label']}: {setting_display(key)}\n"
+        parent = SETTING_DEPENDS.get(key)
+        if parent and not show_all and not get_bool(parent):
+            hidden += 1
+            continue
+        changed = " ✏️" if (meta["type"] in ("toggle", "num", "text") and get_setting(key) != DEFAULTS.get(key, "")) else ""
+        out += f"• {meta['label']}: {setting_display(key)}{changed}\n"
         if meta["type"] == "toggle":
             label = ("🔴 خاموش: " if get_bool(key) else "🟢 روشن: ") + meta["label"]
         else:
             label = "✏️ " + meta["label"]
         keyboard.append([InlineKeyboardButton(text=label[:60], callback_data=f"sedit_{key}")])
+    if hidden:
+        out += f"\nℹ️ {hidden} گزینه‌ی وابسته پنهان است (با روشن‌کردن کلید اصلی نمایش داده می‌شود)."
+        keyboard.append([InlineKeyboardButton(text=f"👁 نمایش همه‌ی گزینه‌ها (+{hidden})", callback_data=f"spall_{page}")])
+        out += "\n"
     if page == "flash":
         out += "\n" + flash_status_text() + "\n"
         keyboard.append([InlineKeyboardButton(text="🔥 شروع تخفیف زمان‌دار جدید", callback_data="flash_start")])
@@ -5458,7 +5789,7 @@ def render_settings_page(page):
         out += "\nPIN مدیریتی: " + ("✅ تنظیم شده" if pin_is_set() else "— (بدون PIN، کد تصادفی استفاده می‌شود)") + "\n"
         keyboard.append([InlineKeyboardButton(text="🔐 تنظیم / تغییر / حذف PIN", callback_data="pin_set")])
         keyboard.append([InlineKeyboardButton(text="👮 ادمین‌ها و دسترسی‌ها", callback_data="sadmins")])
-    if page == "auto":
+    if page == "backup":
         keyboard.append([InlineKeyboardButton(text="📤 ارسال بکاپ به کانال (تست)", callback_data="backup_to_channel")])
     if page == "join":
         out += "\nℹ️ ربات باید در کانال «ادمین» باشد تا بتواند عضویت را بررسی کند.\n"
@@ -5474,7 +5805,9 @@ def render_settings_page(page):
     extra_text, extra_rows = v3_page_extras(page)
     out += extra_text
     keyboard.extend(extra_rows)
-    keyboard.append([InlineKeyboardButton(text="🔙 بازگشت به تنظیمات", callback_data="admin_settings")])
+    if any(m["page"] == page for m in SETTINGS.values()):
+        keyboard.append([InlineKeyboardButton(text="♻️ بازنشانی این صفحه به پیش‌فرض", callback_data=f"srst_{page}")])
+    keyboard.append([InlineKeyboardButton(text="🔙 بازگشت به گروه", callback_data=f"sgrp_{gk}")])
     return out, InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
@@ -5500,10 +5833,35 @@ async def manual_outage_send(call: types.CallbackQuery):
 async def admin_settings_menu(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
     await state.clear()
-    keyboard = [[InlineKeyboardButton(text=title, callback_data=f"spage_{page}")] for page, title in SETTING_PAGES.items()]
-    keyboard.append([InlineKeyboardButton(text="👮 مدیریت ادمین‌ها", callback_data="sadmins")])
-    keyboard.append([InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data="admin_home")])
-    await edit_or_send(call, "⚙️ <b>تنظیمات ربات</b>\nیک بخش را انتخاب کنید:", InlineKeyboardMarkup(inline_keyboard=keyboard))
+    b = InlineKeyboardButton
+    keyboard = []
+    for gk, title in all_groups():
+        warn = any(setting_warnings(p) for p in group_pages(gk))
+        keyboard.append([b(text=title + (" ⚠️" if warn else ""), callback_data=f"sgrp_{gk}")])
+    keyboard.append([b(text="🔎 جستجو", callback_data="ssearch"), b(text="🎚 وضعیت یک‌نگاه", callback_data="sov_0")])
+    keyboard.append([b(text="🕘 تاریخچه تغییرها", callback_data="shist"), b(text="🩺 سلامت ربات", callback_data="shealth")])
+    keyboard.append([b(text="💾 خروجی / ورودی تنظیمات", callback_data="sbak")])
+    keyboard.append([b(text="👮 مدیریت ادمین‌ها", callback_data="sadmins")])
+    keyboard.append([b(text="🔙 بازگشت به پنل", callback_data="admin_home")])
+    await edit_or_send(
+        call, "⚙️ <b>تنظیمات ربات</b>\nیک گروه را انتخاب کنید (⚠️ = تنظیم ناقص یا نیازمند توجه):", InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+
+@dp.callback_query(F.data.regexp(r"^sgrp_[a-z]+$"), MainAdmin())
+async def settings_group_view(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    gk = call.data.split("_", 1)[1]
+    pages = group_pages(gk)
+    if not pages:
+        return
+    keyboard = [[InlineKeyboardButton(text=page_badge(p), callback_data=f"spage_{p}")] for p in pages]
+    keyboard.append([InlineKeyboardButton(text="🔙 بازگشت به تنظیمات", callback_data="admin_settings")])
+    await edit_or_send(
+        call, f"⚙️ تنظیمات › <b>{group_title(gk)}</b>\nیک بخش را انتخاب کنید (داخل پرانتز: تعداد قابلیت روشن):",
+        InlineKeyboardMarkup(inline_keyboard=keyboard),
+    )
 
 
 @dp.callback_query(F.data.startswith("spage_"), MainAdmin())
@@ -5517,6 +5875,16 @@ async def admin_settings_page(call: types.CallbackQuery, state: FSMContext):
     await edit_or_send(call, out, markup)
 
 
+@dp.callback_query(F.data.startswith("spall_"), MainAdmin())
+async def admin_settings_page_all(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    page = call.data.split("_", 1)[1]
+    if page not in SETTING_PAGES:
+        return
+    out, markup = render_settings_page(page, show_all=True)
+    await edit_or_send(call, out, markup)
+
+
 @dp.callback_query(F.data.startswith("sedit_"), MainAdmin())
 async def admin_setting_edit(call: types.CallbackQuery, state: FSMContext):
     key = call.data[len("sedit_"):]
@@ -5527,7 +5895,17 @@ async def admin_setting_edit(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
     if meta["type"] == "toggle":
         new_value = "0" if get_bool(key) else "1"
-        set_setting(key, new_value)
+        if key in SENSITIVE_ON and new_value == "1":
+            await edit_or_send(
+                call,
+                f"⚠️ <b>{meta['label']}</b>\n\n{SENSITIVE_WARN.get(key, '')}\n\nمطمئنید که روشن شود؟",
+                InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="✅ بله، روشن کن", callback_data=f"sconf_{key}")],
+                    [InlineKeyboardButton(text="انصراف", callback_data=f"spage_{meta['page']}")],
+                ]),
+            )
+            return
+        set_setting_logged(call.from_user.id, key, new_value)
         log_action(call.from_user.id, f"تنظیم {key} = {new_value}")
         out, markup = render_settings_page(meta["page"])
         await edit_or_send(call, out, markup)
@@ -5545,6 +5923,7 @@ async def admin_setting_edit(call: types.CallbackQuery, state: FSMContext):
     kb = [[InlineKeyboardButton(text="انصراف", callback_data=f"spage_{meta['page']}")]]
     if meta["type"] == "text":
         kb.insert(0, [InlineKeyboardButton(text="🕘 نسخه‌های قبلی / بازگشت به پیش‌فرض", callback_data=f"{CB.SV_LIST}{key}")])
+        kb.insert(1, [InlineKeyboardButton(text="👁 ارسال نمونه به من", callback_data=f"spv_{key}")])
     markup = InlineKeyboardMarkup(inline_keyboard=kb)
     await edit_or_send(call, f"✏️ <b>{meta['label']}</b>\n\n{hints[meta['type']]}", markup)
 
@@ -5565,11 +5944,11 @@ async def admin_setting_save(message: types.Message, state: FSMContext):
         if fchat is not None:  # پیام فورواردشده از کانال (برای کانال خصوصی بدون @username)
             text_in = str(fchat)
     if t == "num":
-        raw = text_in.replace(",", "")
-        if not raw.isdigit() or not (meta["min"] <= int(raw) <= meta["max"]):
-            await message.answer(f"عدد معتبر بین {meta['min']} تا {meta['max']} بفرستید.")
+        n_in = parse_amount(text_in)
+        if n_in is None or not (meta["min"] <= n_in <= meta["max"]):
+            await message.answer(f"عدد معتبر بین {meta['min']} تا {meta['max']} بفرستید (مثال: 250000 یا «250 هزار»).")
             return
-        value = str(int(raw))
+        value = str(n_in)
     elif t == "text":
         if not text_in:
             await message.answer("لطفاً متن بفرستید.")
@@ -5596,6 +5975,12 @@ async def admin_setting_save(message: types.Message, state: FSMContext):
         if key in ("card_number", "card_holder") and not value:
             await message.answer("این مورد نمی‌تواند خالی باشد.")
             return
+        if key == "maint_allow" and value:
+            ids_ = re.findall(r"\d+", value)
+            if not ids_ or len(ids_) > 50:
+                await message.answer("آیدی‌های عددی را با کاما جدا کنید. مثال: 123456,789012")
+                return
+            value = ",".join(ids_)
         if key in ("bonus_tiers", "ref_tiers") and value:
             tiers = parse_tiers(value)
             if not tiers or len(tiers) > 8 or (key == "bonus_tiers" and any(p > 100 for _, p in tiers)):
@@ -5644,15 +6029,641 @@ async def admin_setting_save(message: types.Message, state: FSMContext):
             await message.answer("لطفاً یک ویدیو بفرستید یا - برای حذف.")
             return
 
+    if key in SENSITIVE_TEXT and value != get_setting(key):
+        await state.set_state(None)
+        await state.update_data(pend_key=key, pend_val=value)
+        await message.answer(
+            f"⚠️ <b>تایید تغییر «{meta['label']}»</b>\n\nقبلی: <code>{esc(get_setting(key) or '—')}</code>\n"
+            f"جدید: <code>{esc(value)}</code>\n\nاین مقدار برای پرداخت به کاربران نمایش داده می‌شود. ذخیره شود؟",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ بله، ذخیره کن", callback_data="scfm_y")],
+                [InlineKeyboardButton(text="انصراف", callback_data=f"spage_{meta['page']}")],
+            ]),
+        )
+        return
     if t == "text":
         v3_save_version(key, get_setting(key), message.from_user.id)
-    set_setting(key, value)
+    set_setting_logged(message.from_user.id, key, value)
     if key == "backup_channel" and value:
         await _backup_channel_after_save(message.bot, message, value)
+    probe = ""
+    if key in ("post_channel", "force_join_channel") and value:
+        probe = "\n\n" + await channel_access_report(message.bot, value)
     await state.clear()
     log_action(message.from_user.id, f"ویرایش تنظیم {key}")
     out, markup = render_settings_page(meta["page"])
-    await message.answer("✅ ذخیره شد.\n\n" + out, reply_markup=markup)
+    await message.answer("✅ ذخیره شد." + probe + "\n\n" + out, reply_markup=markup)
+
+
+# ----- دامنه‌ی تخفیف و پاداش: صفحه‌ی اصلی، جزئیات هر تخفیف، بررسی کاربرد، شبیه‌ساز -----
+def dsc_summary(kind):
+    types, cats = dsc_types(kind), dsc_cats(kind)
+    if not types:
+        return "⛔ هیچ‌جا"
+    if types == set(DSC_TYPES) and cats is None:
+        return "✅ همه‌جا"
+    if cats is not None and not cats and types <= {"new", "renew"}:
+        return "⛔ هیچ‌جا"
+    names = "، ".join(DSC_TYPES[t] for t in DSC_TYPES if t in types)
+    if cats is not None and (types & {"new", "renew"}):
+        names += f" — {len(cats)} دسته"
+    return names
+
+
+def scope_home_view():
+    b = InlineKeyboardButton
+    out = "⚙️ تنظیمات › 💰 فروش و پرداخت\n<b>🎯 دامنه‌ی تخفیف و پاداش</b>\n"
+    for wmsg in setting_warnings("scope"):
+        out += f"⚠️ <i>{wmsg}</i>\n"
+    out += "\nهر تخفیف را می‌توانید فقط روی نوع خرید و دسته‌های دلخواه فعال کنید:\n\n"
+    for kind, (e, name, _s) in DSC_KINDS.items():
+        out += f"{e} {name}: {dsc_summary(kind)}\n"
+    out += f"\n🔝 سقف مجموع تخفیف: <b>{discount_cap()}٪</b> (کد تخفیف هم داخل این سقف است)\n"
+    out += "\n💳 <b>پاداش شارژ کیف پول</b> " + ("(روشن)" if get_bool("bonus_on") else "(خاموش؛ از «باشگاه مشتریان و پاداش شارژ» روشن می‌شود)") + "\n"
+    cap = get_int("bonus_max")
+    out += (
+        f"• شارژ مستقیم: {'✅' if get_bool('bonus_direct_on') else '⬜'}\n"
+        f"• «شارژ و خرید» (کمبود موجودی هنگام خرید): {'✅' if get_bool('bonus_short_on') else '⬜'}\n"
+        f"• سقف پاداش هر شارژ: {f'{cap:,} تومان' if cap > 0 else 'ندارد'}\n"
+    )
+    rows, cur = [], []
+    for kind, (e, name, _s) in DSC_KINDS.items():
+        cur.append(b(text=f"{e} {name}"[:30], callback_data=f"dsc_{kind}"))
+        if len(cur) == 2:
+            rows.append(cur)
+            cur = []
+    if cur:
+        rows.append(cur)
+    rows.append([b(text="🔝 سقف مجموع تخفیف", callback_data="sedit_discount_cap")])
+    rows.append([
+        b(text=("🔴 خاموش" if get_bool("bonus_direct_on") else "🟢 روشن") + ": پاداش شارژ مستقیم", callback_data="sedit_bonus_direct_on"),
+    ])
+    rows.append([
+        b(text=("🔴 خاموش" if get_bool("bonus_short_on") else "🟢 روشن") + ": پاداش «شارژ و خرید»", callback_data="sedit_bonus_short_on"),
+    ])
+    rows.append([b(text="✏️ سقف پاداش هر شارژ", callback_data="sedit_bonus_max")])
+    rows.append([b(text="🔍 بررسی: کجا اعمال می‌شود؟", callback_data="dsc_check"), b(text="🧮 شبیه‌ساز قیمت", callback_data="dsc_sim")])
+    rows.append([b(text="🔙 بازگشت به گروه", callback_data="sgrp_sales")])
+    return out, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _active_cats():
+    with SessionLocal() as s:
+        return [
+            (c.id, c.key, c.label, c.emoji or "")
+            for c in s.query(Category).filter(Category.is_active.is_(True)).order_by(Category.sort_order, Category.id).all()
+        ]
+
+
+def dsc_detail_view(kind):
+    b = InlineKeyboardButton
+    e, name, _s = DSC_KINDS[kind]
+    types, cats = dsc_types(kind), dsc_cats(kind)
+    out = f"{e} <b>{name}</b>\n\n<b>روی چه خریدهایی اعمال شود؟</b>\n"
+    rows = [
+        [b(text=f"{'✅' if t in types else '⬜'} {DSC_TYPES[t]}", callback_data=f"dsct_{kind}_{t}")] for t in DSC_TYPES
+    ]
+    out += "\n<b>روی کدام دسته‌ها؟</b> (فقط برای «خرید جدید» و «تمدید»؛ پلن دلخواه و محصول دکمه‌ساز دسته ندارند)\n"
+    rows.append([b(text=f"{'✅' if cats is None else '⬜'} همه‌ی دسته‌ها", callback_data=f"dscall_{kind}")])
+    cur = []
+    for cid, key, label, emoji in _active_cats():
+        on = cats is None or key in cats
+        cur.append(b(text=f"{'✅' if on else '⬜'} {emoji} {label}".replace("  ", " ")[:30], callback_data=f"dscc_{kind}_{cid}"))
+        if len(cur) == 2:
+            rows.append(cur)
+            cur = []
+    if cur:
+        rows.append(cur)
+    notes = {
+        "first": "\nℹ️ فقط برای کاربری که هنوز خرید نکرده است.",
+        "loyal": "\nℹ️ بر اساس تعداد خرید در ماه؛ با «خرید اول» جمع نمی‌شود و عدد بزرگ‌تر اعمال می‌شود.",
+        "flash": "\nℹ️ فقط وقتی تخفیف زمان‌دار فعال باشد دیده می‌شود.",
+        "code": "\nℹ️ اگر کد در دامنه‌ی این خرید نباشد، هنگام وارد کردن کد پذیرفته نمی‌شود.",
+    }
+    out += notes.get(kind, "")
+    rows.append([b(text="♻️ همه‌جا (پیش‌فرض)", callback_data=f"dscreset_{kind}")])
+    rows.append([b(text="🔙 بازگشت", callback_data="spage_scope")])
+    return out, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(F.data.regexp(r"^dsc_(gen|first|loyal|flash|code)$"), MainAdmin())
+async def dsc_detail(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    out, markup = dsc_detail_view(call.data.split("_", 1)[1])
+    await edit_or_send(call, out, markup)
+
+
+@dp.callback_query(F.data.regexp(r"^dsct_(gen|first|loyal|flash|code)_(new|renew|custom|button)$"), MainAdmin())
+async def dsc_toggle_type(call: types.CallbackQuery, state: FSMContext):
+    _, kind, t = call.data.split("_")
+    cur = dsc_types(kind) ^ {t}
+    val = "" if cur == set(DSC_TYPES) else ("-" if not cur else ",".join(x for x in DSC_TYPES if x in cur))
+    set_setting_logged(call.from_user.id, f"dsc_{kind}_t", val)
+    await call.answer("ذخیره شد ✅")
+    out, markup = dsc_detail_view(kind)
+    await edit_or_send(call, out, markup)
+
+
+@dp.callback_query(F.data.regexp(r"^dscall_(gen|first|loyal|flash|code)$"), MainAdmin())
+async def dsc_toggle_all_cats(call: types.CallbackQuery, state: FSMContext):
+    kind = call.data.split("_", 1)[1]
+    set_setting_logged(call.from_user.id, f"dsc_{kind}_c", "-" if dsc_cats(kind) is None else "")
+    await call.answer("ذخیره شد ✅")
+    out, markup = dsc_detail_view(kind)
+    await edit_or_send(call, out, markup)
+
+
+@dp.callback_query(F.data.regexp(r"^dscc_(gen|first|loyal|flash|code)_\d+$"), MainAdmin())
+async def dsc_toggle_cat(call: types.CallbackQuery, state: FSMContext):
+    _, kind, cid = call.data.split("_")
+    with SessionLocal() as s:
+        c = s.get(Category, int(cid))
+        key = c.key if c is not None else None
+    if key is None:
+        await call.answer("دسته یافت نشد.", show_alert=True)
+        return
+    allk = {k for _i, k, _l, _e in _active_cats()}
+    cur = set(allk) if dsc_cats(kind) is None else set(dsc_cats(kind))
+    cur ^= {key}
+    val = "" if cur >= allk else ("-" if not cur else ",".join(sorted(cur)))
+    set_setting_logged(call.from_user.id, f"dsc_{kind}_c", val)
+    await call.answer("ذخیره شد ✅")
+    out, markup = dsc_detail_view(kind)
+    await edit_or_send(call, out, markup)
+
+
+@dp.callback_query(F.data.regexp(r"^dscreset_(gen|first|loyal|flash|code)$"), MainAdmin())
+async def dsc_reset(call: types.CallbackQuery, state: FSMContext):
+    kind = call.data.split("_", 1)[1]
+    set_setting_logged(call.from_user.id, f"dsc_{kind}_t", "")
+    set_setting_logged(call.from_user.id, f"dsc_{kind}_c", "")
+    await call.answer("روی همه‌جا برگشت ✅")
+    out, markup = dsc_detail_view(kind)
+    await edit_or_send(call, out, markup)
+
+
+def dsc_value_text(kind):
+    if kind == "gen":
+        p = get_int("discount_percent")
+        return f"{p}٪" if p > 0 else None
+    if kind == "first":
+        p = get_int("first_percent")
+        return f"{p}٪" if (get_bool("first_on") and p > 0) else None
+    if kind == "loyal":
+        if not get_bool("loyalty_on"):
+            return None
+        ps = [x for x in (get_int(f"loyalty_{k}_percent") for k in ("bronze", "silver", "gold")) if x > 0]
+        return f"{min(ps)}–{max(ps)}٪" if ps else None
+    if kind == "flash":
+        p = flash_percent_now()
+        return f"{p}٪" if p > 0 else None
+    return "کد"
+
+
+def dsc_check_view():
+    def line(ptype, cat):
+        items = []
+        for kind, (_e, _n, short) in DSC_KINDS.items():
+            v = dsc_value_text(kind)
+            if v and dsc_applies(kind, ptype, cat):
+                items.append("کد" if kind == "code" else f"{short} {v}")
+        return " + ".join(items) if items else "— بدون تخفیف"
+
+    out = "🔍 <b>کجا چه تخفیفی اعمال می‌شود؟</b>\n(فقط تخفیف‌های فعال؛ درصدها مقدار فعلی هستند)\n"
+    for _cid, key, label, emoji in _active_cats():
+        out += f"\n📂 <b>{esc((emoji + ' ' + label).strip())}</b>\n🛒 جدید: {line('new', key)}\n🔄 تمدید: {line('renew', key)}\n"
+    if get_bool("custom_on"):
+        out += f"\n✨ پلن دلخواه: {line('custom', '')}\n"
+    with SessionLocal() as s:
+        has_btn = s.query(Service.id).filter(Service.category == BTN_CAT).first() is not None
+    if has_btn:
+        out += f"\n🔘 محصول دکمه‌ساز: {line('button', BTN_CAT)}\n"
+    out += f"\n🔝 سقف مجموع: {discount_cap()}٪\n"
+    out += "\n💳 <b>پاداش شارژ کیف پول:</b> "
+    if not get_bool("bonus_on"):
+        out += "خاموش"
+    else:
+        tiers = parse_tiers(get_setting("bonus_tiers"))
+        out += (
+            f"شارژ مستقیم {'✅' if get_bool('bonus_direct_on') else '⬜'} | «شارژ و خرید» {'✅' if get_bool('bonus_short_on') else '⬜'}"
+            + (f" | تا {max(p for _a, p in tiers)}٪" if tiers else " | بدون پله")
+        )
+    return out[:3900]
+
+
+@dp.callback_query(F.data == "dsc_check", MainAdmin())
+async def dsc_check(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await edit_or_send(
+        call, dsc_check_view(), InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت", callback_data="spage_scope")]])
+    )
+
+
+@dp.callback_query(F.data == "dsc_sim", MainAdmin())
+async def dsc_sim_pick(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    b = InlineKeyboardButton
+    with SessionLocal() as s:
+        cmap = category_map()
+        svcs = [(r.id, r.category, r.name, r.price) for r in s.query(Service).order_by(Service.category, Service.id).limit(40).all()]
+    rows = [[b(text=f"{cat_label(c, cmap)} - {n} — {p:,}"[:60], callback_data=f"dscs_{i}")] for i, c, n, p in svcs]
+    rows.append([b(text="🔙 بازگشت", callback_data="spage_scope")])
+    await edit_or_send(
+        call, "🧮 <b>شبیه‌ساز قیمت</b>\nیک پلن را انتخاب کنید تا قیمت نهایی را برای کاربر جدید، عادی و طلایی ببینید:",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@dp.callback_query(F.data.regexp(r"^dscs_\d+$"), MainAdmin())
+async def dsc_sim_result(call: types.CallbackQuery, state: FSMContext):
+    sid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        svc = s.get(Service, sid)
+        if svc is None:
+            await call.answer("پلن یافت نشد.", show_alert=True)
+            return
+        name, cat, price = svc.name, svc.category, svc.price or 0
+        label = cat_label(cat)
+    await call.answer()
+    gold = tier_for_count(99) if get_bool("loyalty_on") else None
+    profiles = [("🆕 کاربر جدید", True, None), ("👤 کاربر عادی", False, None), ("🥇 کاربر طلایی", False, gold)]
+    out = f"🧮 <b>{esc(label)} - {esc(name)}</b>\nقیمت پایه: {price:,} تومان\n"
+    for ptype in ("button" if cat == BTN_CAT else "new", "renew"):
+        out += f"\n<b>{DSC_TYPES[ptype]}</b>\n"
+        for plabel, is_new, tier in profiles:
+            cands = _discount_candidates(is_new, tier, ptype, cat)
+            pct = min(sum(p for _k, p, _l in cands), discount_cap())
+            detail = " + ".join(f"{p}٪ {DSC_KINDS[k][2]}" for k, p, _l in cands) or "بدون تخفیف"
+            out += f"{plabel}: {pct}٪ ← <b>{price_with_percent(price, pct):,}</b> تومان ({detail})\n"
+    out += "\nℹ️ کد تخفیف جدا حساب می‌شود و روی این اعداد اضافه می‌گردد."
+    await edit_or_send(
+        call, out, InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🧮 پلن دیگر", callback_data="dsc_sim")],
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="spage_scope")],
+        ])
+    )
+
+
+# ----- تایید تنظیمات حساس -----
+SENSITIVE_WARN = {
+    "maintenance_on": "با روشن شدن حالت تعمیر، همه‌ی کاربران عادی فقط پیام تعمیر را می‌بینند (ادمین‌ها و آیدی‌های مجاز استثنا هستند).",
+    "force_join_on": "با روشن شدن عضویت اجباری، کاربرانِ غیرعضو تا عضو شدن نمی‌توانند از ربات استفاده کنند. مطمئن شوید ربات در کانال ادمین است.",
+}
+
+
+@dp.callback_query(F.data.regexp(r"^sconf_[a-z_]+$"), MainAdmin())
+async def setting_toggle_confirmed(call: types.CallbackQuery, state: FSMContext):
+    key = call.data[len("sconf_"):]
+    meta = SETTINGS.get(key)
+    if meta is None or key not in SENSITIVE_ON:
+        await call.answer()
+        return
+    await call.answer("روشن شد ✅")
+    set_setting_logged(call.from_user.id, key, "1")
+    log_action(call.from_user.id, f"تنظیم {key} = 1")
+    out, markup = render_settings_page(meta["page"])
+    await edit_or_send(call, out, markup)
+
+
+@dp.callback_query(F.data == "scfm_y", MainAdmin())
+async def setting_text_confirmed(call: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    key, val = data.get("pend_key"), data.get("pend_val")
+    meta = SETTINGS.get(key) if key else None
+    await state.clear()
+    if meta is None or val is None:
+        await call.answer("این تایید منقضی شده؛ دوباره تلاش کنید.", show_alert=True)
+        return
+    await call.answer("ذخیره شد ✅")
+    set_setting_logged(call.from_user.id, key, val)
+    log_action(call.from_user.id, f"ویرایش تنظیم {key}")
+    out, markup = render_settings_page(meta["page"])
+    await edit_or_send(call, "✅ ذخیره شد.\n\n" + out, markup)
+
+
+@dp.callback_query(F.data.startswith("spv_"), MainAdmin())
+async def setting_preview(call: types.CallbackQuery, state: FSMContext):
+    key = call.data[len("spv_"):]
+    meta = SETTINGS.get(key)
+    txt = get_setting(key) if meta else ""
+    if meta is None or meta["type"] != "text" or not (txt or "").strip():
+        await call.answer("متنی برای نمایش نیست.", show_alert=True)
+        return
+    await call.answer()
+    for k, v in SAMPLE_VALUES.items():
+        txt = txt.replace("{" + k + "}", v)
+    try:
+        await call.message.answer("👁 <b>نمونه‌ی آنچه کاربر می‌بیند:</b>\n\n" + txt)
+    except Exception:  # noqa: BLE001
+        await call.message.answer("👁 نمونه (متن خام):\n\n" + txt, parse_mode=None)
+
+
+# ----- بازنشانی صفحه به پیش‌فرض -----
+@dp.callback_query(F.data.regexp(r"^srst_[a-z0-9_]+$"), MainAdmin())
+async def settings_reset_ask(call: types.CallbackQuery, state: FSMContext):
+    page = call.data[len("srst_"):]
+    if page not in SETTING_PAGES:
+        await call.answer()
+        return
+    keys = [k for k, m in SETTINGS.items() if m["page"] == page and k not in RESET_PROTECTED]
+    changed = [k for k in keys if get_setting(k) != DEFAULTS.get(k, "")]
+    await call.answer()
+    out = (
+        f"♻️ <b>بازنشانی «{SETTING_PAGES[page]}»</b>\n\n"
+        f"{len(changed)} مورد تغییرکرده به مقدار پیش‌فرض برمی‌گردد.\n"
+        "شماره کارت، کانال‌ها، آدرس‌های مانیتور و اطلاعات پشتیبانی هیچ‌وقت بازنشانی نمی‌شوند.\n"
+        "هر مورد را می‌توانید از «تاریخچه تغییرها» برگردانید."
+    )
+    kb = [[InlineKeyboardButton(text="✅ بله، بازنشانی کن", callback_data=f"srsty_{page}")] if changed else [],
+          [InlineKeyboardButton(text="انصراف", callback_data=f"spage_{page}")]]
+    await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=[r for r in kb if r]))
+
+
+@dp.callback_query(F.data.regexp(r"^srsty_[a-z0-9_]+$"), MainAdmin())
+async def settings_reset_do(call: types.CallbackQuery, state: FSMContext):
+    page = call.data[len("srsty_"):]
+    if page not in SETTING_PAGES:
+        await call.answer()
+        return
+    n = 0
+    for k, m in SETTINGS.items():
+        if m["page"] == page and k not in RESET_PROTECTED and set_setting_logged(call.from_user.id, k, DEFAULTS.get(k, "")):
+            n += 1
+    log_action(call.from_user.id, f"بازنشانی صفحه {page} ({n} مورد)")
+    await call.answer(f"{n} مورد بازنشانی شد ✅", show_alert=True)
+    out, markup = render_settings_page(page)
+    await edit_or_send(call, out, markup)
+
+
+# ----- جستجو -----
+@dp.callback_query(F.data == "ssearch", MainAdmin())
+async def settings_search_start(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.set_state(PaymentState.settings_search)
+    await edit_or_send(
+        call, "🔎 بخشی از نام تنظیم را بنویسید (مثال: کارت، بکاپ، تخفیف، کانال):",
+        InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data="admin_settings")]]),
+    )
+
+
+@dp.message(PaymentState.settings_search, MainAdmin())
+async def settings_search_do(message: types.Message, state: FSMContext):
+    q = _norm_fa(message.text or "").strip()
+    if len(q) < 2:
+        await message.answer("حداقل ۲ حرف بنویسید.")
+        return
+    await state.clear()
+    results = []
+    for p, title in SETTING_PAGES.items():
+        if q in _norm_fa(title):
+            results.append((f"📂 {title}", f"spage_{p}"))
+    for key, meta in SETTINGS.items():
+        if q in _norm_fa(meta["label"]) or q in key.lower():
+            cb = f"spage_{meta['page']}" if meta["type"] == "toggle" else f"sedit_{key}"
+            results.append((f"{SETTING_PAGES.get(meta['page'], '')} › {meta['label']}", cb))
+    kb = [[InlineKeyboardButton(text=t[:60], callback_data=cb)] for t, cb in results[:14]]
+    kb.append([InlineKeyboardButton(text="🔙 بازگشت به تنظیمات", callback_data="admin_settings")])
+    head = f"🔎 {len(results)} نتیجه برای «{esc(message.text.strip())}»" + (" (۱۴ مورد اول)" if len(results) > 14 else "") if results else "چیزی پیدا نشد. با کلمه‌ی دیگری امتحان کنید."
+    await message.answer(head, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+
+# ----- وضعیت یک‌نگاه (روشن/خاموش سریع) -----
+OV_PER_PAGE = 10
+
+
+def sov_view(n):
+    keys = [k for k, m in SETTINGS.items() if m["type"] == "toggle" and k not in SENSITIVE_ON and m["page"] in SETTING_PAGES]
+    pages = max(1, (len(keys) + OV_PER_PAGE - 1) // OV_PER_PAGE)
+    n = max(0, min(n, pages - 1))
+    b = InlineKeyboardButton
+    rows = [
+        [b(text=f"{'✅' if get_bool(k) else '⬜'} {SETTINGS[k]['label']}"[:60], callback_data=f"sqt_{k}_{n}")]
+        for k in keys[n * OV_PER_PAGE:(n + 1) * OV_PER_PAGE]
+    ]
+    nav = []
+    if n > 0:
+        nav.append(b(text="◀️ قبلی", callback_data=f"sov_{n - 1}"))
+    if n < pages - 1:
+        nav.append(b(text="بعدی ▶️", callback_data=f"sov_{n + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([b(text="🔙 بازگشت به تنظیمات", callback_data="admin_settings")])
+    on = sum(1 for k in keys if get_bool(k))
+    out = (
+        f"🎚 <b>وضعیت یک‌نگاه</b> — صفحه {n + 1} از {pages}\n"
+        f"{on} قابلیت از {len(keys)} قابلیت روشن است. برای عوض‌کردن، روی هر مورد بزنید.\n"
+        "ℹ️ حالت تعمیر و عضویت اجباری برای احتیاط فقط از صفحه‌ی خودشان تغییر می‌کنند."
+    )
+    return out, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(F.data.regexp(r"^sov_\d+$"), MainAdmin())
+async def settings_overview(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    out, markup = sov_view(int(call.data.split("_")[1]))
+    await edit_or_send(call, out, markup)
+
+
+@dp.callback_query(F.data.regexp(r"^sqt_[a-z0-9_]+_\d+$"), MainAdmin())
+async def settings_overview_toggle(call: types.CallbackQuery, state: FSMContext):
+    body = call.data[len("sqt_"):]
+    key, n = body.rsplit("_", 1)
+    meta = SETTINGS.get(key)
+    if meta is None or meta["type"] != "toggle" or key in SENSITIVE_ON:
+        await call.answer()
+        return
+    new_value = "0" if get_bool(key) else "1"
+    set_setting_logged(call.from_user.id, key, new_value)
+    log_action(call.from_user.id, f"تنظیم {key} = {new_value}")
+    await call.answer("انجام شد ✅")
+    out, markup = sov_view(int(n))
+    await edit_or_send(call, out, markup)
+
+
+# ----- تاریخچه‌ی تغییرها -----
+async def _show_history(call):
+    items = list(reversed(_shist_load()))[:10]
+    b = InlineKeyboardButton
+    out = "🕘 <b>تاریخچه‌ی آخرین تغییرها</b>\n\n"
+    rows = []
+    if not items:
+        out += "هنوز تغییری ثبت نشده است."
+    for it in items:
+        meta = SETTINGS.get(it.get("k")) or {}
+        label = meta.get("label") or it.get("k", "")
+        short = lambda v: esc((v or "—")[:25])  # noqa: E731
+        out += f"• {it.get('t', '')} — {esc(label[:40])}\n   {short(it.get('o'))} ← {short(it.get('n'))}\n"
+        if it.get("r"):
+            rows.append([b(text=f"↩️ برگردان: {label}"[:60], callback_data=f"shrev_{it['i']}")])
+    rows.append([b(text="🔙 بازگشت به تنظیمات", callback_data="admin_settings")])
+    await edit_or_send(call, out[:3900], InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@dp.callback_query(F.data == "shist", MainAdmin())
+async def settings_history(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await _show_history(call)
+
+
+@dp.callback_query(F.data.regexp(r"^shrev_\d+$"), MainAdmin())
+async def settings_revert(call: types.CallbackQuery, state: FSMContext):
+    rid = int(call.data.split("_")[1])
+    it = next((x for x in _shist_load() if x.get("i") == rid), None)
+    k_ = str((it or {}).get("k", ""))
+    if it is None or not it.get("r") or not (k_ in SETTINGS or re.fullmatch(r"dsc_(gen|first|loyal|flash|code)_[tc]", k_)):
+        await call.answer("این مورد قابل برگشت نیست.", show_alert=True)
+        return
+    if it["k"] in SENSITIVE_ON and it.get("o") == "1":
+        await call.answer("روشن‌کردن این گزینه را از صفحه‌ی خودش انجام دهید.", show_alert=True)
+        return
+    set_setting_logged(call.from_user.id, it["k"], it.get("o", ""))
+    log_action(call.from_user.id, f"برگشت تنظیم {it['k']}")
+    await call.answer("برگردانده شد ✅", show_alert=True)
+    await _show_history(call)
+
+
+# ----- خروجی / ورودی تنظیمات -----
+EXPORT_EXCLUDE = {"card_number", "card_holder"}
+
+
+async def _show_sbak(call):
+    b = InlineKeyboardButton
+    await edit_or_send(
+        call,
+        "💾 <b>خروجی / ورودی تنظیمات</b>\n\nخروجی یک فایل JSON از همه‌ی تنظیمات (بدون کاربران، موجودی‌ها و شماره کارت) است؛ "
+        "برای نسخه‌ی پشتیبان قبل از تغییرهای بزرگ یا انتقال به ربات دیگر. ورودی، فایلی که خودِ ربات ساخته را اعمال می‌کند.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [b(text="📤 دریافت فایل تنظیمات", callback_data="sexp")],
+            [b(text="📥 اعمال فایل تنظیمات", callback_data="simp")],
+            [b(text="🔙 بازگشت", callback_data="admin_settings")],
+        ]),
+    )
+
+
+@dp.callback_query(F.data == "sbak", MainAdmin())
+async def settings_backup_menu(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    await _show_sbak(call)
+
+
+@dp.callback_query(F.data == "sexp", MainAdmin())
+async def settings_export(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    data = {k: get_setting(k) for k, m in SETTINGS.items() if m["type"] in ("toggle", "num", "text") and k not in EXPORT_EXCLUDE}
+    for kind in DSC_KINDS:
+        for suf in ("t", "c"):
+            data[f"dsc_{kind}_{suf}"] = get_setting(f"dsc_{kind}_{suf}")
+    payload = json.dumps({"swan_settings": 1, "data": data}, ensure_ascii=False, indent=1).encode("utf-8")
+    await call.bot.send_document(
+        chat_id=call.from_user.id,
+        document=BufferedInputFile(payload, filename=f"swan_settings_{today_iran().isoformat()}.json"),
+        caption="💾 تنظیمات ربات (بدون شماره کارت و کاربران). برای بازگردانی از «اعمال فایل تنظیمات» استفاده کنید.",
+    )
+
+
+@dp.callback_query(F.data == "simp", MainAdmin())
+async def settings_import_start(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.set_state(PaymentState.settings_import)
+    await edit_or_send(
+        call, "📥 فایل JSON تنظیمات را (که از همین ربات گرفته‌اید) بفرستید:",
+        InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data="sbak")]]),
+    )
+
+
+def _import_validate(data):
+    ok = {}
+    for k, v in data.items():
+        v = "" if v is None else str(v)
+        meta = SETTINGS.get(k)
+        if meta is not None and k not in EXPORT_EXCLUDE and k not in SENSITIVE_ON:
+            t = meta["type"]
+            if t == "toggle" and v in ("0", "1"):
+                ok[k] = v
+            elif t == "num" and v.isdigit() and meta["min"] <= int(v) <= meta["max"]:
+                ok[k] = v
+            elif t == "text" and len(v) <= 4000:
+                ok[k] = v
+        elif re.fullmatch(r"dsc_(gen|first|loyal|flash|code)_[tc]", k) and len(v) <= 500 and not re.search(r"[<>\n]", v):
+            ok[k] = v
+    return ok
+
+
+@dp.message(PaymentState.settings_import, MainAdmin())
+async def settings_import_file(message: types.Message, state: FSMContext):
+    doc = message.document
+    if doc is None or (doc.file_size or 0) > 400_000:
+        await message.answer("یک فایل JSON (حداکثر ۴۰۰ کیلوبایت) بفرستید.")
+        return
+    try:
+        buf = await message.bot.download(doc)
+        raw = json.loads(buf.read().decode("utf-8"))
+        data = raw["data"] if isinstance(raw, dict) and raw.get("swan_settings") == 1 else None
+    except Exception:  # noqa: BLE001
+        data = None
+    if not isinstance(data, dict):
+        await message.answer("فایل معتبر نیست؛ فقط فایلی که با «دریافت فایل تنظیمات» گرفته‌اید قابل قبول است.")
+        return
+    changes = {k: v for k, v in _import_validate(data).items() if get_setting(k) != v}
+    if not changes:
+        await state.clear()
+        await message.answer("هیچ تغییری برای اعمال نبود (همه‌ی مقدارها یکسان یا نامعتبر بودند).")
+        return
+    await state.set_state(None)
+    await state.update_data(imp=changes)
+    names = "\n".join(f"• {esc((SETTINGS.get(k) or {}).get('label', k))[:60]}" for k in list(changes)[:12])
+    more = f"\n… و {len(changes) - 12} مورد دیگر" if len(changes) > 12 else ""
+    await message.answer(
+        f"📥 {len(changes)} تنظیم تغییر می‌کند:\n{names}{more}\n\nاعمال شود؟ (از «تاریخچه تغییرها» قابل برگشت است)",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ اعمال کن", callback_data="simpy")],
+            [InlineKeyboardButton(text="انصراف", callback_data="sbak")],
+        ]),
+    )
+
+
+@dp.callback_query(F.data == "simpy", MainAdmin())
+async def settings_import_apply(call: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    changes = data.get("imp")
+    await state.clear()
+    if not isinstance(changes, dict) or not changes:
+        await call.answer("این تایید منقضی شده؛ فایل را دوباره بفرستید.", show_alert=True)
+        return
+    n = sum(1 for k, v in changes.items() if set_setting_logged(call.from_user.id, k, v))
+    log_action(call.from_user.id, f"ورودی تنظیمات ({n} مورد)")
+    await call.answer(f"{n} تنظیم اعمال شد ✅", show_alert=True)
+    await _show_sbak(call)
+
+
+# ----- سلامت ربات -----
+@dp.callback_query(F.data == "shealth", MainAdmin())
+async def settings_health(call: types.CallbackQuery, state: FSMContext):
+    await call.answer("در حال بررسی…")
+    with SessionLocal() as s:
+        pending = s.query(Request).filter(Request.status == "unanswered").count()
+        users = s.query(User).count()
+    lines = [
+        f"🧾 درخواست‌های بررسی‌نشده: <b>{pending}</b>",
+        f"👥 کاربران: {users:,}",
+        f"🔧 حالت تعمیر: {'⚠️ روشن' if get_bool('maintenance_on') else 'خاموش'}",
+        f"📡 مانیتور سرور: {'روشن' if get_bool('monitor_on') else 'خاموش'}",
+        f"🔥 تخفیف زمان‌دار: {'فعال' if flash_remaining() is not None else 'نیست'}",
+    ]
+    for key, label in (("post_channel", "کانال پست خودکار"), ("force_join_channel", "کانال عضویت اجباری"), ("backup_channel", "کانال بکاپ")):
+        v = get_setting(key).strip()
+        if v:
+            lines.append(f"📣 {label}: " + await channel_access_report(call.bot, v))
+    warns = [f"• {SETTING_PAGES[p]}: {w}" for p in SETTING_PAGES for w in setting_warnings(p)]
+    out = "🩺 <b>سلامت ربات</b>\n\n" + "\n".join(lines)
+    out += ("\n\n⚠️ <b>تنظیمات نیازمند توجه:</b>\n" + "\n".join(warns)) if warns else "\n\n✅ تنظیم ناقصی پیدا نشد."
+    await edit_or_send(
+        call, out[:3900], InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 بررسی دوباره", callback_data="shealth")],
+            [InlineKeyboardButton(text="🔙 بازگشت به تنظیمات", callback_data="admin_settings")],
+        ])
+    )
 
 
 # --- مدیریت ادمین‌ها ---
@@ -6847,15 +7858,23 @@ def parse_tiers(raw):
     return sorted(set(out))
 
 
-def charge_bonus_for(amount):
-    """(مبلغ پاداش, درصد) برای یک شارژ."""
+def charge_bonus_for(amount, via="direct"):
+    """(مبلغ پاداش, درصد) برای یک شارژ؛ via = direct (شارژ مستقیم) | short («شارژ و خرید»)."""
     if not get_bool("bonus_on"):
+        return 0, 0
+    if not get_bool("bonus_short_on" if via == "short" else "bonus_direct_on"):
         return 0, 0
     pct = 0
     for thr, p in parse_tiers(get_setting("bonus_tiers")):
         if amount >= thr:
             pct = p
-    return ((amount * pct) // 100, pct) if pct else (0, 0)
+    if not pct:
+        return 0, 0
+    bonus = (amount * pct) // 100
+    cap = get_int("bonus_max")
+    if cap > 0:
+        bonus = min(bonus, cap)
+    return bonus, pct
 
 
 def club_points_for(price):
@@ -8045,7 +9064,7 @@ async def backup_to_channel(call: types.CallbackQuery):
     chan = get_setting("backup_channel").strip()
     if not chan:
         await call.answer(
-            "ابتدا آیدی کانال بکاپ را در تنظیمات ← یادآوری، گزارش و نظرسنجی تنظیم کنید.", show_alert=True
+            "ابتدا آیدی کانال بکاپ را در تنظیمات ← پایش و اعلان ← بکاپ و نگهداری تنظیم کنید.", show_alert=True
         )
         return
     await call.answer("در حال ارسال...")
@@ -8402,7 +9421,7 @@ def channel_post_text():
             continue
         out += f"\n📂 <b>{esc((emoji + ' ' + label).strip())}:</b>\n"
         for name, price in plans:
-            out += price_line(name, price, price_with_percent(price, general))
+            out += price_line(name, price, price_with_percent(price, min(general if dsc_applies("gen", "new", key) else 0, discount_cap())))
     out += f"\n🤖 برای خرید: @{BOT_USERNAME}"
     return out
 
@@ -9707,7 +10726,7 @@ async def pk_result(call: types.CallbackQuery):
         if x is None:
             continue
         sid, name, price, cat = x
-        final = price_with_percent(price, total)
+        final = price_with_percent(price, discount_breakdown(call.from_user.id, "button" if cat == BTN_CAT else "new", cat)[0])
         price_txt = (
             f"<s>{price:,}</s> {ARROW} <b>{final:,}</b> تومان" if final != price else f"{price:,} تومان"
         )
@@ -10782,7 +11801,7 @@ async def gift_start(call: types.CallbackQuery, state: FSMContext):
 async def gift_entered(message: types.Message, state: FSMContext):
     amount, err = await asyncio.to_thread(redeem_gift, message.from_user.id, message.text)
     if err:
-        await message.answer(f"❌ {err}\nدوباره بفرست یا /start بزن.")
+        await message.answer(f"❌ {err}\nدوباره بفرست یا /start بزن.", reply_markup=back_home_markup())
         return
     await state.clear()
     await message.answer(f"🎉 {amount:,} تومان به کیف پولت اضافه شد!", reply_markup=back_home_markup())
@@ -10791,10 +11810,10 @@ async def gift_entered(message: types.Message, state: FSMContext):
 @dp.message(Command("redeem"))
 async def redeem_cmd(message: types.Message, command: CommandObject):
     if not command.args:
-        await message.answer("استفاده: <code>/redeem کد</code>")
+        await message.answer("استفاده: <code>/redeem کد</code>", reply_markup=back_home_markup())
         return
     amount, err = await asyncio.to_thread(redeem_gift, message.from_user.id, command.args)
-    await message.answer(f"🎉 {amount:,} تومان به کیف پولت اضافه شد!" if not err else f"❌ {err}")
+    await message.answer(f"🎉 {amount:,} تومان به کیف پولت اضافه شد!" if not err else f"❌ {err}", reply_markup=back_home_markup())
 
 
 @dp.message(Command("gift"), MainAdmin())
@@ -10829,7 +11848,7 @@ async def gift_admin_cmd(message: types.Message, command: CommandObject):
 @dp.message(Command("transfer"))
 async def transfer_cmd(message: types.Message, command: CommandObject):
     if not get_bool("transfer_on"):
-        await message.answer("انتقال اعتبار فعلاً غیرفعاله.")
+        await message.answer("انتقال اعتبار فعلاً غیرفعاله.", reply_markup=back_home_markup())
         return
     parts = (command.args or "").split()
     to_id = _num(parts[0]) if len(parts) == 2 else None
@@ -10844,19 +11863,19 @@ async def transfer_cmd(message: types.Message, command: CommandObject):
     uid = message.from_user.id
     fee = amount * get_int("transfer_fee_percent") // 100
     if amount < minimum or to_id == uid:
-        await message.answer(f"مبلغ باید حداقل {minimum:,} تومان باشه و گیرنده خودت نباشه.")
+        await message.answer(f"مبلغ باید حداقل {minimum:,} تومان باشه و گیرنده خودت نباشه.", reply_markup=back_home_markup())
         return
     async with user_lock(uid):
         with SessionLocal() as s:
             me, to = s.get(User, uid), s.get(User, to_id)
             if to is None or to.is_banned:
-                await message.answer("گیرنده پیدا نشد (باید قبلاً ربات رو استارت کرده باشه).")
+                await message.answer("گیرنده پیدا نشد (باید قبلاً ربات رو استارت کرده باشه).", reply_markup=back_home_markup())
                 return
             if (me.balance or 0) < amount + fee:
-                await message.answer(f"موجودی کافی نیست. لازم: {amount + fee:,} تومان (کارمزد {fee:,})")
+                await message.answer(f"موجودی کافی نیست. لازم: {amount + fee:,} تومان (کارمزد {fee:,})", reply_markup=back_home_markup())
                 return
             if (to.balance or 0) + amount > MAX_BALANCE:
-                await message.answer("سقف موجودی گیرنده پر می‌شه.")
+                await message.answer("سقف موجودی گیرنده پر می‌شه.", reply_markup=back_home_markup())
                 return
             _m0, _t0 = me.balance or 0, to.balance or 0
             me.balance = _m0 - amount - fee
@@ -10865,7 +11884,7 @@ async def transfer_cmd(message: types.Message, command: CommandObject):
             wlog(s, to_id, _t0, to.balance, "transfer_in", uid)
             glog_add(s, uid, "transfer", f"{to_id}:{amount}")
             s.commit()
-    await message.answer(f"✅ {amount:,} تومان به <code>{to_id}</code> منتقل شد.")
+    await message.answer(f"✅ {amount:,} تومان به <code>{to_id}</code> منتقل شد.", reply_markup=back_home_markup())
     await gsend(message.bot, to_id, f"🎁 {amount:,} تومان اعتبار از طرف یکی از دوستانت به کیف پولت اضافه شد!")
 
 
@@ -11695,7 +12714,7 @@ async def v3_ask_review(call, req_id, score):
 @dp.callback_query(F.data == CB.RV_SKIP)
 async def v3_review_skip(call: types.CallbackQuery):
     await call.answer()
-    await edit_or_send(call, "🙏 ممنون از امتیازت!")
+    await edit_or_send(call, "🙏 ممنون از امتیازت!", back_home_markup())
 
 
 @dp.callback_query(F.data.regexp(r"^v3_rv_\d+$"))
@@ -11718,10 +12737,10 @@ async def v3_review_write(call: types.CallbackQuery, state: FSMContext):
 async def v3_review_received(message: types.Message, state: FSMContext):
     text_ = (message.text or "").strip()
     if len(text_) < 5 or len(text_) > 250:
-        await message.answer("نظر باید بین ۵ تا ۲۵۰ حرف باشه. دوباره بفرست:")
+        await message.answer("نظر باید بین ۵ تا ۲۵۰ حرف باشه. دوباره بفرست:", reply_markup=nav_markup("main_menu", "⬅️ انصراف"))
         return
     if re.search(r"https?://|t\.me|www\.|@\w", text_, re.I):
-        await message.answer("لطفاً بدون لینک و آیدی بنویس:")
+        await message.answer("لطفاً بدون لینک و آیدی بنویس:", reply_markup=nav_markup("main_menu", "⬅️ انصراف"))
         return
     data = await state.get_data()
     rid = data.get("rating_id")
@@ -11729,7 +12748,7 @@ async def v3_review_received(message: types.Message, state: FSMContext):
         rt = s.get(Rating, rid) if rid else None
         if rt is None or rt.user_id != message.from_user.id or rt.comment:
             await state.clear()
-            await message.answer("این نظر قابل ثبت نیست.")
+            await message.answer("این نظر قابل ثبت نیست.", reply_markup=back_home_markup())
             return
         rt.comment = text_
         rt.approved = False
@@ -12162,7 +13181,7 @@ async def v3_triage_go(call: types.CallbackQuery, state: FSMContext):
     if msg is None:
         await state.set_state(PaymentState.ticket_waiting_text)
         await state.update_data(ticket_id=None, triaged=True)
-        await edit_or_send(call, "✍️ مشکلت رو دوباره بنویس تا تیکت ثبت بشه:")
+        await edit_or_send(call, "✍️ مشکلت رو دوباره بنویس تا تیکت ثبت بشه:", nav_markup("support_menu", "⬅️ انصراف"))
         return
     await state.set_state(PaymentState.ticket_waiting_text)
     await state.update_data(triaged=True)
@@ -12264,6 +13283,7 @@ async def v3_payhelp(call: types.CallbackQuery, state: FSMContext):
     await call.bot.send_message(
         chat_id=call.from_user.id,
         text="❓ سؤالت رو همین‌جا بنویس (متن). سفارش نیمه‌کاره‌ات خودکار به تیکت پیوست می‌شه و پرداختت هم سر جاشه؛ بعد از ارسال سؤال می‌تونی ادامه بدی.",
+        reply_markup=nav_markup("checkout_back", "⬅️ بازگشت به پرداخت (بدون سؤال)"),
     )
 
 
@@ -12396,7 +13416,7 @@ async def v3_connect_no(call: types.CallbackQuery):
 @dp.callback_query(F.data.regexp(r"^v3_fuok_\d+$"))
 async def v3_followup_ok(call: types.CallbackQuery):
     await call.answer("ممنون! 🙌")
-    await edit_or_send(call, "🙌 خوشحالیم که همه‌چیز خوبه!")
+    await edit_or_send(call, "🙌 خوشحالیم که همه‌چیز خوبه!", back_home_markup())
 
 
 @dp.callback_query(F.data.regexp(r"^v3_fubad_\d+$"))
@@ -12450,7 +13470,7 @@ async def v3_survey7_answer(call: types.CallbackQuery):
         markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎫 ارسال تیکت", callback_data="ticket_new")]])
         await edit_or_send(call, f"🙏 ممنون از صداقتت ({score} ⭐). بگو چی اذیتت کرده تا درستش کنیم:", markup)
     else:
-        await edit_or_send(call, f"🙏 ممنون از امتیازت ({score} ⭐)!")
+        await edit_or_send(call, f"🙏 ممنون از امتیازت ({score} ⭐)!", back_home_markup())
 
 
 async def job_v3_followups(bot):
@@ -12667,7 +13687,7 @@ async def v3_addon_receipt(message: types.Message, state: FSMContext):
     if message.text and message.text in MENU_TEXTS:
         raise SkipHandler()
     if not has_receipt_media(message):
-        await message.answer("عکس رسیدت رو همین‌جا بفرست 📸")
+        await message.answer("عکس رسیدت رو همین‌جا بفرست 📸", reply_markup=nav_markup("main_menu", "⬅️ انصراف"))
         return
     uid = message.from_user.id
     async with user_lock(uid):
@@ -12678,7 +13698,7 @@ async def v3_addon_receipt(message: types.Message, state: FSMContext):
         items = parse_addons()
         if cid is None or idx is None or idx >= len(items):
             await state.clear()
-            await message.answer("این سفارش دیگه معتبر نیست.")
+            await message.answer("این سفارش دیگه معتبر نیست.", reply_markup=back_home_markup())
             return
         k, a, p = items[idx]
         ctx = dict(kind=k, amount=a, price=p, label=addon_label(k, a))
@@ -12689,7 +13709,7 @@ async def v3_addon_receipt(message: types.Message, state: FSMContext):
             cfg = s.get(UserConfig, cid)
             if cfg is None or cfg.user_id != uid:
                 await state.clear()
-                await message.answer("سرویس یافت نشد.")
+                await message.answer("سرویس یافت نشد.", reply_markup=back_home_markup())
                 return
             dup = safe_find_duplicate(s, uniq, digest)
             if dup is None:
@@ -13338,7 +14358,7 @@ def v3_page_extras(page):
             [b(text="🎰 قرعه‌کشی: دعوت‌کننده‌های برتر", callback_data=f"{CB.LOT}ref")],
             [b(text="🎰 قرعه‌کشی: مشتریان فعال", callback_data=f"{CB.LOT}act")],
         ]
-    if page == "auto":
+    if page == "backup":
         ch, link = (get_setting("backup_channel") or "").strip(), (get_setting("backup_channel_link") or "").strip()
         text_ = "\n📦 کانال بکاپ فعلی: " + (esc(ch) if ch else "— (ثبت نشده)")
         if link:
