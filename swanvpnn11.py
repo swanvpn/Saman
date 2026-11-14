@@ -122,7 +122,18 @@ def measure_db_latency(rounds=5):
             conn.execute(text("SELECT 1"))
         return (time.perf_counter() - t0) * 1000 / rounds
 
-dp = Dispatcher(storage=MemoryStorage())
+def _make_storage():
+    url = os.environ.get("REDIS_URL", "").strip()
+    if url:
+        try:
+            from aiogram.fsm.storage.redis import RedisStorage
+            return RedisStorage.from_url(url)
+        except Exception as e:  # noqa: BLE001
+            logging.error("RedisStorage فعال نشد (پکیج redis نصب نیست؟)، MemoryStorage استفاده می‌شود: %s", e)
+    return MemoryStorage()
+
+
+dp = Dispatcher(storage=_make_storage())
 
 esc = html.escape
 
@@ -890,6 +901,11 @@ def _migrate_columns():
         ("ix_receipt_hashes_unique_id", "receipt_hashes", "unique_id"),
         ("ix_ticket_messages_ticket_id", "ticket_messages", "ticket_id"),
         ("ix_wallet_tx_user_id", "wallet_tx", "user_id"),
+        ("ix_growth_log_user_kind_ref", "growth_log", "user_id, kind, ref"),
+        ("ix_users_referred_by", "users", "referred_by"),
+        ("ix_requests_created_iso", "requests", "created_iso"),
+        ("ix_requests_status_created", "requests", "status, created_iso"),
+        ("ix_user_configs_expires_at", "user_configs", "expires_at"),
     )
     for name, table, cols in indexes:
         try:
@@ -1145,8 +1161,9 @@ def user_label(tg_user):
     return f"آیدی: {tg_user.id}"
 
 
-def get_or_create_user(session, user_id):
-    user = session.get(User, user_id)
+def get_or_create_user(session, user_id, lock=False):
+    """lock=True یعنی ردیف کاربر با SELECT ... FOR UPDATE قفل می‌شود (روی Postgres؛ در SQLite بی‌اثر ولی بی‌ضرر)."""
+    user = session.get(User, user_id, with_for_update=True) if lock else session.get(User, user_id)
     if user is None:
         user = User(
             user_id=user_id,
@@ -1720,6 +1737,40 @@ async def loop_lag_monitor():
             logging.warning("EVENT LOOP BLOCKED ~%.0fms", lag)
 
 
+class ThrottleMiddleware(BaseMiddleware):
+    """ضد فلود: هر کاربر عادی حداکثر N رویداد در پنجرهٔ زمانی. ادمین/استف مستثنی است."""
+
+    def __init__(self, limit=int(os.environ.get("THROTTLE_LIMIT", "12")), window=float(os.environ.get("THROTTLE_WINDOW", "5"))):
+        self.limit, self.window = limit, window
+        self.hits: dict = {}
+        self.warned: dict = {}
+
+    async def __call__(self, handler, event, data):
+        user = getattr(event, "from_user", None)
+        if user is None or is_staff(user.id):
+            return await handler(event, data)
+        now = time.monotonic()
+        q = [x for x in self.hits.get(user.id, ()) if now - x < self.window]
+        q.append(now)
+        self.hits[user.id] = q
+        if len(self.hits) > 5000:  # جلوگیری از رشد حافظه
+            self.hits = {k: v for k, v in self.hits.items() if v and now - v[-1] < self.window}
+        if len(q) > self.limit:
+            if now - self.warned.get(user.id, 0) > 10:
+                self.warned[user.id] = now
+                try:
+                    if isinstance(event, types.CallbackQuery):
+                        await event.answer("⏳ کمی آهسته‌تر لطفاً", show_alert=False)
+                    else:
+                        await event.answer("⏳ کمی آهسته‌تر لطفاً")
+                except Exception:  # noqa: BLE001
+                    pass
+            return None
+        return await handler(event, data)
+
+
+dp.message.outer_middleware(ThrottleMiddleware())
+dp.callback_query.outer_middleware(ThrottleMiddleware())
 dp.message.outer_middleware(TimingMiddleware())
 dp.callback_query.outer_middleware(TimingMiddleware())
 dp.message.outer_middleware(AccessMiddleware())
@@ -2229,7 +2280,7 @@ async def pay_with_wallet_handler(call: types.CallbackQuery, state: FSMContext):
 
     user_id = call.from_user.id
     with SessionLocal() as s:
-        user = get_or_create_user(s, user_id)
+        user = get_or_create_user(s, user_id, lock=True)
         balance = user.balance or 0
         if balance < co["final"]:
             await call.answer(
@@ -3276,7 +3327,7 @@ def register_purchase(s, user_id, price=0):
     reward = None
     if was_new and user.referred_by and not user.referral_rewarded and get_bool("referral_on"):
         amount = get_int("referral_reward")
-        ref = s.get(User, user.referred_by)
+        ref = s.get(User, user.referred_by, with_for_update=True)
         if ref is not None and (amount > 0 or get_bool("ref_tiers_on")):
             user.referral_rewarded = True
             hits = referral_tier_hits(s, ref.user_id)
@@ -3400,7 +3451,7 @@ async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
     req_id = int(call.data.split("_")[2])
     result = None  # برای شارژ و تمدید
     with SessionLocal() as s:
-        r = s.get(Request, req_id)
+        r = s.get(Request, req_id, with_for_update=True)
         if r is None:
             await call.answer("درخواست یافت نشد.", show_alert=True)
             return
@@ -3411,7 +3462,7 @@ async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
         auto = None  # خرید خودکار بعد از شارژ
 
         if rtype == "charge":
-            user = get_or_create_user(s, uid)
+            user = get_or_create_user(s, uid, lock=True)
             bonus, bonus_pct = charge_bonus_for(price, "short" if r.after_buy else "direct")
             _b0 = user.balance or 0
             user.balance = _b0 + price + bonus
@@ -3434,7 +3485,7 @@ async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
                     s.rollback()
                     auto = None
                     # شارژ را دوباره ثبت می‌کنیم تا اگر خرید خودکار خطا داد، شارژ از دست نرود
-                    user = get_or_create_user(s, uid)
+                    user = get_or_create_user(s, uid, lock=True)
                     r = s.get(Request, req_id)
                     if r.status != "answered":
                         _b0 = user.balance or 0
@@ -3545,7 +3596,7 @@ async def admin_reject_action(call: types.CallbackQuery):
     req_id = int(call.data.split("_")[2])
     refunded = 0
     with SessionLocal() as s:
-        r = s.get(Request, req_id)
+        r = s.get(Request, req_id, with_for_update=True)
         if r is None:
             await call.answer("درخواست یافت نشد.", show_alert=True)
             return
@@ -3556,7 +3607,7 @@ async def admin_reject_action(call: types.CallbackQuery):
         r.answered_at = get_current_jalali()
         target_user = r.user_id
         if r.paid_wallet and (r.price or 0) > 0:
-            user = get_or_create_user(s, target_user)
+            user = get_or_create_user(s, target_user, lock=True)
             _b0 = user.balance or 0
             user.balance = _b0 + r.price
             wlog(s, target_user, _b0, user.balance, "refund_rejected", req_id, call.from_user.id)
@@ -4034,7 +4085,7 @@ async def process_balance_adjustment(message: types.Message, state: FSMContext):
         return
 
     with SessionLocal() as s:
-        user = get_or_create_user(s, uid)
+        user = get_or_create_user(s, uid, lock=True)
         current = user.balance or 0
         if mode == "baladd":
             new_balance = current + amount
@@ -8157,7 +8208,7 @@ async def fj_check_handler(call: types.CallbackQuery, state: FSMContext):
 def club_view(user_id):
     cur_month = jalali_today().strftime("%Y/%m")
     with SessionLocal() as s:
-        user = s.get(User, user_id)
+        user = s.get(User, user_id, with_for_update=True)
         points = (user.points if user else 0) or 0
         count = ((user.purchase_count_current_month or 0) if (user and user.last_purchase_month == cur_month) else 0)
         total_cnt, total_spent = (
@@ -9093,11 +9144,51 @@ def build_backup_bytes():
         for table in Base.metadata.sorted_tables:
             rows = conn.execute(table.select()).mappings().all()
             payload["tables"][table.name] = [dict(r) for r in rows]
-    return json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+    raw = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+    return _pack_backup(raw)
+
+
+_BACKUP_MAGIC = b"SWANENC1:"
+
+
+def _backup_fernet():
+    """اگر BACKUP_KEY (کلید Fernet) تنظیم شده باشد، بکاپ رمز می‌شود؛ وگرنه فقط gzip."""
+    key = os.environ.get("BACKUP_KEY", "").strip()
+    if not key:
+        return None
+    try:
+        from cryptography.fernet import Fernet
+        return Fernet(key.encode())
+    except Exception as e:  # noqa: BLE001
+        logging.error("BACKUP_KEY نامعتبر است یا cryptography نصب نیست؛ بکاپ رمز نمی‌شود: %s", e)
+        return None
+
+
+def _pack_backup(raw):
+    import gzip
+    data = gzip.compress(raw, compresslevel=6)
+    f = _backup_fernet()
+    return _BACKUP_MAGIC + f.encrypt(data) if f else data
+
+
+def _unpack_backup(raw_bytes):
+    """فرمت‌های قدیمی (JSON ساده)، gzip و رمز‌شده را می‌پذیرد."""
+    import gzip
+    if raw_bytes.startswith(_BACKUP_MAGIC):
+        f = _backup_fernet()
+        if f is None:
+            raise ValueError("این بکاپ رمز شده است؛ BACKUP_KEY درست را در تنظیمات محیطی بگذارید.")
+        try:
+            raw_bytes = f.decrypt(raw_bytes[len(_BACKUP_MAGIC):])
+        except Exception:  # noqa: BLE001
+            raise ValueError("رمزگشایی بکاپ ناموفق بود؛ BACKUP_KEY اشتباه است.")
+    if raw_bytes[:2] == b"\x1f\x8b":
+        raw_bytes = gzip.decompress(raw_bytes)
+    return raw_bytes
 
 
 def parse_backup(raw_bytes):
-    payload = json.loads(raw_bytes.decode("utf-8"))
+    payload = json.loads(_unpack_backup(raw_bytes).decode("utf-8"))
     if not isinstance(payload, dict) or not isinstance(payload.get("tables"), dict):
         raise ValueError("ساختار فایل بکاپ معتبر نیست.")
     names = {t.name for t in Base.metadata.sorted_tables}
@@ -9145,7 +9236,7 @@ def apply_backup(payload):
 
 async def send_backup(bot, chat_id, caption, data=None):
     data = data if data is not None else await asyncio.to_thread(build_backup_bytes)
-    name = f"swan_backup_{now_iran().strftime('%Y%m%d_%H%M')}.json"
+    name = f"swan_backup_{now_iran().strftime('%Y%m%d_%H%M')}.json" + (".enc" if data.startswith(_BACKUP_MAGIC) else ".gz")
     await bot.send_document(chat_id=chat_id, document=BufferedInputFile(data, filename=name), caption=caption)
 
 
@@ -9509,15 +9600,32 @@ async def job_channel_posts(bot):
 # اجرای پیام‌های همگانی زمان‌بندی‌شده
 # ---------------------------------------------------------------------------
 async def _run_scheduled_broadcast(bot, bid, seg, chat_id, msg_id, admin_id):
-    result = await _broadcast_and_report(
-        bot, admin_id, chat_id, msg_id, seg, admin_id, prefix=f"⏰ (زمان‌بندی #{bid}) "
-    )
+    try:
+        result = await _broadcast_and_report(
+            bot, admin_id, chat_id, msg_id, seg, admin_id, prefix=f"⏰ (زمان‌بندی #{bid}) "
+        )
+        status = "sent"
+    except Exception as e:  # noqa: BLE001
+        logging.error("scheduled broadcast %s failed: %s", bid, e)
+        result, status = f"خطا: {err_text(e)}", "failed"
     with SessionLocal() as s:
         x = s.get(ScheduledBroadcast, bid)
         if x is not None:
-            x.status = "sent"
+            x.status = status
             x.result = result
             s.commit()
+
+
+def recover_stuck_broadcasts():
+    """بعد از ری‌استارت، پیام‌های همگانی نیمه‌کاره را «interrupted» علامت می‌زند (نه ارسال مجدد، تا دوباره‌ارسالی به کاربران نشود)."""
+    with SessionLocal() as s:
+        rows = s.query(ScheduledBroadcast).filter(ScheduledBroadcast.status == "sending").all()
+        ids = [x.id for x in rows]
+        for x in rows:
+            x.status = "interrupted"
+            x.result = "با ری‌استارت سرویس نیمه‌کاره ماند؛ در صورت نیاز دوباره زمان‌بندی کنید."
+        s.commit()
+    return ids
 
 
 async def job_scheduled_broadcasts(bot):
@@ -10370,7 +10478,7 @@ async def _finish_config_delivery(bot, chat_id, admin_id, state, config_text, no
     config_text, user_desc, admin_desc = split_config_text(config_text)  # توضیح ادمین به کاربر نمی‌رسد
 
     with SessionLocal() as s:
-        r = s.get(Request, req_id) if req_id else None
+        r = s.get(Request, req_id, with_for_update=True) if req_id else None
         if r is None or r.status != "unanswered":
             await state.clear()
             await bot.send_message(chat_id=chat_id, text="این درخواست قبلاً بررسی شده است.")
@@ -11410,7 +11518,7 @@ async def job_comp(bot):
             day_key = f"{r.user_id}:{today_iran().isoformat()}"
             if glog_has(s, r.user_id, "compday", day_key):
                 continue
-            u = s.get(User, r.user_id)
+            u = s.get(User, r.user_id, with_for_update=True)
             if u is None:
                 continue
             _b0 = u.balance or 0
@@ -11720,7 +11828,7 @@ async def checkin_handler(call: types.CallbackQuery):
             d -= timedelta(days=1)
         pts = max(1, get_int("checkin_points"))
         bonus = get_int("checkin_streak_bonus") if streak % 7 == 0 else 0
-        u = get_or_create_user(s, uid)
+        u = get_or_create_user(s, uid, lock=True)
         u.points = (u.points or 0) + pts + bonus
         glog_add(s, uid, "checkin", today.isoformat())
         total = u.points
@@ -11803,7 +11911,7 @@ def redeem_gift(uid, code):
             return 0, "ظرفیت این کد تموم شده."
         if s.query(GiftUse.id).filter(GiftUse.gift_id == g.id, GiftUse.user_id == uid).first():
             return 0, "قبلاً از این کد استفاده کردی."
-        u = get_or_create_user(s, uid)
+        u = get_or_create_user(s, uid, lock=True)
         _b0 = u.balance or 0
         u.balance = min(MAX_BALANCE, _b0 + (g.amount or 0))
         wlog(s, uid, _b0, u.balance, "gift_code", code)
@@ -11891,7 +11999,9 @@ async def transfer_cmd(message: types.Message, command: CommandObject):
         return
     async with user_lock(uid):
         with SessionLocal() as s:
-            me, to = s.get(User, uid), s.get(User, to_id)
+            _rows = {u_.user_id: u_ for u_ in (s.get(User, i_, with_for_update=True) for i_ in sorted({uid, to_id}))
+                     if u_ is not None}  # قفل به ترتیب ثابت: جلوگیری از deadlock
+            me, to = _rows.get(uid), _rows.get(to_id)
             if to is None or to.is_banned:
                 await message.answer("گیرنده پیدا نشد (باید قبلاً ربات رو استارت کرده باشه).", reply_markup=back_home_markup())
                 return
@@ -13659,7 +13769,7 @@ async def v3_addon_wallet(call: types.CallbackQuery):
         return
     async with user_lock(uid):
         with SessionLocal() as s:
-            u = get_or_create_user(s, uid)
+            u = get_or_create_user(s, uid, lock=True)
             bal = u.balance or 0
             if bal < ctx["price"]:
                 await call.answer("موجودی کافی نیست.", show_alert=True)
@@ -14118,7 +14228,7 @@ async def v3_lottery_run(call: types.CallbackQuery):
     names = {}
     with SessionLocal() as s:
         for uid in winners:
-            u = s.get(User, uid)
+            u = s.get(User, uid, with_for_update=True)
             if u is None:
                 continue
             b0 = u.balance or 0
@@ -15403,6 +15513,9 @@ JOBS = [
 ]
 
 
+_JOB_FAILS: dict = {}
+
+
 async def run_jobs(bot):
     now = now_iran()
     today = now.date().isoformat()
@@ -15411,11 +15524,18 @@ async def run_jobs(bot):
             continue
         if get_setting(f"last_{name}") == today:
             continue
-        set_setting(f"last_{name}", today)
+        key = (name, today)
+        if _JOB_FAILS.get(key, 0) >= 3:  # بعد از ۳ شکست امروز دیگر تلاش نکن
+            continue
         try:
             await func_(bot)
+            set_setting(f"last_{name}", today)  # فقط بعد از موفقیت ثبت می‌شود
+            _JOB_FAILS.pop(key, None)
         except Exception as e:  # noqa: BLE001
-            logging.error("job %s failed: %s", name, e)
+            _JOB_FAILS[key] = _JOB_FAILS.get(key, 0) + 1
+            if _JOB_FAILS[key] >= 3:
+                set_setting(f"last_{name}", today)
+            logging.error("job %s failed (%d): %s", name, _JOB_FAILS[key], e)
             await report_error(bot, f"زمان‌بندی: {name}", e)
 
 
@@ -15489,6 +15609,12 @@ async def with_retry(fn, *args, tries=8, **kw):
 async def main():
     global BOT_USERNAME
     init_db()
+    try:
+        _stuck = recover_stuck_broadcasts()
+        if _stuck:
+            logging.warning("interrupted broadcasts: %s", _stuck)
+    except Exception as e:  # noqa: BLE001
+        logging.error("broadcast recovery failed: %s", e)
     refresh_menu_texts()
     try:
         logging.info("DB round-trip: %.0f ms (زیر ۳۰ عالی، بالای ۱۰۰ یعنی دیتابیس دور است)", await asyncio.to_thread(measure_db_latency))
