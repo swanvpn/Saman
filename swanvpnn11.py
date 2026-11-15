@@ -10685,7 +10685,27 @@ async def _finish_config_delivery(bot, chat_id, admin_id, state, config_text, no
         if qr_png and not sent_photo:
             await send_config_qr(bot, target_user_id, config_text)
     except Exception as e:  # noqa: BLE001
-        logging.error("Error notifying user about config delivery: %s", e)
+        logging.error("Error notifying user about config delivery: %s", e, exc_info=True)
+        # پیام غنی ارسال نشد؛ ساده‌ترین نسخه (فقط کانفیگ) را امتحان می‌کنیم و اگر باز هم نشد، به ادمین خبر می‌دهیم
+        try:
+            await bot.send_message(
+                chat_id=target_user_id,
+                text=f"🎉 سفارشت آماده شد!\n\n📦 {esc(plan_name or '')}\n"
+                     f"📅 تا {jalali_from_iso(end_date.isoformat())}\n\n<code>{esc(config_text)}</code>",
+            )
+            post_merged = True
+            await bot.send_message(chat_id=chat_id, text="⚠️ پیام اصلی ارسال نشد ولی نسخهٔ ساده (فقط کانفیگ) به کاربر رسید.")
+        except Exception as e2:  # noqa: BLE001
+            logging.error("Fallback config delivery failed: %s", e2, exc_info=True)
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=f"🚨 کانفیگ به کاربر {target_user_id} نرسید!\nخطا: {esc(str(e2))[:300]}\n"
+                         "ثبت سرویس انجام شده؛ کانفیگ را دستی برایش بفرست:\n"
+                         f"<code>{esc(config_text)}</code>",
+                )
+            except Exception:  # noqa: BLE001
+                pass
     await post_purchase_notifications(bot, target_user_id, monthly_notif, reward)
     if not is_trial:
         spawn(post_sale_feed(bot, plan_name, sale_req_type))
