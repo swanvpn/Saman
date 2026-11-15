@@ -3774,6 +3774,11 @@ async def _render_user_management(target, user_id: int):
         note = user.note or ""
         referred_by = user.referred_by
         joined_txt = jalali_join_text(user.joined_at, user.joined_iso)
+        exit_lines = ""
+        if user.blocked:
+            exit_lines += "🚫 ربات را بلاک کرده" + (f" ({esc(user.blocked_iso)})" if user.blocked_iso else "") + "\n"
+        if user.left_channel:
+            exit_lines += "📢 کانال را ترک کرده" + (f" ({esc(user.left_channel_iso)})" if user.left_channel_iso else "") + "\n"
         configs = [
             (c.id, c.config_name, c.expires_at, c.config_details)
             for c in s.query(UserConfig).filter(UserConfig.user_id == user_id).all()
@@ -3788,6 +3793,7 @@ async def _render_user_management(target, user_id: int):
         f"📋 وضعیت دسترسی: {'🔴 مسدود (بن)' if banned else '🟢 باز'}\n"
         f"🎁 آفر وفاداری: {status_text}\n"
     )
+    out += exit_lines
     if referred_by:
         out += f"🔗 دعوت‌شده توسط: <code>{referred_by}</code>\n"
     if note:
@@ -14856,6 +14862,7 @@ def _leavers_markup():
             [b(text="🔄 اسکن عضویت کانال", callback_data="lv_scan"), b(text="♻️ بروزرسانی", callback_data="lv_home")],
             [b(text="✉️ پیام به ترک‌کنندگان کانال", callback_data="lv_send_ask")],
             [b(text="🚫 لیست بلاک‌کرده‌ها", callback_data="lv_list_blocked"), b(text="📢 لیست ترک‌کرده‌ها", callback_data="lv_list_left")],
+            [b(text="👻 بدون استارت ربات", callback_data="lv_list_ghost")],
             [b(text="⬅️ بازگشت", callback_data="admin_home")],
         ]
     )
@@ -14902,6 +14909,21 @@ async def lv_send_go(call: types.CallbackQuery):
     await edit_or_send(call, _leavers_text(), _leavers_markup())
 
 
+@dp.callback_query(F.data == "lv_list_ghost", Perm("users"))
+async def lv_list_ghost(call: types.CallbackQuery):
+    await call.answer()
+    with SessionLocal() as s:
+        rows = s.query(ChannelLeaver).order_by(ChannelLeaver.left_iso.desc()).limit(40).all()
+        data = [(r.user_id, r.first_name, r.username, r.left_iso) for r in rows]
+    out = ["<b>👻 ترک‌کرده‌ها بدون استارت ربات</b> (۴۰ مورد اخیر؛ پنل خرید ندارند)\n"]
+    for uid, fn, un, ts in data:
+        out.append(f"• <a href=\"tg://user?id={uid}\">{esc(fn or str(uid))}</a>" + (f" @{esc(un)}" if un else "") + f" <code>{uid}</code>" + (f" — {esc(ts)}" if ts else ""))
+    if not data:
+        out.append("موردی ثبت نشده است.")
+    b = InlineKeyboardButton
+    await edit_or_send(call, "\n".join(out), InlineKeyboardMarkup(inline_keyboard=[[b(text="⬅️ بازگشت", callback_data="lv_home")]]))
+
+
 @dp.callback_query(F.data.in_({"lv_list_blocked", "lv_list_left"}), Perm("users"))
 async def lv_list(call: types.CallbackQuery):
     await call.answer()
@@ -14912,12 +14934,18 @@ async def lv_list(call: types.CallbackQuery):
         data = [(u.user_id, u.first_name, u.username, getattr(u, "blocked_iso" if blocked else "left_channel_iso")) for u in rows]
     title = "🚫 بلاک‌کرده‌های ربات" if blocked else "📢 ترک‌کرده‌های کانال"
     out = [f"<b>{title}</b> (۴۰ مورد اخیر)\n"]
+    b = InlineKeyboardButton
+    kb = []
     for uid, fn, un, ts in data:
-        out.append(f"• <a href=\"tg://user?id={uid}\">{esc(fn or str(uid))}</a>" + (f" @{esc(un)}" if un else "") + f" <code>{uid}</code>" + (f" — {esc(ts)}" if ts else ""))
+        out.append(f"• {esc(fn or str(uid))}" + (f" @{esc(un)}" if un else "") + f" <code>{uid}</code>" + (f" — {esc(ts)}" if ts else ""))
+        label = f"👤 {(fn or un or str(uid))[:24]}" + (f" · {ts[5:10]}" if ts else "")
+        kb.append([b(text=label, callback_data=f"manage_user_{uid}")])
     if not data:
         out.append("موردی ثبت نشده است.")
-    b = InlineKeyboardButton
-    await edit_or_send(call, "\n".join(out), InlineKeyboardMarkup(inline_keyboard=[[b(text="⬅️ بازگشت", callback_data="lv_home")]]))
+    else:
+        out.append("\nروی هر کاربر بزنید تا پنل مدیریت و خریدهایش باز شود.")
+    kb.append([b(text="⬅️ بازگشت", callback_data="lv_home")])
+    await edit_or_send(call, "\n".join(out), InlineKeyboardMarkup(inline_keyboard=kb))
 
 
 @dp.message(Command("leavers"), Perm("users"))
