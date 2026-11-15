@@ -3203,6 +3203,7 @@ async def admin_panel_cmd(message: types.Message, state: FSMContext):
 async def admin_home_callback(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
     await state.clear()
+    lv_clear_origin(call.from_user.id)
     markup = get_admin_main_keyboard(call.from_user.id)
     dash = admin_dashboard_text(call.from_user.id)
     try:
@@ -3673,6 +3674,7 @@ def users_filter_row(current):
 async def admin_users_list_handler(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
     await state.clear()
+    lv_clear_origin(call.from_user.id)
     flt, page = "all", 1
     if call.data.startswith("ausers_"):
         _, flt, p = call.data.split("_")
@@ -3760,7 +3762,19 @@ async def admin_user_search_result(message: types.Message, state: FSMContext):
     await message.answer(out, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 
-async def _render_user_management(target, user_id: int):
+_lv_origin = {}  # admin_id -> (user_id, back_callback, ts): کاربری که از لیست خروج‌ها باز شده
+
+
+def lv_clear_origin(admin_id):
+    _lv_origin.pop(admin_id, None)
+
+
+async def _render_user_management(target, user_id: int, back=None):
+    if back is None:
+        adm = getattr(getattr(target, "from_user", None), "id", None)
+        o = _lv_origin.get(adm)
+        if o and o[0] == user_id and time.time() - o[2] < 1800:
+            back = o[1]
     with SessionLocal() as s:
         user = s.get(User, user_id)
         if user is None:
@@ -3828,6 +3842,7 @@ async def _render_user_management(target, user_id: int):
                     callback_data=f"toggle_ban_{user_id}",
                 )
             ],
+            [b(text="🔙 بازگشت به لیست خروج‌ها", callback_data=back)] if back else
             [b(text="🔙 بازگشت به لیست کاربران", callback_data="admin_users")],
         ]
     )
@@ -14871,6 +14886,7 @@ def _leavers_markup():
 @dp.callback_query(F.data == "lv_home", Perm("users"))
 async def lv_home(call: types.CallbackQuery):
     await call.answer()
+    lv_clear_origin(call.from_user.id)
     await edit_or_send(call, _leavers_text(), _leavers_markup())
 
 
@@ -14909,6 +14925,16 @@ async def lv_send_go(call: types.CallbackQuery):
     await edit_or_send(call, _leavers_text(), _leavers_markup())
 
 
+@dp.callback_query(F.data.regexp(r"^lvu_[bl]_\d+$"), Perm("users"))
+async def lv_open_user(call: types.CallbackQuery):
+    """پنل کاربر از لیست خروج‌ها؛ دکمهٔ بازگشت به همان لیست برمی‌گردد."""
+    await call.answer()
+    _, kind, uid = call.data.split("_")
+    back = "lv_list_blocked" if kind == "b" else "lv_list_left"
+    _lv_origin[call.from_user.id] = (int(uid), back, time.time())
+    await _render_user_management(call, int(uid), back=back)
+
+
 @dp.callback_query(F.data == "lv_list_ghost", Perm("users"))
 async def lv_list_ghost(call: types.CallbackQuery):
     await call.answer()
@@ -14939,7 +14965,7 @@ async def lv_list(call: types.CallbackQuery):
     for uid, fn, un, ts in data:
         out.append(f"• {esc(fn or str(uid))}" + (f" @{esc(un)}" if un else "") + f" <code>{uid}</code>" + (f" — {esc(ts)}" if ts else ""))
         label = f"👤 {(fn or un or str(uid))[:24]}" + (f" · {ts[5:10]}" if ts else "")
-        kb.append([b(text=label, callback_data=f"manage_user_{uid}")])
+        kb.append([b(text=label, callback_data=f"lvu_{'b' if blocked else 'l'}_{uid}")])
     if not data:
         out.append("موردی ثبت نشده است.")
     else:
