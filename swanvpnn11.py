@@ -210,6 +210,18 @@ class User(Base):
     blocked = Column(Boolean, default=False)
     last_seen_iso = Column(String)  # آخرین بازدید (YYYY-MM-DDTHH:MM) برای پیام «خوش برگشتی»
     active_hour = Column(Integer)  # ساعت معمول فعالیت کاربر (۰ تا ۲۳) برای ارسال هوشمند
+    blocked_iso = Column(String)  # زمان آخرین بلاک‌کردن ربات توسط کاربر (YYYY-MM-DDTHH:MM)
+    left_channel = Column(Boolean, default=False)  # کانال تعریف‌شده را ترک کرده/عضو نیست
+    left_channel_iso = Column(String)  # زمان تشخیص ترک کانال
+
+
+class ChannelLeaver(Base):
+    """کسی که کانال را ترک کرده ولی هرگز ربات را استارت نکرده (فقط برای آمار؛ پیام‌دادن ممکن نیست)."""
+    __tablename__ = "channel_leavers"
+    user_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    username = Column(String)
+    first_name = Column(String)
+    left_iso = Column(String)
 
 
 class Service(Base):
@@ -533,6 +545,9 @@ DEFAULTS = {
     "force_join_on": "0",
     "force_join_channel": "",
     "force_join_text": "🔒 برای استفاده از ربات ابتدا در کانال ما عضو شوید، سپس دکمه «✅ عضو شدم» را بزنید.",
+    "leave_msg_on": "0",
+    "leave_msg_text": "👋 متوجه شدیم کانال ما را ترک کرده‌اید. اگر نظر یا مشکلی دارید بگویید؛ و برای اطلاع از تخفیف‌ها و اطلاعیه‌ها دوباره به کانال برگردید 🌹",
+    "leave_msg_btn": "📢 بازگشت به کانال",
     # --- بکاپ، گزارش، نگهداری، خطا ---
     "backup_channel": "",
     "weekly_report_on": "1",
@@ -653,6 +668,9 @@ SETTINGS = {
     "force_join_on": dict(page="join", type="toggle", label="عضویت اجباری در کانال"),
     "force_join_channel": dict(page="join", type="text", label="کانال (@username یا آیدی عددی -100...؛ ربات باید ادمین کانال باشد)"),
     "force_join_text": dict(page="join", type="text", label="متن درخواست عضویت"),
+    "leave_msg_on": dict(page="join", type="toggle", label="ارسال خودکار پیام به کسی که کانال را ترک می‌کند"),
+    "leave_msg_text": dict(page="join", type="text", label="متن پیام برای ترک‌کنندگان کانال"),
+    "leave_msg_btn": dict(page="join", type="text", label="متن دکمهٔ بازگشت به کانال (خالی = بدون دکمه)"),
     # --- بکاپ، گزارش، نگهداری، خطا ---
     "backup_channel": dict(page="backup", type="text", label="کانال بکاپ (@username، -100... یا یک پیام فورواردشده از کانال خصوصی؛ ربات باید ادمین باشد)"),
     "weekly_report_on": dict(page="auto", type="toggle", label="گزارش هفتگی خودکار (شنبه‌ها)"),
@@ -851,6 +869,9 @@ def _migrate_columns():
             "blocked": "BOOLEAN DEFAULT FALSE",
             "last_seen_iso": "VARCHAR",
             "active_hour": "INTEGER",
+            "blocked_iso": "VARCHAR",
+            "left_channel": "BOOLEAN DEFAULT FALSE",
+            "left_channel_iso": "VARCHAR",
         },
         "ratings": {
             "comment": "TEXT",
@@ -1589,6 +1610,7 @@ def get_admin_main_keyboard(user_id=None):
         optional = [
             ("users", b(text="👥 مدیریت کاربران", callback_data="admin_users")),
             ("users", b(text="🩺 عیب‌یابی خودکار", callback_data="diag_home")),
+            ("users", b(text="🚪 خروج کاربران", callback_data="lv_home")),
             ("stats", b(text="📊 آمار کلی فروش", callback_data="admin_sales_stats")),
             ("plans", b(text="📦 مدیریت پلن‌ها", callback_data="admin_plans")),
             ("codes", b(text="🏷 کدهای تخفیف", callback_data="admin_codes")),
@@ -1604,7 +1626,7 @@ def get_admin_main_keyboard(user_id=None):
             [b(text="📊 آمار کلی فروش", callback_data="admin_sales_stats"), b(text="🧾 لاگ فعالیت‌ها", callback_data="admin_logs")],
             [b(text="📦 مدیریت پلن‌ها", callback_data="admin_plans"), b(text="🏷 کدهای تخفیف", callback_data="admin_codes")],
             [b(text="📢 پیام همگانی", callback_data="admin_broadcast_start"), b(text="🧰 بکاپ", callback_data="admin_backup")],
-            [b(text="🩺 عیب‌یابی خودکار", callback_data="diag_home")],
+            [b(text="🩺 عیب‌یابی خودکار", callback_data="diag_home"), b(text="🚪 خروج کاربران", callback_data="lv_home")],
             [b(text="🎛 دکمه‌های کاربر", callback_data="ubh"), b(text="⚙️ تنظیمات ربات", callback_data="admin_settings")],
         ]
     )
@@ -11271,6 +11293,7 @@ def mark_blocked(uid):
             u = s.get(User, uid)
             if u is not None and not u.blocked:
                 u.blocked = True
+                u.blocked_iso = iso_now_minute()
                 s.commit()
     except Exception as e:  # noqa: BLE001
         logging.warning("mark_blocked failed: %s", e)
@@ -14630,10 +14653,285 @@ async def _backup_channel_after_save(bot, message, value):
     await message.answer(report if ok else "⚠️ " + report)
 
 
+# ---------------------------------------------------------------------------
+# تشخیص کاربرانی که ربات را بلاک کرده‌اند یا کانال تعریف‌شده را ترک کرده‌اند
+# ---------------------------------------------------------------------------
+def _record_bot_block_state(uid, status):
+    """status جدید ربات در چت خصوصی: kicked = بلاک، member = استارت/آنبلاک."""
+    try:
+        with SessionLocal() as s:
+            u = s.get(User, uid)
+            if u is None:
+                return
+            if status in ("kicked", "left"):
+                if not u.blocked:
+                    u.blocked = True
+                    u.blocked_iso = iso_now_minute()
+                    s.commit()
+            elif status == "member" and u.blocked:
+                u.blocked = False
+                s.commit()
+    except Exception as e:  # noqa: BLE001
+        logging.warning("record block state failed: %s", e)
+
+
+def watched_channel_ref():
+    """کانال تعریف‌شده در ربات: اول عضویت اجباری، بعد کانال پست خودکار."""
+    for key in ("force_join_channel", "post_channel"):
+        raw = (get_setting(key) or "").strip()
+        if raw:
+            try:
+                return chat_ref(raw)
+            except ValueError:
+                continue
+    return None
+
+
+def _status_is_in_channel(member):
+    return member.status in ("member", "administrator", "creator") or (
+        member.status == "restricted" and bool(getattr(member, "is_member", False))
+    )
+
+
+def _set_left_channel(uid, left, tg_user=None):
+    try:
+        with SessionLocal() as s:
+            u = s.get(User, uid)
+            if u is None:
+                # هرگز ربات را استارت نکرده: فقط برای آمار ثبت/حذف می‌شود
+                row = s.get(ChannelLeaver, uid)
+                if left and row is None:
+                    s.add(ChannelLeaver(
+                        user_id=uid,
+                        username=getattr(tg_user, "username", None),
+                        first_name=getattr(tg_user, "first_name", None),
+                        left_iso=iso_now_minute(),
+                    ))
+                    s.commit()
+                elif not left and row is not None:
+                    s.delete(row)
+                    s.commit()
+                return
+            if bool(u.left_channel) != bool(left):
+                u.left_channel = bool(left)
+                u.left_channel_iso = iso_now_minute() if left else None
+                s.commit()
+    except Exception as e:  # noqa: BLE001
+        logging.warning("set left_channel failed: %s", e)
+
+
+@dp.chat_member()
+async def v3_channel_member_update(event: types.ChatMemberUpdated):
+    """آپدیت لحظه‌ای عضویت در کانال (ربات باید ادمین کانال باشد)."""
+    try:
+        ref = watched_channel_ref()
+        if ref is None or event.chat.type != "channel":
+            return
+        if isinstance(ref, int):
+            same = event.chat.id == ref
+        else:
+            same = (event.chat.username or "").lower() == ref[1:].lower()
+        if not same:
+            return
+        uid = event.new_chat_member.user.id
+        left = not _status_is_in_channel(event.new_chat_member)
+        was_in = _status_is_in_channel(event.old_chat_member)
+        _set_left_channel(uid, left, event.new_chat_member.user)
+        _join_cache.pop(uid, None)
+        if left and was_in and get_bool("leave_msg_on"):
+            spawn(send_leave_message(event.bot, uid))
+    except Exception as e:  # noqa: BLE001
+        logging.warning("chat_member handler failed: %s", e)
+
+
+def _leave_markup():
+    label = (get_setting("leave_msg_btn") or "").strip()
+    url = join_channel_url()
+    if not label or not url:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, url=url)]])
+
+
+async def send_leave_message(bot, uid):
+    """پیام خصوصی از طرف ربات (کانال نمی‌تواند پیوی بفرستد). برای بلاک‌کرده‌ها ممکن نیست."""
+    with SessionLocal() as s:
+        u = s.get(User, uid)
+        if u is None or u.blocked or u.is_banned:
+            return False
+    text_ = esc((get_setting("leave_msg_text") or "").strip() or DEFAULTS["leave_msg_text"])
+    return await gsend(bot, uid, text_, _leave_markup())
+
+
+async def send_leave_bulk(bot, admin_id):
+    with SessionLocal() as s:
+        ids = [r[0] for r in s.query(User.user_id).filter(
+            User.left_channel.is_(True), User.blocked.isnot(True), User.is_banned.isnot(True)).all()]
+    ok = 0
+    for uid in ids:
+        if await send_leave_message(bot, uid):
+            ok += 1
+        await asyncio.sleep(0.05)
+    try:
+        await bot.send_message(admin_id, f"✅ پیام به ترک‌کنندگان کانال: {ok} از {len(ids)} ارسال شد.")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_member_scan = {"running": False, "done": 0, "total": 0, "left": 0, "err": 0, "ts": 0.0}
+
+
+async def run_membership_scan(bot):
+    """همهٔ کاربران را با get_chat_member بررسی می‌کند (با کنترل سرعت)."""
+    st = _member_scan
+    ref = watched_channel_ref()
+    if ref is None or st["running"]:
+        return
+    with SessionLocal() as s:
+        ids = [r[0] for r in s.query(User.user_id).filter(User.is_banned.isnot(True)).all()]
+    st.update(running=True, done=0, total=len(ids), left=0, err=0, ts=time.time())
+    try:
+        for uid in ids:
+            try:
+                m = await bot.get_chat_member(chat_id=ref, user_id=uid)
+                left = not _status_is_in_channel(m)
+                _set_left_channel(uid, left)
+                if left:
+                    st["left"] += 1
+            except TelegramRetryAfter as e:
+                await asyncio.sleep(e.retry_after + 1)
+            except TelegramForbiddenError as e:
+                logging.warning("membership scan aborted (ربات ادمین کانال نیست): %s", e)
+                st["err"] += 1
+                break
+            except Exception:  # noqa: BLE001
+                st["err"] += 1
+            st["done"] += 1
+            await asyncio.sleep(0.06)
+    finally:
+        st["running"] = False
+        st["ts"] = time.time()
+
+
+def _leavers_counts():
+    with SessionLocal() as s:
+        total = s.query(User).count()
+        blocked = s.query(User).filter(User.blocked.is_(True)).count()
+        left = s.query(User).filter(User.left_channel.is_(True)).count()
+        both = s.query(User).filter(User.blocked.is_(True), User.left_channel.is_(True)).count()
+    return total, blocked, left, both
+
+
+def _never_started_leavers():
+    with SessionLocal() as s:
+        return s.query(ChannelLeaver).count()
+
+
+def _leavers_text():
+    total, blocked, left, both = _leavers_counts()
+    ref = watched_channel_ref()
+    st = _member_scan
+    lines = [
+        "🚪 <b>گزارش خروج کاربران</b>",
+        "",
+        f"👥 کل کاربران: <b>{total}</b>",
+        f"🚫 ربات را بلاک کرده‌اند: <b>{blocked}</b>",
+        f"📢 کانال را ترک کرده‌اند: <b>{left}</b>",
+        f"⛔️ هر دو: <b>{both}</b>",
+        f"👻 ترک‌کرده‌ها بدون استارت ربات (پیام‌دادن ممکن نیست): <b>{_never_started_leavers()}</b>",
+        "",
+        f"کانال پایش‌شده: <code>{esc(str(ref)) if ref else 'تنظیم نشده'}</code>",
+    ]
+    if st["running"]:
+        lines.append(f"⏳ اسکن در حال انجام: {st['done']}/{st['total']}")
+    elif st["ts"]:
+        lines.append(f"✅ آخرین اسکن: {st['done']}/{st['total']} (خطا: {st['err']})")
+    lines.append("\nℹ️ بلاک‌شدن و ترک کانال از این به بعد لحظه‌ای ثبت می‌شود؛ برای کاربران قبلی «اسکن» را بزنید.")
+    return "\n".join(lines)
+
+
+def _leavers_markup():
+    b = InlineKeyboardButton
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [b(text="🔄 اسکن عضویت کانال", callback_data="lv_scan"), b(text="♻️ بروزرسانی", callback_data="lv_home")],
+            [b(text="✉️ پیام به ترک‌کنندگان کانال", callback_data="lv_send_ask")],
+            [b(text="🚫 لیست بلاک‌کرده‌ها", callback_data="lv_list_blocked"), b(text="📢 لیست ترک‌کرده‌ها", callback_data="lv_list_left")],
+            [b(text="⬅️ بازگشت", callback_data="admin_home")],
+        ]
+    )
+
+
+@dp.callback_query(F.data == "lv_home", Perm("users"))
+async def lv_home(call: types.CallbackQuery):
+    await call.answer()
+    await edit_or_send(call, _leavers_text(), _leavers_markup())
+
+
+@dp.callback_query(F.data == "lv_scan", Perm("users"))
+async def lv_scan(call: types.CallbackQuery):
+    if watched_channel_ref() is None:
+        await call.answer("هیچ کانالی در تنظیمات تعریف نشده.", show_alert=True)
+        return
+    if _member_scan["running"]:
+        await call.answer("اسکن در حال انجام است.", show_alert=True)
+        return
+    await call.answer("اسکن شروع شد؛ چند دقیقه بعد بروزرسانی کنید.", show_alert=True)
+    spawn(run_membership_scan(call.bot))
+    await edit_or_send(call, _leavers_text(), _leavers_markup())
+
+
+@dp.callback_query(F.data == "lv_send_ask", Perm("users"))
+async def lv_send_ask(call: types.CallbackQuery):
+    await call.answer()
+    with SessionLocal() as s:
+        n = s.query(User).filter(User.left_channel.is_(True), User.blocked.isnot(True), User.is_banned.isnot(True)).count()
+    b = InlineKeyboardButton
+    text_ = (
+        f"✉️ پیام زیر برای <b>{n}</b> کاربرِ ترک‌کنندهٔ کانال (که ربات را بلاک نکرده‌اند) ارسال می‌شود:\n\n"
+        + esc((get_setting("leave_msg_text") or "").strip() or DEFAULTS["leave_msg_text"])
+        + "\n\nمتن را از «تنظیمات ← عضویت اجباری کانال» تغییر دهید."
+    )
+    await edit_or_send(call, text_, InlineKeyboardMarkup(inline_keyboard=[
+        [b(text="✅ ارسال", callback_data="lv_send_go"), b(text="❌ لغو", callback_data="lv_home")]]))
+
+
+@dp.callback_query(F.data == "lv_send_go", Perm("users"))
+async def lv_send_go(call: types.CallbackQuery):
+    await call.answer("ارسال شروع شد…", show_alert=True)
+    spawn(send_leave_bulk(call.bot, call.from_user.id))
+    await edit_or_send(call, _leavers_text(), _leavers_markup())
+
+
+@dp.callback_query(F.data.in_({"lv_list_blocked", "lv_list_left"}), Perm("users"))
+async def lv_list(call: types.CallbackQuery):
+    await call.answer()
+    blocked = call.data == "lv_list_blocked"
+    col, iso = (User.blocked, User.blocked_iso) if blocked else (User.left_channel, User.left_channel_iso)
+    with SessionLocal() as s:
+        rows = s.query(User).filter(col.is_(True)).order_by(iso.desc()).limit(40).all()
+        data = [(u.user_id, u.first_name, u.username, getattr(u, "blocked_iso" if blocked else "left_channel_iso")) for u in rows]
+    title = "🚫 بلاک‌کرده‌های ربات" if blocked else "📢 ترک‌کرده‌های کانال"
+    out = [f"<b>{title}</b> (۴۰ مورد اخیر)\n"]
+    for uid, fn, un, ts in data:
+        out.append(f"• <a href=\"tg://user?id={uid}\">{esc(fn or str(uid))}</a>" + (f" @{esc(un)}" if un else "") + f" <code>{uid}</code>" + (f" — {esc(ts)}" if ts else ""))
+    if not data:
+        out.append("موردی ثبت نشده است.")
+    b = InlineKeyboardButton
+    await edit_or_send(call, "\n".join(out), InlineKeyboardMarkup(inline_keyboard=[[b(text="⬅️ بازگشت", callback_data="lv_home")]]))
+
+
+@dp.message(Command("leavers"), Perm("users"))
+async def lv_cmd(message: types.Message):
+    await message.answer(_leavers_text(), reply_markup=_leavers_markup())
+
+
 @dp.my_chat_member()
 async def v3_bot_chat_member(event: types.ChatMemberUpdated):
     """وقتی ادمین اصلی ربات را در کانالی ادمین می‌کند، ثبت آن به‌عنوان کانال بکاپ پیشنهاد می‌شود."""
     try:
+        if event.chat.type == "private":
+            _record_bot_block_state(event.chat.id, event.new_chat_member.status)
+            return
         if event.chat.type != "channel":
             return
         if event.new_chat_member.status != "administrator" or event.old_chat_member.status == "administrator":
