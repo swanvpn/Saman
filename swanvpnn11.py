@@ -5047,11 +5047,23 @@ def stats_numbers():
             )
             return int(q.scalar() or 0)
 
-        charged_today = int(
-            s.query(func.coalesce(func.sum(Request.price), 0))
-            .filter(Request.status == "answered", Request.req_type == "charge", *_excl(), Request.answered_at.like(f"{today}%"))
-            .scalar() or 0
-        )
+        def charged(*extra):  # شارژهای تأییدشدهٔ کیف پول (پول واقعی واردشده به حساب)
+            q = s.query(func.coalesce(func.sum(Request.price), 0)).filter(
+                Request.status == "answered", Request.req_type == "charge", *_excl(), *extra
+            )
+            return int(q.scalar() or 0)
+
+        def card_sales(*extra):  # خریدهای مستقیم با کارت؛ خرید از کیف پول پول تازه نیست و اینجا نمی‌آید
+            q = s.query(func.coalesce(func.sum(Request.price), 0)).filter(
+                Request.status == "answered", Request.req_type.in_(sale_types), *_excl(),
+                or_(Request.paid_wallet.is_(False), Request.paid_wallet.is_(None)), *extra
+            )
+            return int(q.scalar() or 0)
+
+        charged_today = charged(Request.answered_at.like(f"{today}%"))
+        charged_month = charged(Request.answered_at.like(f"{month}%"))
+        card_today = card_sales(Request.answered_at.like(f"{today}%"))
+        card_month = card_sales(Request.answered_at.like(f"{month}%"))
         return dict(
             today=today, month=month,
             total_users=s.query(func.count(User.user_id)).scalar(),
@@ -5060,7 +5072,8 @@ def stats_numbers():
             total_rev=revenue(), month_rev=revenue(Request.answered_at.like(f"{month}%")),
             day_rev=revenue(Request.answered_at.like(f"{today}%")),
             day_sales=sales_count(Request.answered_at.like(f"{today}%")),
-            charged_today=charged_today,
+            charged_today=charged_today, charged_month=charged_month,
+            card_today=card_today, card_month=card_month,
             unanswered=s.query(func.count(Request.id)).filter(Request.status == "unanswered").scalar(),
             processed=s.query(func.count(Request.id)).filter(Request.status != "unanswered").scalar(),
             open_tickets=s.query(func.count(Ticket.id)).filter(Ticket.status == "open").scalar(),
@@ -5080,6 +5093,12 @@ async def admin_sales_stats_handler(call: types.CallbackQuery):
         f"💰 درآمد کل: {n['total_rev']:,} تومان\n\n"
         f"📅 <b>ماه جاری ({n['month']}):</b> {n['month_rev']:,} تومان\n"
         f"☀️ <b>امروز ({n['today']}):</b> {n['day_rev']:,} تومان در {n['day_sales']} فروش\n\n"
+        f"🏦 <b>واریز به حساب امروز:</b> {n['charged_today'] + n['card_today']:,} تومان\n"
+        f"   ├ 💳 شارژ کیف پول: {n['charged_today']:,}\n"
+        f"   └ 🛒 خرید مستقیم با کارت: {n['card_today']:,}\n"
+        f"🏦 <b>واریز این ماه:</b> {n['charged_month'] + n['card_month']:,} تومان "
+        f"(شارژ {n['charged_month']:,} + خرید مستقیم {n['card_month']:,})\n"
+        "ℹ️ «فروش» شامل خرید از کیف پول هم هست؛ پول واقعی واردشده را خط «واریز» نشان می‌دهد.\n\n"
         f"🔴 در انتظار پاسخ: {n['unanswered']}\n"
         f"🟢 بررسی‌شده: {n['processed']}\n"
         f"🎫 تیکت باز: {n['open_tickets']}\n"
@@ -5289,6 +5308,7 @@ def daily_report_text():
         f"📋 <b>گزارش روزانه {n['today']}</b>\n\n"
         f"💰 فروش امروز: {n['day_sales']} سفارش | {n['day_rev']:,} تومان\n"
         f"💳 شارژ کیف پول امروز: {n['charged_today']:,} تومان\n"
+        f"🏦 کل واریز به حساب امروز: {n['charged_today'] + n['card_today']:,} تومان\n"
         f"👥 کاربر جدید: {n['new_today']} | کل کاربران: {n['total_users']}\n"
         f"🔴 درخواست در انتظار: {n['unanswered']}\n"
         f"🎫 تیکت باز: {n['open_tickets']}"
