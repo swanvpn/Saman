@@ -506,6 +506,7 @@ DEFAULTS = {
     "referral_on": "1",
     "referral_reward": "20000",
     "referral_min_purchase": "50000",
+    "ref_invite_text": '👋 سلام به رفقای جدیدمون! خیلی خوش اومدید 🤍\n\n🟢 وضعیت سرورها: تو اوج پایداری (Stable) و با نهایت سرعت در خدمت شماست! ⚡️\n\n💎 چرا قراره از این سرویس لذت ببرید؟\n\n🤖 دسترسی آزاد به دنیای هوش مصنوعی:\nبدون قطعی و با سرعت بالا با ChatGPT, Claude و Gemini کار کنید.\n\n📌 آی\u200cپی کاملاً ثابت و اختصاصی:\n✔️ دیگه نگران لاک شدن اپل\u200cآیدیتون نباشید.\n✔️ اینستاگرام اصلاً شما رو محدود نمیکنه (چون آی\u200cپیتون ثابته و ربات شناخته نمیشید).\n✔️ یه انتخاب بی\u200cنظیر و فوق\u200cامن برای ترید و گیم.\n\n🤝 از همه مهم\u200cتر؛ ما همیشه کنارتونیم!\nبرای ما شما فقط یک "مشتری" نیستید، شما رفیق ما هستید. ❤️\nتیم پشتیبانی ما کمتر از ۱ ساعت پاسخگوی تک\u200cتک سوالات و مشکلات شماست؛ چون آرامش، وقت و رضایت شما برای ما از هر چیزی باارزش\u200cتره.\n\n💡 یه راز کوچیک درباره کیفیت ما:\nسرویس\u200cهای ما روی بستر "تانلینگ اختصاصی" پیاده شدن تا بالاترین سطح امنیت رو داشته باشید. پس لطفاً پایداری و سرعتش رو با سرویس\u200cهای معمولی و مستقیم (Direct) مقایسه نکنید! 🫶🏻\n\n🚀 برای خرید و دریافت آنی، همین الان روی لینک زیر کلیک کن رفیق:\n{link}',
     "reminder_days": "3",
     "report_on": "1",
     "report_excluded": "",
@@ -633,6 +634,7 @@ SETTINGS = {
     "faq_text": dict(page="support", type="text", label="متن سوالات متداول"),
     "referral_on": dict(page="ref", type="toggle", label="سیستم دعوت دوستان"),
     "referral_reward": dict(page="ref", type="num", label="پاداش دعوت (تومان)", min=0, max=100000000),
+    "ref_invite_text": dict(page="ref", type="text", label="متن آمادهٔ دعوت برای فوروارد به دوستان ({link} = لینک اختصاصی کاربر)"),
     "referral_min_purchase": dict(page="ref", type="num", label="حداقل مبلغ اولین خرید برای پاداش دعوت (تومان؛ ۰ = بدون حداقل)", min=0, max=100000000),
     "reminder_days": dict(page="auto", type="num", label="یادآوری تمدید (روز مانده)", min=1, max=30),
     "report_on": dict(page="auto", type="toggle", label="گزارش روزانه برای ادمین"),
@@ -3055,10 +3057,28 @@ async def referral_menu_handler(call: types.CallbackQuery):
         share_text = "با لینک من در Swan VPN ثبت‌نام کن و سرویس بگیر 🎁"
         share_url = f"https://t.me/share/url?url={quote(link, safe='')}&text={quote(share_text, safe='')}"
         rows.append([b(text="📤 ارسال برای دوستان", url=share_url)])
+        rows.append([b(text="📋 متن آمادهٔ دعوت (برای فوروارد)", callback_data="ref_invite_text")])
     if get_bool("club_on"):
         rows.append([b(text="🏆 باشگاه مشتریان", callback_data="club_menu")])
     rows.append([b(text="🏠 بازگشت به منوی اصلی", callback_data="main_menu")])
     await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@dp.callback_query(F.data == "ref_invite_text")
+async def ref_invite_text_handler(call: types.CallbackQuery):
+    """متن آمادهٔ دعوت را با لینک اختصاصی خود کاربر می‌فرستد تا فوروارد یا کپی کند."""
+    await call.answer()
+    if not get_bool("referral_on") or not BOT_USERNAME:
+        return
+    link = f"https://t.me/{BOT_USERNAME}?start=ref_{call.from_user.id}"
+    tpl = (get_setting("ref_invite_text") or "").strip() or DEFAULTS["ref_invite_text"]
+    body = esc(tpl)
+    body = body.replace("{link}", link) if "{link}" in body else body + "\n" + link
+    await call.bot.send_message(chat_id=call.from_user.id, text=body)
+    await call.bot.send_message(
+        chat_id=call.from_user.id,
+        text="☝️ پیام بالا را برای دوستانت فوروارد کن (یا کپی کن). هر کس با لینک تو وارد شود و خرید کند، پاداشش به تو می‌رسد.",
+    )
 
 
 # ---------------------------------------------------------------------------
