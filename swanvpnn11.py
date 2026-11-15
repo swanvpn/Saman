@@ -213,6 +213,7 @@ class User(Base):
     blocked_iso = Column(String)  # زمان آخرین بلاک‌کردن ربات توسط کاربر (YYYY-MM-DDTHH:MM)
     left_channel = Column(Boolean, default=False)  # کانال تعریف‌شده را ترک کرده/عضو نیست
     left_channel_iso = Column(String)  # زمان تشخیص ترک کانال
+    joined_channel = Column(Boolean, default=False)  # حداقل یک‌بار عضو کانال بوده (تفکیک «رفت» از «هرگز عضو نشد»)
 
 
 class ChannelLeaver(Base):
@@ -874,6 +875,7 @@ def _migrate_columns():
             "blocked_iso": "VARCHAR",
             "left_channel": "BOOLEAN DEFAULT FALSE",
             "left_channel_iso": "VARCHAR",
+            "joined_channel": "BOOLEAN DEFAULT FALSE",
         },
         "ratings": {
             "comment": "TEXT",
@@ -1731,6 +1733,15 @@ class AccessMiddleware(BaseMiddleware):
                         and get_bool("referral_on")
                     ):
                         _bind_referral(user.id, event.text.split(" ", 1)[1].strip())
+                    if (
+                        isinstance(event, types.Message)
+                        and event.text
+                        and event.text.startswith("/start ")
+                        and data.get("is_new_user_row")
+                    ):
+                        _src_arg = event.text.split(" ", 1)[1].strip()
+                        if _src_arg.startswith("src_"):
+                            bind_source(user.id, _src_arg)  # منبع تبلیغ حتی اگر هنوز عضو کانال نشده ثبت شود
                     await send_join_prompt(event)
                     return None
             spawn(_react(event))
@@ -8110,6 +8121,9 @@ def join_channel_url():
     return channel_url()
 
 
+_joined_seen = set()  # کاربرانی که در این اجرا «عضو بوده» برایشان ثبت شده (برای کاهش نوشتن دیتابیس)
+
+
 async def is_channel_member(bot, user_id, use_cache=True):
     raw = get_setting("force_join_channel").strip()
     if not raw:
@@ -8128,6 +8142,9 @@ async def is_channel_member(bot, user_id, use_cache=True):
         return True  # اگر بررسی ممکن نبود، کاربر قفل نشود
     if ok:
         _join_cache[user_id] = now
+        if user_id not in _joined_seen:
+            _joined_seen.add(user_id)
+            _mark_joined(user_id)
     return ok
 
 
@@ -12246,7 +12263,9 @@ async def funnel_cmd(message: types.Message):
 @dp.message(Command("sources"), MainAdmin())
 async def sources_cmd(message: types.Message):
     with SessionLocal() as s:
-        users = s.query(User.user_id, User.src).filter(User.src.isnot(None), User.src != "").all()
+        users = s.query(User.user_id, User.src, User.joined_channel, User.left_channel).filter(
+            User.src.isnot(None), User.src != ""
+        ).all()
         rev = {
             r[0]: (r[1], r[2] or 0)
             for r in s.query(Request.user_id, func.count(Request.id), func.sum(Request.price))
@@ -12255,21 +12274,51 @@ async def sources_cmd(message: types.Message):
             .all()
         }
     agg = {}
-    for uid, src in users:
-        a = agg.setdefault(src, [0, 0, 0])
-        a[0] += 1
+    for uid, src, joined, left in users:
+        a = agg.setdefault(src, dict(n=0, buyers=0, rev=0, stay=0, gone=0))
+        a["n"] += 1
+        if joined:
+            a["gone" if left else "stay"] += 1
         if uid in rev:
-            a[1] += 1
-            a[2] += int(rev[uid][1])
+            a["buyers"] += 1
+            a["rev"] += int(rev[uid][1])
     if not agg:
         link = f"https://t.me/{BOT_USERNAME}?start=src_" if BOT_USERNAME else "https://t.me/ربات?start=src_"
         await message.answer(f"هنوز منبعی ثبت نشده.\nلینک رهگیری بساز: <code>{link}نام_کانال</code>")
         return
-    out = "🔗 <b>منابع جذب کاربر</b>\n\n"
-    for src, (n, b, r) in sorted(agg.items(), key=lambda kv: -kv[1][2]):
-        out += f"• <code>{esc(src)}</code>: {n} کاربر | {b} خریدار | {r:,} تومان\n"
-    out += f"\nساخت لینک: <code>https://t.me/{BOT_USERNAME}?start=src_نام</code>"
-    await message.answer(out)
+    has_ch = watched_channel_ref() is not None  # کانال عضویت اجباری/پایش تنظیم شده؟
+    blocks = []
+    for src, a in sorted(agg.items(), key=lambda kv: -kv[1]["rev"]):
+        n = a["n"]
+        blk = f"• <code>{esc(src)}</code> — {n} کاربر\n"
+        if has_ch:
+            never = n - a["stay"] - a["gone"]
+            blk += (
+                f"   ✅ ماندند {a['stay']} ({a['stay'] * 100 // max(1, n)}٪) | "
+                f"🚪 رفتند {a['gone']} | ❌ عضو نشدند {never}\n"
+            )
+        blk += f"   🛒 {a['buyers']} خریدار | {a['rev']:,} تومان\n"
+        blocks.append(blk)
+    tail = ""
+    if has_ch:
+        tail += (
+            "\nℹ️ «عضو نشدند» = هنوز عضو نشده‌اند (یا قبل از شروع این ثبت کانال را ترک کرده‌اند). "
+            "«رفتند» = عضو شدند و بعد کانال را ترک کردند."
+        )
+        if not _member_scan["ts"]:
+            tail += "\nبرای دقت بیشتر، یک بار در «گزارش خروج کاربران» دکمهٔ «اسکن عضویت کانال» را بزن."
+    else:
+        tail += "\nℹ️ برای دیدن ماندگاری در کانال، کانال عضویت اجباری را در تنظیمات وارد کن."
+    tail += f"\n\nساخت لینک: <code>https://t.me/{BOT_USERNAME}?start=src_نام</code>"
+    msgs, cur = [], "🔗 <b>منابع جذب کاربر</b>\n\n"
+    for blk in blocks:
+        if len(cur) + len(blk) > 3500:
+            msgs.append(cur)
+            cur = ""
+        cur += blk
+    msgs.append(cur + tail)
+    for m_ in msgs:
+        await message.answer(m_)
 
 
 @dp.message(Command("profit"), MainAdmin())
@@ -14869,6 +14918,27 @@ def _set_left_channel(uid, left, tg_user=None):
         logging.warning("set left_channel failed: %s", e)
 
 
+def _mark_joined(uid, clear_left=True):
+    """ثبت می‌کند که کاربر دست‌کم یک‌بار عضو کانال بوده (و اگر عضو است، پرچم «ترک کرده» را برمی‌دارد)."""
+    try:
+        with SessionLocal() as s:
+            u = s.get(User, uid)
+            if u is None:
+                return
+            changed = False
+            if not u.joined_channel:
+                u.joined_channel = True
+                changed = True
+            if clear_left and u.left_channel:
+                u.left_channel = False
+                u.left_channel_iso = None
+                changed = True
+            if changed:
+                s.commit()
+    except Exception as e:  # noqa: BLE001
+        logging.warning("mark joined failed: %s", e)
+
+
 @dp.chat_member()
 async def v3_channel_member_update(event: types.ChatMemberUpdated):
     """آپدیت لحظه‌ای عضویت در کانال (ربات باید ادمین کانال باشد)."""
@@ -14885,8 +14955,12 @@ async def v3_channel_member_update(event: types.ChatMemberUpdated):
         uid = event.new_chat_member.user.id
         left = not _status_is_in_channel(event.new_chat_member)
         was_in = _status_is_in_channel(event.old_chat_member)
+        if (not left) or was_in:  # الان عضو شده یا تا همین الان عضو بوده
+            _mark_joined(uid, clear_left=False)
         _set_left_channel(uid, left, event.new_chat_member.user)
         _join_cache.pop(uid, None)
+        if left:
+            _joined_seen.discard(uid)  # اگر دوباره عضو شد، بررسی بعدی پرچم را درست کند
         if left and was_in and get_bool("leave_msg_on"):
             spawn(send_leave_message(event.bot, uid))
     except Exception as e:  # noqa: BLE001
@@ -14943,6 +15017,8 @@ async def run_membership_scan(bot):
             try:
                 m = await bot.get_chat_member(chat_id=ref, user_id=uid)
                 left = not _status_is_in_channel(m)
+                if not left:
+                    _mark_joined(uid)
                 _set_left_channel(uid, left)
                 if left:
                     st["left"] += 1
