@@ -504,6 +504,7 @@ DEFAULTS = {
     "min_charge": "50000",
     "referral_on": "1",
     "referral_reward": "20000",
+    "referral_min_purchase": "50000",
     "reminder_days": "3",
     "report_on": "1",
     "report_excluded": "",
@@ -631,6 +632,7 @@ SETTINGS = {
     "faq_text": dict(page="support", type="text", label="متن سوالات متداول"),
     "referral_on": dict(page="ref", type="toggle", label="سیستم دعوت دوستان"),
     "referral_reward": dict(page="ref", type="num", label="پاداش دعوت (تومان)", min=0, max=100000000),
+    "referral_min_purchase": dict(page="ref", type="num", label="حداقل مبلغ اولین خرید برای پاداش دعوت (تومان؛ ۰ = بدون حداقل)", min=0, max=100000000),
     "reminder_days": dict(page="auto", type="num", label="یادآوری تمدید (روز مانده)", min=1, max=30),
     "report_on": dict(page="auto", type="toggle", label="گزارش روزانه برای ادمین"),
     "backup_on": dict(page="backup", type="toggle", label="بکاپ شبانه خودکار"),
@@ -2294,32 +2296,32 @@ def request_caption(req_id, tg_user, co, req_type, via_wallet, pay_amount=None):
 
 @dp.callback_query(F.data == "pay_with_wallet")
 async def pay_with_wallet_handler(call: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    co = compute_checkout(call.from_user.id, data)
-    if co is None:
-        await call.answer("این سفارش دیگه معتبر نیست، دوباره از خرید شروع کن 🔄", show_alert=True)
-        return
-
     user_id = call.from_user.id
-    with SessionLocal() as s:
-        user = get_or_create_user(s, user_id, lock=True)
-        balance = user.balance or 0
-        if balance < co["final"]:
-            await call.answer(
-                f"موجودی شما ({balance:,} تومان) برای پرداخت این سرویس کافی نیست.", show_alert=True
-            )
+    async with user_lock(user_id):
+        data = await state.get_data()
+        co = compute_checkout(user_id, data)
+        if co is None:
+            await call.answer("این سفارش دیگه معتبر نیست، دوباره از خرید شروع کن 🔄", show_alert=True)
             return
-        try:
-            req = build_request(s, user_id, co, True, "None")
-        except ValueError as e:
-            await call.answer(str(e), show_alert=True)
-            return
-        user.balance = balance - co["final"]
-        wlog(s, user_id, balance, user.balance, "wallet_purchase", req.id)
-        req_id, req_type = req.id, req.req_type
-        s.commit()
+        with SessionLocal() as s:
+            user = get_or_create_user(s, user_id, lock=True)
+            balance = user.balance or 0
+            if balance < co["final"]:
+                await call.answer(
+                    f"موجودی شما ({balance:,} تومان) برای پرداخت این سرویس کافی نیست.", show_alert=True
+                )
+                return
+            try:
+                req = build_request(s, user_id, co, True, "None")
+            except ValueError as e:
+                await call.answer(str(e), show_alert=True)
+                return
+            user.balance = balance - co["final"]
+            wlog(s, user_id, balance, user.balance, "wallet_purchase", req.id)
+            req_id, req_type = req.id, req.req_type
+            s.commit()
+        await state.clear()  # داخل قفل؛ کلیک دوم داده‌ای پیدا نمی‌کند
 
-    await state.clear()  # قبل از هر await شبکه‌ای، تا کلیک دوباره سفارش تکراری نسازد
     await call.answer()
     await edit_or_send(
         call,
@@ -2384,6 +2386,7 @@ async def short_charge_handler(call: types.CallbackQuery, state: FSMContext):
         balance = (u.balance if u else 0) or 0
     amount = min(max(co["final"] - balance, get_int("min_charge"), 1), 100000000)
     await call.answer()
+    await state.set_state(None)  # دیگر در حالت «رسید خرید» نیست؛ فقط با «ارسال رسید واریز» وارد مرحلهٔ رسید شارژ می‌شود
     await state.update_data(
         pending_order=dict(
             service_id=data.get("service_id"), custom_gb=data.get("custom_gb"),
@@ -3326,7 +3329,7 @@ async def admin_detail_handler(call: types.CallbackQuery):
 
 def register_purchase(s, user_id, price=0):
     """شمارنده خرید/وفاداری/امتیاز/دعوت را به‌روز می‌کند. (پیام وفاداری؟, (آیدی معرف, مبلغ, پله‌ها) | None)"""
-    user = get_or_create_user(s, user_id)
+    user = get_or_create_user(s, user_id, lock=True)  # جلوگیری از پاداش دعوت دوبل با دو تأیید همزمان
     current_month = jalali_today().strftime("%Y/%m")
     was_new = bool(user.is_new_user)
     count = user.purchase_count_current_month or 0
@@ -3348,7 +3351,10 @@ def register_purchase(s, user_id, price=0):
         user.points = (user.points or 0) + earn
 
     reward = None
-    if was_new and user.referred_by and not user.referral_rewarded and get_bool("referral_on"):
+    if (
+        was_new and user.referred_by and not user.referral_rewarded and get_bool("referral_on")
+        and (price or 0) >= get_int("referral_min_purchase")
+    ):
         amount = get_int("referral_reward")
         ref = s.get(User, user.referred_by, with_for_update=True)
         if ref is not None and (amount > 0 or get_bool("ref_tiers_on")):
@@ -3473,6 +3479,7 @@ async def rating_handler(call: types.CallbackQuery):
 async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
     req_id = int(call.data.split("_")[2])
     result = None  # برای شارژ و تمدید
+    after_pending = False
     with SessionLocal() as s:
         r = s.get(Request, req_id, with_for_update=True)
         if r is None:
@@ -3481,11 +3488,15 @@ async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
         if r.status != "unanswered":
             await call.answer("این درخواست قبلاً بررسی شده است.", show_alert=True)
             return
+        if call.from_user.id != ADMIN_ID and r.user_id in staff_ids():
+            await call.answer("تأیید درخواستِ مربوط به خودِ ادمین فقط توسط ادمین اصلی ممکن است.", show_alert=True)
+            return
         rtype, uid, plan, price = r.req_type, r.user_id, r.plan_name, r.price or 0
         auto = None  # خرید خودکار بعد از شارژ
 
         if rtype == "charge":
             user = get_or_create_user(s, uid, lock=True)
+            after_pending = bool(r.after_buy)
             bonus, bonus_pct = charge_bonus_for(price, "short" if r.after_buy else "direct")
             _b0 = user.balance or 0
             user.balance = _b0 + price + bonus
@@ -3528,7 +3539,7 @@ async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
                 current = date.fromisoformat(cfg.expires_at) if cfg.expires_at else today_iran()
             except ValueError:
                 current = today_iran()
-            new_exp = max(current, today_iran()) + timedelta(days=30)
+            new_exp = max(current, today_iran()) + timedelta(days=(r.custom_days or 30))
             cfg.expires_at = new_exp.isoformat()
             cfg.reminded = False
             r.status = "answered"
@@ -3544,10 +3555,16 @@ async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
                 await call.answer("سرویس مربوط به این افزونه پیدا نشد. درخواست را رد کنید.", show_alert=True)
                 return
             info = v3_apply_addon(cfg, plan)
+            cfg_hold = cfg.id
             r.status = "answered"
             r.answered_at = get_current_jalali()
-            monthly_notif, reward = register_purchase(s, uid, price)
+            earn = club_points_for(price)  # افزونه فقط امتیاز باشگاه می‌دهد، نه شمارندهٔ وفاداری و دعوت
+            if earn:
+                au = get_or_create_user(s, uid)
+                au.points = (au.points or 0) + earn
+            monthly_notif, reward = None, None
             s.commit()
+            set_setting(f"renewhold_{cfg_hold}", (today_iran() + timedelta(days=3)).isoformat())
             result = ("addon", uid, plan, info, (monthly_notif, reward))
         else:
             sid = r.service_id
@@ -3576,6 +3593,8 @@ async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
                 user_text += f"\n\n🎁 پاداش شارژ: {b_[0]:,} تومان ({b_[1]}٪) هم به اعتبار شما اضافه شد."
             if extra:
                 user_text += "\n\n" + fill_text("t_wallet_paid") + "\n\n" + pending_notice()
+            elif after_pending:
+                user_text += "\n\nℹ️ سفارش قبلی‌ات به‌خاطر تغییر قیمت یا موجودی خودکار ثبت نشد؛ از «خرید سرویس» دوباره سفارش بده."
             await call.bot.send_message(chat_id=uid, text=user_text, reply_markup=status_markup(extra["req_id"]) if extra else None)
             await send_sticker(call.bot, uid, "sticker_charge")
         except Exception as e:  # noqa: BLE001
@@ -3636,6 +3655,18 @@ async def admin_reject_action(call: types.CallbackQuery):
             wlog(s, target_user, _b0, user.balance, "refund_rejected", req_id, call.from_user.id)
             refunded = r.price
         release_code(s, r.discount_code, target_user)
+        was_comp = (
+            s.query(GrowthLog.id)
+            .filter(GrowthLog.user_id == target_user, GrowthLog.kind == "comp", GrowthLog.ref == str(req_id))
+            .first()
+        )
+        if was_comp:
+            cu = get_or_create_user(s, target_user, lock=True)
+            take = min(get_int("comp_amount"), cu.balance or 0)
+            if take > 0:
+                _c0 = cu.balance or 0
+                cu.balance = _c0 - take
+                wlog(s, target_user, _c0, cu.balance, "comp_reverse", req_id, call.from_user.id)
         if r.req_type == "trial":
             tu = s.get(User, target_user)
             if tu is not None:
@@ -4054,6 +4085,7 @@ async def cfg_expiry_save(message: types.Message, state: FSMContext):
         cfg.expires_at = new_date.isoformat()
         cfg.reminded = False
         s.commit()
+    set_setting(f"renewhold_{cfg_id}", (today_iran() + timedelta(days=3)).isoformat())
     await state.clear()
     log_action(message.from_user.id, f"تنظیم تاریخ انقضای کانفیگ {cfg_id} به {new_date.isoformat()}")
     try:
@@ -4970,7 +5002,7 @@ def _excl_note():
 def stats_numbers():
     today = jalali_today().strftime("%Y/%m/%d")
     month = jalali_today().strftime("%Y/%m")
-    sale_types = ["buy", "renew"]
+    sale_types = list(SALE_TYPES)
     with SessionLocal() as s:
         def revenue(*extra):
             q = s.query(func.coalesce(func.sum(Request.price), 0)).filter(
@@ -6066,6 +6098,9 @@ async def admin_setting_save(message: types.Message, state: FSMContext):
                 await message.answer("آدرس معتبر http/https بفرستید. مثال: https://example.com")
                 return
             value = ",".join(urls)
+        if key == "sms_secret" and value and not re.fullmatch(r"[A-Za-z0-9]{16,64}", value):
+            await message.answer("رمز باید ۱۶ تا ۶۴ حرف یا عدد انگلیسی باشد (بدون فاصله و نماد). برای ساخت: یک رشتهٔ تصادفی بلند بفرستید.")
+            return
         if key in ("card_number", "card_holder") and not value:
             await message.answer("این مورد نمی‌تواند خالی باشد.")
             return
@@ -7921,6 +7956,11 @@ def pay_amount_for(base):
             amount = base + delta
         if amount not in taken:
             break
+    if amount in taken:  # بازهٔ تصادفی پر شده؛ اولین مبلغ آزاد بالاتر را بگیر
+        for k in range(1, 5000):
+            if base + hi + k not in taken:
+                amount = base + hi + k
+                break
     _issued_amounts[amount] = time.time()
     return amount
 
@@ -8223,7 +8263,8 @@ def _bind_referral(user_id, arg):
     if not ref_id or ref_id == user_id:
         return
     with SessionLocal() as s:
-        if s.get(User, ref_id) is None:
+        ref = s.get(User, ref_id)
+        if ref is None or ref.referred_by == user_id:  # دعوت دوطرفه (و بن‌بست قفل) ممنوع
             return
         me = s.get(User, user_id)
         if me is not None and not me.referred_by:
@@ -8251,7 +8292,7 @@ async def fj_check_handler(call: types.CallbackQuery, state: FSMContext):
 def club_view(user_id):
     cur_month = jalali_today().strftime("%Y/%m")
     with SessionLocal() as s:
-        user = s.get(User, user_id, with_for_update=True)
+        user = s.get(User, user_id)
         points = (user.points if user else 0) or 0
         count = ((user.purchase_count_current_month or 0) if (user and user.last_purchase_month == cur_month) else 0)
         total_cnt, total_spent = (
@@ -11400,8 +11441,19 @@ def pick_card(user_id=None):
 # ---------------------------------------------------------------------------
 # ۲) پیامک بانکی (وب‌هوک)
 # ---------------------------------------------------------------------------
+_SMS_NOISE_RES = [
+    re.compile(r"(?:باقی\s*مانده|مانده|موجودی|balance|bal)\s*[:：]?\s*[\d,٬،]+", re.I),  # مانده حساب
+    re.compile(r"\d{2,4}[/\-.]\d{1,2}[/\-.]\d{1,4}"),  # تاریخ
+    re.compile(r"\d{1,2}:\d{2}(?::\d{2})?"),  # ساعت
+    re.compile(r"\b\d{4}[-\s]\d{4}[-\s]\d{4}[-\s]\d{4}\b"),  # شماره کارت کامل
+    re.compile(r"\*+\d+|\d+\*+"),  # ارقام ماسک‌شدهٔ کارت/حساب
+]
+
+
 def _extract_amounts(text_):
     t = (text_ or "").translate(DIGITS_FA)
+    for _rx in _SMS_NOISE_RES:
+        t = _rx.sub(" ", t)
     nums = set()
     for m in re.finditer(r"\d[\d,٬،]*", t):
         raw = re.sub(r"[,٬،]", "", m.group(0))
@@ -11538,7 +11590,7 @@ async def job_cart(bot):
 # ۴) جبران تأخیر تحویل
 # ---------------------------------------------------------------------------
 async def job_comp(bot):
-    if not get_bool("comp_on"):
+    if not get_bool("comp_on") or not support_is_online():  # تأخیر خارج از ساعت کاری تقصیر ادمین نیست
         return
     amount = get_int("comp_amount")
     if amount <= 0:
@@ -11553,11 +11605,21 @@ async def job_comp(bot):
                 Request.status == "unanswered", Request.req_type.in_(SALE_TYPES), Request.price > 0,
                 Request.created_iso.isnot(None), Request.created_iso <= cutoff,
             )
-            .limit(30)
+            .limit(200)
             .all()
         )
         for r in rows:
             if glog_has(s, r.user_id, "comp", r.id):
+                continue
+            trusted = (
+                r.paid_wallet
+                or glog_has(s, r.user_id, "sms", r.id)
+                or s.query(Request.id)
+                .filter(Request.user_id == r.user_id, Request.status == "answered",
+                        Request.req_type.in_(["buy", "renew"]), Request.price > 0)
+                .first() is not None
+            )
+            if not trusted:  # رسید تأییدنشده از کاربر بدون سابقهٔ خرید جبران نمی‌گیرد
                 continue
             day_key = f"{r.user_id}:{today_iran().isoformat()}"
             if glog_has(s, r.user_id, "compday", day_key):
@@ -11859,6 +11921,15 @@ async def checkin_handler(call: types.CallbackQuery):
     uid = call.from_user.id
     today = today_iran()
     with SessionLocal() as s:
+        has_buy = (
+            s.query(Request.id)
+            .filter(Request.user_id == uid, Request.status == "answered",
+                    Request.req_type.in_(["buy", "renew"]), Request.price > 0)
+            .first()
+        )
+        if not has_buy:
+            await call.answer("چک‌این بعد از اولین خرید فعال می‌شه 🙂", show_alert=True)
+            return
         if glog_has(s, uid, "checkin", today.isoformat()):
             await call.answer("امروز چک‌این کردی ✅ فردا دوباره بیا!", show_alert=True)
             return
@@ -11957,13 +12028,32 @@ def redeem_gift(uid, code):
             return 0, "قبلاً از این کد استفاده کردی."
         u = get_or_create_user(s, uid, lock=True)
         _b0 = u.balance or 0
-        u.balance = min(MAX_BALANCE, _b0 + (g.amount or 0))
+        if _b0 + (g.amount or 0) > MAX_BALANCE:  # کد مصرف نمی‌شود و مبلغ بی‌صدا بریده نمی‌شود
+            return 0, "با این کد موجودی کیف پولت از سقف مجاز بیشتر می‌شه؛ اول از موجودیت استفاده کن."
+        u.balance = _b0 + (g.amount or 0)
         wlog(s, uid, _b0, u.balance, "gift_code", code)
         g.used_count = (g.used_count or 0) + 1
         s.add(GiftUse(gift_id=g.id, user_id=uid))
         amount = g.amount or 0
         s.commit()
     return amount, ""
+
+
+_gift_fails = {}
+
+
+async def redeem_gift_limited(uid, code):
+    now = time.time()
+    recent = [t for t in _gift_fails.get(uid, []) if now - t < 600]
+    if len(recent) >= 5:
+        return 0, "تلاش‌های ناموفق زیاد بود؛ چند دقیقه دیگه دوباره امتحان کن."
+    amount, err = await asyncio.to_thread(redeem_gift, uid, code)
+    if err:
+        recent.append(now)
+    _gift_fails[uid] = recent
+    if len(_gift_fails) > 5000:
+        _gift_fails.clear()
+    return amount, err
 
 
 @dp.callback_query(F.data == "gift_start")
@@ -11975,7 +12065,7 @@ async def gift_start(call: types.CallbackQuery, state: FSMContext):
 
 @dp.message(GrowthState.waiting_gift, F.text)
 async def gift_entered(message: types.Message, state: FSMContext):
-    amount, err = await asyncio.to_thread(redeem_gift, message.from_user.id, message.text)
+    amount, err = await redeem_gift_limited(message.from_user.id, message.text)
     if err:
         await message.answer(f"❌ {err}\nدوباره بفرست یا /start بزن.", reply_markup=back_home_markup())
         return
@@ -11988,7 +12078,7 @@ async def redeem_cmd(message: types.Message, command: CommandObject):
     if not command.args:
         await message.answer("استفاده: <code>/redeem کد</code>", reply_markup=back_home_markup())
         return
-    amount, err = await asyncio.to_thread(redeem_gift, message.from_user.id, command.args)
+    amount, err = await redeem_gift_limited(message.from_user.id, command.args)
     await message.answer(f"🎉 {amount:,} تومان به کیف پولت اضافه شد!" if not err else f"❌ {err}", reply_markup=back_home_markup())
 
 
@@ -12005,7 +12095,7 @@ async def gift_admin_cmd(message: types.Message, command: CommandObject):
     codes = []
     with SessionLocal() as s:
         for _ in range(count):
-            code = "GIFT" + secrets.token_hex(3).upper()
+            code = "GIFT" + secrets.token_hex(5).upper()
             s.add(
                 GiftCode(
                     code=code, amount=min(amount, MAX_BALANCE), max_uses=uses, used_count=0, is_active=True,
@@ -13913,10 +14003,21 @@ async def v3_addon_receipt(message: types.Message, state: FSMContext):
 
 async def v3_addon_confirmed(call, uid, plan, info, extra, markup, req_id):
     await append_status(call, f"✅ وضعیت: افزونه تأیید شد.\n{info}", markup)
+    is_gb = info.startswith("📦")
     try:
-        await call.bot.send_message(chat_id=uid, text=f"✅ {esc(plan or '')} با موفقیت فعال شد.\n{info.split('(')[0].strip()}")
+        if is_gb:
+            msg = f"✅ {esc(plan or '')} تأیید شد و به‌زودی روی سرویست اعمال می‌شه."
+        else:
+            msg = f"✅ {esc(plan or '')} با موفقیت فعال شد.\n{info.split('(')[0].strip()}"
+        await call.bot.send_message(chat_id=uid, text=msg)
     except Exception as e:  # noqa: BLE001
         logging.error("notify addon failed: %s", e)
+    if is_gb:
+        await notify_staff(
+            call.bot,
+            f"📌 <b>یادآور:</b> افزونهٔ حجم «{esc(plan or '')}» برای کاربر <code>{uid}</code> تأیید شد؛ "
+            "حجم را در پنل سرویس اعمال کنید.",
+        )
     await post_purchase_notifications(call.bot, uid, extra[0], extra[1])
     await send_invoice(call.bot, uid, req_id)
 
@@ -14063,6 +14164,7 @@ WL_REASONS = {
     "admin_adjust": "تغییر دستی ادمین", "club_redeem": "تبدیل امتیاز باشگاه", "delay_compensation": "جبران تأخیر",
     "gift_code": "کد هدیه", "transfer_out": "انتقال به کاربر", "transfer_in": "دریافت انتقال", "lottery": "جایزه قرعه‌کشی",
     "baseline_fix": "اصلاح مبنا (ادمین)",
+    "comp_reverse": "برگشت جبران تأخیر (سفارش رد شد)",
 }
 
 
@@ -14263,10 +14365,16 @@ async def v3_lottery_preview(call: types.CallbackQuery):
 @dp.callback_query(F.data.regexp(r"^v3_(lotgo|lotf)_(ref|act)$"), MainAdmin())
 async def v3_lottery_run(call: types.CallbackQuery):
     kind = call.data.split("_")[2]
+    lot_key = _lot_key(kind)
+    if call.data.startswith(CB.LOT_GO) and get_setting(lot_key) == "1":
+        await call.answer("برای این ماه قبلاً انجام شده است.", show_alert=True)
+        return
+    set_setting(lot_key, "1")  # قبل از اولین await؛ کلیک دوم همین‌جا رد می‌شود
     prize, n = get_int("lottery_prize"), max(1, get_int("lottery_winners"))
     pool = await asyncio.to_thread(lottery_candidates, kind)
     winners = weighted_sample(pool, n)
     if not winners or prize <= 0:
+        set_setting(lot_key, "")
         await call.answer("برنده‌ای انتخاب نشد.", show_alert=True)
         return
     names = {}
@@ -15940,7 +16048,7 @@ async def update_bot_commands(bot):
 
 
 async def run_web_server(app, port):
-    runner = web.AppRunner(app)
+    runner = web.AppRunner(app, access_log=None)  # مسیر /sms/<secret> در لاگ چاپ نشود
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
@@ -15961,6 +16069,8 @@ async def with_retry(fn, *args, tries=8, **kw):
 async def main():
     global BOT_USERNAME
     init_db()
+    if not os.environ.get("BACKUP_KEY", "").strip():
+        logging.warning("BACKUP_KEY تنظیم نشده؛ بکاپ‌ها (شامل ساب‌لینک مشتری‌ها) رمز نمی‌شوند.")
     try:
         _stuck = recover_stuck_broadcasts()
         if _stuck:
