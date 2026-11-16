@@ -5210,6 +5210,7 @@ async def admin_sales_stats_handler(call: types.CallbackQuery):
                 b(text="📈 نمودار هفتگی", callback_data="sreport_week"),
                 b(text="📈 نمودار ماهانه", callback_data="sreport_month"),
             ],
+            [b(text="🛠 اصلاح شارژها", callback_data="cf_menu_0")],
             [b(text=f"🚫 کاربران خارج از گزارش ({len(report_excluded_ids())})", callback_data="rx_menu")],
             [b(text="🔙 بازگشت به پنل", callback_data="admin_home")],
         ]
@@ -12555,6 +12556,225 @@ async def statfix_cmd(message: types.Message):
         s.commit()
     log_action(message.from_user.id, f"اصلاح دستی آمار واریز: {amount:+,} در {when.isoformat()} {note}")
     await message.answer(f"✅ {amount:+,} تومان در آمار واریز تاریخ {when.isoformat()} (میلادی) لحاظ شد.")
+
+
+# ---------------------------------------------------------------------------
+# اصلاح شارژهای تاییدشده (دکمه‌ای، قابل برگشت، با جلوگیری از دوباره‌کم‌شدن)
+# مبلغ هر شارژ فقط در Request.price است؛ پس با اصلاح همان، آمار کلی، آمار هفتگی/ماهانه
+# و تاریخچهٔ کاربر (render_history) با هم درست می‌شوند. به موجودی کاربر دست نمی‌زند.
+# ---------------------------------------------------------------------------
+class CFState(StatesGroup):
+    waiting_amount = State()
+
+
+CF_PAGE = 8
+CF_MAX = 100_000_000
+
+
+def _cf_orig(rid):
+    """مبلغ اصلی شارژ پیش از اولین اصلاح؛ None یعنی هنوز اصلاح نشده."""
+    v = (get_setting(f"cf_orig_{rid}") or "").strip()
+    return int(v) if v.isdigit() else None
+
+
+def _cf_apply(rid, new_price, admin_id):
+    """مبلغ شارژ را عوض می‌کند. خروجی: (old, new) یا None اگر پیدا نشد."""
+    with SessionLocal() as s:
+        r = s.get(Request, rid)
+        if r is None or r.req_type != "charge" or r.status != "answered":
+            return None
+        old = int(r.price or 0)
+        r.price = int(new_price)
+        s.commit()
+    orig = _cf_orig(rid)
+    if orig is None and old != new_price:
+        set_setting(f"cf_orig_{rid}", old)
+    elif orig is not None and orig == new_price:
+        set_setting(f"cf_orig_{rid}", "")  # به مبلغ اصلی برگشت
+    log_action(admin_id, f"اصلاح مبلغ شارژ #{rid} در آمار: {old:,} ← {int(new_price):,}")
+    return old, int(new_price)
+
+
+def _cf_list_view(offset=0):
+    offset = max(0, int(offset))
+    with SessionLocal() as s:
+        q = s.query(Request).filter(Request.status == "answered", Request.req_type == "charge")
+        total = q.count()
+        rows = [
+            (r.id, r.user_id, int(r.price or 0), (r.answered_at or "")[:10])
+            for r in q.order_by(Request.id.desc()).offset(offset).limit(CF_PAGE).all()
+        ]
+    b = InlineKeyboardButton
+    text_ = (
+        "🛠 <b>اصلاح شارژهای تاییدشده</b>\n\n"
+        "روی شارژی که اشتباه تایید شده بزن؛ مبلغش را در آمار کلی و تاریخچهٔ کاربر اصلاح می‌کنی. "
+        "موجودی کیف پول کاربر عوض نمی‌شود و همه‌چیز قابل برگشت است.\n"
+        "✏️ = قبلاً اصلاح شده.\n\n"
+        f"تعداد کل شارژها: {total}"
+    )
+    kb = []
+    for rid, uid, price, d in rows:
+        mark = "✏️" if _cf_orig(rid) is not None else "💳"
+        kb.append([b(text=f"{mark} #{rid} | {price:,} | {uid} | {d}", callback_data=f"cf_v_{rid}")])
+    nav = []
+    if offset > 0:
+        nav.append(b(text="◀️ جدیدتر", callback_data=f"cf_menu_{max(0, offset - CF_PAGE)}"))
+    if offset + CF_PAGE < total:
+        nav.append(b(text="قدیمی‌تر ▶️", callback_data=f"cf_menu_{offset + CF_PAGE}"))
+    if nav:
+        kb.append(nav)
+    kb.append([b(text="✏️ اصلاح‌های دستی موجودی", callback_data="cf_adjl")])
+    kb.append([b(text="🔙 آمار کلی", callback_data="admin_sales_stats")])
+    return text_, InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def _cf_detail_view(rid, note=""):
+    b = InlineKeyboardButton
+    with SessionLocal() as s:
+        r = s.get(Request, rid)
+        if r is None or r.req_type != "charge":
+            return "این شارژ پیدا نشد.", InlineKeyboardMarkup(
+                inline_keyboard=[[b(text="🔙 لیست شارژها", callback_data="cf_menu_0")]]
+            )
+        uid, price, answered = r.user_id, int(r.price or 0), r.answered_at or ""
+        u = s.get(User, uid)
+        uname = esc(user_display(u)) if u else "—"
+        adj = []
+        try:
+            jy, jm, jd = [int(x) for x in answered[:10].split("/")]
+            gday = jdatetime.date(jy, jm, jd).togregorian().isoformat()
+            adj = [
+                (t.id, t.user_id, int(t.delta or 0))
+                for t in s.query(WalletTx)
+                .filter(WalletTx.reason == ADJ_STAT, WalletTx.created_iso.like(f"{gday}%"))
+                .order_by(WalletTx.id.desc()).limit(6).all()
+            ]
+        except Exception:  # noqa: BLE001
+            adj = []
+    orig = _cf_orig(rid)
+    text_ = (note + "\n\n" if note else "") + (
+        f"💳 <b>شارژ #{rid}</b>\n\n"
+        f"👤 کاربر: <code>{uid}</code> {uname}\n"
+        f"🗓 تایید: {answered or '—'}\n"
+        f"💰 مبلغ در آمار: <b>{price:,}</b> تومان\n"
+    )
+    if orig is not None:
+        text_ += f"↩️ مبلغ اصلی: {orig:,} تومان\n"
+    if adj:
+        text_ += (
+            "\n⚠️ این اصلاح‌های دستی هنوز در آمار همان روز لحاظ شده‌اند. اگر برای همین شارژ اشتباه "
+            "ثبت کرده بودی، خاموششان کن تا مبلغ دو بار کم نشود:\n"
+            + "\n".join(f"• #{tid} | کاربر {tu} | {d:+,}" for tid, tu, d in adj)
+        )
+    kb = [[b(text="✏️ تغییر مبلغ", callback_data=f"cf_e_{rid}")]]
+    if price != 0:
+        kb[0].append(b(text="🚫 حذف از آمار", callback_data=f"cf_z_{rid}"))
+    if orig is not None:
+        kb.append([b(text=f"↩️ برگرداندن مبلغ اصلی ({orig:,})", callback_data=f"cf_u_{rid}")])
+    for tid, tu, d in adj:
+        kb.append([b(text=f"⚠️ خاموش‌کردن اصلاح #{tid} ({d:+,})", callback_data=f"cf_o_{rid}_{tid}")])
+    kb.append([b(text="👤 مدیریت کاربر (تغییر موجودی)", callback_data=f"manage_user_{uid}")])
+    kb.append([b(text="🔙 لیست شارژها", callback_data="cf_menu_0")])
+    return text_, InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+@dp.message(Command("charges"), Perm("stats"))
+async def cf_cmd(message: types.Message, state: FSMContext):
+    await state.clear()
+    text_, markup = _cf_list_view(0)
+    await message.answer(text_, reply_markup=markup)
+
+
+@dp.callback_query(F.data.regexp(r"^cf_menu_\d+$"), Perm("stats"))
+async def cf_menu_handler(call: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.answer()
+    text_, markup = _cf_list_view(int(call.data.split("_")[2]))
+    await edit_or_send(call, text_, markup)
+
+
+@dp.callback_query(F.data.regexp(r"^cf_v_\d+$"), Perm("stats"))
+async def cf_view_handler(call: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.answer()
+    text_, markup = _cf_detail_view(int(call.data.split("_")[2]))
+    await edit_or_send(call, text_, markup)
+
+
+@dp.callback_query(F.data == "cf_adjl", Perm("balance"))
+async def cf_adjl_handler(call: types.CallbackQuery):
+    await call.answer()
+    text_, markup = _adjlist_view()
+    back = [InlineKeyboardButton(text="🔙 اصلاح شارژها", callback_data="cf_menu_0")]
+    rows = (list(markup.inline_keyboard) if markup else []) + [back]
+    await edit_or_send(call, text_, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@dp.callback_query(F.data.regexp(r"^cf_e_\d+$"), Perm("stats"))
+async def cf_edit_handler(call: types.CallbackQuery, state: FSMContext):
+    rid = int(call.data.split("_")[2])
+    await call.answer()
+    await state.set_state(CFState.waiting_amount)
+    await state.update_data(cf_rid=rid)
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 انصراف", callback_data=f"cf_v_{rid}")]]
+    )
+    await edit_or_send(call, f"💰 مبلغ درستِ شارژ #{rid} را به تومان بفرست (برای حذف از آمار: 0):", markup)
+
+
+@dp.message(CFState.waiting_amount, Perm("stats"))
+async def cf_amount_save(message: types.Message, state: FSMContext):
+    raw = (message.text or "").translate(DIGITS_FA).replace(",", "").replace("،", "").strip()
+    if not raw.isdigit() or int(raw) > CF_MAX:
+        await message.answer("مبلغ نامعتبر است. فقط عدد (تومان) بفرست، یا «🔙 انصراف» را بزن.")
+        return
+    rid = (await state.get_data()).get("cf_rid")
+    await state.clear()
+    res = _cf_apply(rid, int(raw), message.from_user.id)
+    if res is None:
+        await message.answer("این شارژ پیدا نشد.")
+        return
+    text_, markup = _cf_detail_view(rid, f"✅ مبلغ شارژ #{rid} در آمار از {res[0]:,} به {res[1]:,} تومان اصلاح شد.")
+    await message.answer(text_, reply_markup=markup)
+
+
+@dp.callback_query(F.data.regexp(r"^cf_z_\d+$"), Perm("stats"))
+async def cf_zero_handler(call: types.CallbackQuery):
+    rid = int(call.data.split("_")[2])
+    res = _cf_apply(rid, 0, call.from_user.id)
+    await call.answer("از آمار حذف شد." if res else "پیدا نشد.", show_alert=not res)
+    text_, markup = _cf_detail_view(rid, f"✅ شارژ #{rid} از آمار حذف شد (قابل برگشت)." if res else "")
+    await edit_or_send(call, text_, markup)
+
+
+@dp.callback_query(F.data.regexp(r"^cf_u_\d+$"), Perm("stats"))
+async def cf_undo_handler(call: types.CallbackQuery):
+    rid = int(call.data.split("_")[2])
+    orig = _cf_orig(rid)
+    if orig is None:
+        await call.answer("مبلغ اصلی ثبت نشده.", show_alert=True)
+        return
+    _cf_apply(rid, orig, call.from_user.id)
+    await call.answer("به مبلغ اصلی برگشت.")
+    text_, markup = _cf_detail_view(rid, f"↩️ شارژ #{rid} به مبلغ اصلی ({orig:,}) برگشت.")
+    await edit_or_send(call, text_, markup)
+
+
+@dp.callback_query(F.data.regexp(r"^cf_o_\d+_\d+$"), Perm("balance"))
+async def cf_adj_off_handler(call: types.CallbackQuery):
+    _, _, rid, txid = call.data.split("_")
+    with SessionLocal() as s:
+        tx = s.get(WalletTx, int(txid))
+        if tx is None or tx.reason != ADJ_STAT:
+            await call.answer("این مورد قبلاً خاموش شده.", show_alert=True)
+        else:
+            tx.reason = "admin_adjust"
+            delta, tuid = int(tx.delta or 0), tx.user_id
+            s.commit()
+            log_action(call.from_user.id, f"لغو لحاظ تغییر موجودی کاربر {tuid} ({delta:+,}) در آمار واریز (از اصلاح شارژ #{rid})")
+            await call.answer(f"↩️ {delta:+,} از آمار خارج شد.")
+    text_, markup = _cf_detail_view(int(rid))
+    await edit_or_send(call, text_, markup)
 
 
 @dp.message(Command("sources"), MainAdmin())
