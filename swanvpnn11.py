@@ -1376,12 +1376,15 @@ def breakdown_text(total, parts, extra=None):
 # ---------------------------------------------------------------------------
 # کدهای تخفیف
 # ---------------------------------------------------------------------------
-def validate_code(session, code_str, user_id):
-    """(DiscountCode | None, پیام خطا)"""
+def validate_code(session, code_str, user_id, lock=False):
+    """(DiscountCode | None, پیام خطا). با lock=True ردیف کد قفل می‌شود (برای مصرف واقعی)."""
     code_str = (code_str or "").strip().upper()
     if not code_str:
         return None, "کد وارد نشده است."
-    dc = session.query(DiscountCode).filter(DiscountCode.code == code_str).first()
+    q = session.query(DiscountCode).filter(DiscountCode.code == code_str)
+    if lock:
+        q = q.with_for_update()
+    dc = q.first()
     if dc is None or not dc.is_active:
         return None, "این کد کار نکرد 😅 یه بار دیگه چک کن"
     if dc.expires_at:
@@ -1401,7 +1404,7 @@ def validate_code(session, code_str, user_id):
 
 
 def consume_code(session, code_str, user_id):
-    dc, err = validate_code(session, code_str, user_id)
+    dc, err = validate_code(session, code_str, user_id, lock=True)  # قفل ردیف: ظرفیت و یک‌بار-مصرفی همزمان رد نمی‌شود
     if dc is None:
         raise ValueError(err)
     dc.used_count = (dc.used_count or 0) + 1
@@ -2997,7 +3000,7 @@ async def trial_request_handler(call: types.CallbackQuery):
         await call.answer("سرویس تست فعلاً غیرفعال است.", show_alert=True)
         return
     with SessionLocal() as s:
-        user = get_or_create_user(s, uid)
+        user = get_or_create_user(s, uid, lock=True)  # دابل‌کلیک دو درخواست تست نمی‌سازد
         if user.trial_used or not user.is_new_user:
             await call.answer("سرویس تست فقط یک‌بار و برای کاربران بدون خرید فعال است.", show_alert=True)
             return
@@ -8400,7 +8403,7 @@ async def club_menu_handler(call: types.CallbackQuery, state: FSMContext):
 async def club_redeem_handler(call: types.CallbackQuery):
     value, min_redeem = get_int("club_point_value"), get_int("club_min_redeem")
     with SessionLocal() as s:
-        user = get_or_create_user(s, call.from_user.id)
+        user = get_or_create_user(s, call.from_user.id, lock=True)  # دابل‌کلیک دوبار اعتبار نمی‌دهد
         points = user.points or 0
         if not get_bool("club_on") or value <= 0 or points < max(1, min_redeem):
             await call.answer("امتیاز شما برای تبدیل کافی نیست.", show_alert=True)
