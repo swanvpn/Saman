@@ -4213,6 +4213,7 @@ async def process_balance_adjustment(message: types.Message, state: FSMContext):
         await message.answer(f"مبلغ بیش از حد مجاز است (حداکثر {MAX_BALANCE:,} تومان).")
         return
 
+    txid = None
     with SessionLocal() as s:
         user = get_or_create_user(s, uid, lock=True)
         current = user.balance or 0
@@ -4230,6 +4231,12 @@ async def process_balance_adjustment(message: types.Message, state: FSMContext):
             new_balance = amount
         user.balance = new_balance
         wlog(s, uid, current, new_balance, "admin_adjust", mode, message.from_user.id)
+        s.flush()
+        _tx = (
+            s.query(WalletTx).filter(WalletTx.user_id == uid, WalletTx.reason == "admin_adjust")
+            .order_by(WalletTx.id.desc()).first()
+        ) if current != new_balance else None
+        txid = _tx.id if _tx else None
         s.commit()
 
     await state.clear()
@@ -4243,9 +4250,16 @@ async def process_balance_adjustment(message: types.Message, state: FSMContext):
             )
         except Exception as e:  # noqa: BLE001
             logging.warning("notice to main admin about sub-admin balance change failed: %s", e)
+    _kb = get_admin_main_keyboard(message.from_user.id)
+    if txid:  # دکمهٔ اختیاری: همین تغییر در آمار واریز هم لحاظ شود (مثلاً اصلاح یک تایید شارژِ اشتباه)
+        _kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="📊 لحاظ در آمار واریز", callback_data=f"adjstat_{txid}")]]
+            + list(_kb.inline_keyboard)
+        )
     await message.answer(
-        f"✅ موجودی کاربر <code>{uid}</code> از {current:,} به {new_balance:,} تغییر یافت.",
-        reply_markup=get_admin_main_keyboard(message.from_user.id),
+        f"✅ موجودی کاربر <code>{uid}</code> از {current:,} به {new_balance:,} تغییر یافت.\n"
+        "اگر این تغییر اصلاحِ یک تایید شارژ اشتباه است، دکمهٔ «لحاظ در آمار واریز» را بزن تا آمار کلی هم درست شود.",
+        reply_markup=_kb,
     )
     try:
         await message.bot.send_message(
@@ -4253,6 +4267,35 @@ async def process_balance_adjustment(message: types.Message, state: FSMContext):
         )
     except Exception as e:  # noqa: BLE001
         logging.warning("balance-change notice to user %s failed: %s", uid, e)
+
+
+@dp.callback_query(F.data.regexp(r"^adjstat_\d+$"), Perm("balance"))
+async def adjust_stat_toggle(call: types.CallbackQuery):
+    """روشن/خاموش‌کردن لحاظ‌شدن یک تغییر دستی موجودی در آمار واریز (قابل برگشت)."""
+    txid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        tx = s.get(WalletTx, txid)
+        if tx is None or tx.reason not in ("admin_adjust", ADJ_STAT):
+            await call.answer("این تغییر پیدا نشد.", show_alert=True)
+            return
+        on = tx.reason != ADJ_STAT
+        tx.reason = ADJ_STAT if on else "admin_adjust"
+        delta, tuid = int(tx.delta or 0), tx.user_id
+        s.commit()
+    log_action(call.from_user.id, f"{'لحاظ' if on else 'لغو لحاظ'} تغییر موجودی کاربر {tuid} ({delta:+,}) در آمار واریز")
+    await call.answer(
+        f"✅ {delta:+,} تومان در آمار واریز لحاظ شد." if on else "↩️ از آمار واریز خارج شد.", show_alert=True
+    )
+    try:
+        rest = list(call.message.reply_markup.inline_keyboard[1:]) if call.message.reply_markup else []
+        label = "✅ در آمار لحاظ شد (لغو)" if on else "📊 لحاظ در آمار واریز"
+        await call.message.edit_reply_markup(
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text=label, callback_data=f"adjstat_{txid}")]] + rest
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        logging.warning("adjstat markup update failed: %s", e)
 
 
 # --- پیام خصوصی و یادداشت ---
@@ -5053,6 +5096,28 @@ def _excl_note():
     return f"\n\n🚫 {n} کاربر از محاسبات این گزارش کنار گذاشته شده‌اند." if n else ""
 
 
+ADJ_STAT = "admin_adjust_stat"  # تغییر دستی موجودی که ادمین خواسته در آمار «واریز» لحاظ شود (مثبت یا منفی)
+
+
+def _greg_month_range(jy, jm):
+    """بازهٔ [شروع، پایان) ماه شمسی به تاریخ میلادی ISO."""
+    start = jdatetime.date(jy, jm, 1).togregorian()
+    ny, nm = (jy + 1, 1) if jm == 12 else (jy, jm + 1)
+    end = jdatetime.date(ny, nm, 1).togregorian()
+    return start.isoformat(), end.isoformat()
+
+
+def stat_adjust_sum(s, start_iso, end_iso):
+    """مجموع اصلاح‌های دستیِ علامت‌خورده برای آمار واریز در بازهٔ [start_iso, end_iso) (تاریخ میلادی)."""
+    q = s.query(func.coalesce(func.sum(WalletTx.delta), 0)).filter(
+        WalletTx.reason == ADJ_STAT, WalletTx.created_iso >= start_iso, WalletTx.created_iso < end_iso
+    )
+    ids = report_excluded_ids()
+    if ids:
+        q = q.filter(WalletTx.user_id.notin_(ids))
+    return int(q.scalar() or 0)
+
+
 def stats_numbers():
     today = jalali_today().strftime("%Y/%m/%d")
     month = jalali_today().strftime("%Y/%m")
@@ -5087,7 +5152,14 @@ def stats_numbers():
         charged_month = charged(Request.answered_at.like(f"{month}%"))
         card_today = card_sales(Request.answered_at.like(f"{today}%"))
         card_month = card_sales(Request.answered_at.like(f"{month}%"))
+        _d0 = today_iran()
+        adj_today = stat_adjust_sum(s, _d0.isoformat(), (_d0 + timedelta(days=1)).isoformat())
+        _jt = jalali_today()
+        adj_month = stat_adjust_sum(s, *_greg_month_range(_jt.year, _jt.month))
         return dict(
+            adj_today=adj_today, adj_month=adj_month,
+            deposit_today=charged_today + card_today + adj_today,
+            deposit_month=charged_month + card_month + adj_month,
             today=today, month=month,
             total_users=s.query(func.count(User.user_id)).scalar(),
             new_today=s.query(func.count(User.user_id)).filter(User.joined_at == today_iran().isoformat()).scalar(),
@@ -5109,6 +5181,8 @@ def stats_numbers():
 async def admin_sales_stats_handler(call: types.CallbackQuery):
     await call.answer()
     n = stats_numbers()
+    adj_d = f"   └ ✏️ اصلاح دستی ادمین: {n['adj_today']:+,}\n" if n["adj_today"] else ""
+    adj_m = f" + اصلاح دستی {n['adj_month']:+,}" if n["adj_month"] else ""
     out = (
         "📊 <b>آمار جامع و وضعیت درخواست‌ها:</b>\n\n"
         f"👥 کل کاربران: {n['total_users']} (امروز جدید: {n['new_today']})\n"
@@ -5116,11 +5190,12 @@ async def admin_sales_stats_handler(call: types.CallbackQuery):
         f"💰 درآمد کل: {n['total_rev']:,} تومان\n\n"
         f"📅 <b>ماه جاری ({n['month']}):</b> {n['month_rev']:,} تومان\n"
         f"☀️ <b>امروز ({n['today']}):</b> {n['day_rev']:,} تومان در {n['day_sales']} فروش\n\n"
-        f"🏦 <b>واریز به حساب امروز:</b> {n['charged_today'] + n['card_today']:,} تومان\n"
+        f"🏦 <b>واریز به حساب امروز:</b> {n['deposit_today']:,} تومان\n"
         f"   ├ 💳 شارژ کیف پول: {n['charged_today']:,}\n"
-        f"   └ 🛒 خرید مستقیم با کارت: {n['card_today']:,}\n"
-        f"🏦 <b>واریز این ماه:</b> {n['charged_month'] + n['card_month']:,} تومان "
-        f"(شارژ {n['charged_month']:,} + خرید مستقیم {n['card_month']:,})\n"
+        f"   {'├' if adj_d else '└'} 🛒 خرید مستقیم با کارت: {n['card_today']:,}\n"
+        + adj_d +
+        f"🏦 <b>واریز این ماه:</b> {n['deposit_month']:,} تومان "
+        f"(شارژ {n['charged_month']:,} + خرید مستقیم {n['card_month']:,}{adj_m})\n"
         "ℹ️ «فروش» شامل خرید از کیف پول هم هست؛ پول واقعی واردشده را خط «واریز» نشان می‌دهد.\n\n"
         f"🔴 در انتظار پاسخ: {n['unanswered']}\n"
         f"🟢 بررسی‌شده: {n['processed']}\n"
@@ -5331,7 +5406,8 @@ def daily_report_text():
         f"📋 <b>گزارش روزانه {n['today']}</b>\n\n"
         f"💰 فروش امروز: {n['day_sales']} سفارش | {n['day_rev']:,} تومان\n"
         f"💳 شارژ کیف پول امروز: {n['charged_today']:,} تومان\n"
-        f"🏦 کل واریز به حساب امروز: {n['charged_today'] + n['card_today']:,} تومان\n"
+        f"🏦 کل واریز به حساب امروز: {n['deposit_today']:,} تومان"
+        + (f" (شامل اصلاح دستی {n['adj_today']:+,})" if n["adj_today"] else "") + "\n"
         f"👥 کاربر جدید: {n['new_today']} | کل کاربران: {n['total_users']}\n"
         f"🔴 درخواست در انتظار: {n['unanswered']}\n"
         f"🎫 تیکت باز: {n['open_tickets']}"
@@ -9212,6 +9288,7 @@ def _week_stats(s, start):
         or 0
     )
     start_iso, end_iso = start.isoformat(), (start + timedelta(days=7)).isoformat()
+    charged += stat_adjust_sum(s, start_iso, end_iso)
     new_users = (
         s.query(func.count(User.user_id)).filter(User.joined_at >= start_iso, User.joined_at < end_iso).scalar() or 0
     )
@@ -12400,6 +12477,39 @@ async def funnel_cmd(message: types.Message):
     await message.answer(out)
 
 
+@dp.message(Command("statfix"), MainAdmin())
+async def statfix_cmd(message: types.Message):
+    """/statfix مبلغ [تاریخ شمسی] [توضیح] — اصلاح دستی آمار واریز (مثلاً /statfix -500000 1405/08/20)."""
+    parts = (message.text or "").translate(DIGITS_FA).replace(",", "").split(maxsplit=3)
+    if len(parts) < 2 or not parts[1].lstrip("+-").isdigit():
+        await message.answer(
+            "📝 <b>اصلاح آمار واریز</b>\n\n"
+            "<code>/statfix -500000</code> ← کم‌کردن ۵۰۰ هزار از واریز امروز\n"
+            "<code>/statfix -500000 1405/08/20</code> ← برای تاریخ مشخص (شمسی)\n"
+            "<code>/statfix +200000 1405/08/20 توضیح</code> ← افزودن\n\n"
+            "این فقط آمار را اصلاح می‌کند و به موجودی هیچ کاربری دست نمی‌زند."
+        )
+        return
+    amount = int(parts[1])
+    when = today_iran()
+    if len(parts) >= 3:
+        try:
+            jy, jm, jd = [int(x) for x in re.split(r"[/-]", parts[2])]
+            when = jdatetime.date(jy, jm, jd).togregorian()
+        except Exception:  # noqa: BLE001
+            await message.answer("تاریخ نامعتبر است. مثال: 1405/08/20")
+            return
+    note = parts[3] if len(parts) >= 4 else ""
+    with SessionLocal() as s:
+        s.add(WalletTx(
+            user_id=0, delta=amount, before=0, after=0, reason=ADJ_STAT,
+            ref=f"statfix:{note}"[:200], by=message.from_user.id, created_iso=f"{when.isoformat()}T12:00",
+        ))
+        s.commit()
+    log_action(message.from_user.id, f"اصلاح دستی آمار واریز: {amount:+,} در {when.isoformat()} {note}")
+    await message.answer(f"✅ {amount:+,} تومان در آمار واریز تاریخ {when.isoformat()} (میلادی) لحاظ شد.")
+
+
 @dp.message(Command("sources"), MainAdmin())
 async def sources_cmd(message: types.Message):
     with SessionLocal() as s:
@@ -14371,7 +14481,7 @@ async def job_v3_downsell(bot):
 WL_REASONS = {
     "wallet_purchase": "خرید با کیف پول", "wallet_addon": "خرید افزونه با کیف پول", "referral_reward": "پاداش دعوت",
     "invitee_reward": "هدیهٔ دعوت‌شده", "charge_confirmed": "شارژ تأییدشده", "refund_rejected": "بازگشت وجه (رد سفارش)",
-    "admin_adjust": "تغییر دستی ادمین", "club_redeem": "تبدیل امتیاز باشگاه", "delay_compensation": "جبران تأخیر",
+    "admin_adjust": "تغییر دستی ادمین", ADJ_STAT: "تغییر دستی ادمین (لحاظ‌شده در آمار)", "club_redeem": "تبدیل امتیاز باشگاه", "delay_compensation": "جبران تأخیر",
     "gift_code": "کد هدیه", "transfer_out": "انتقال به کاربر", "transfer_in": "دریافت انتقال", "lottery": "جایزه قرعه‌کشی",
     "baseline_fix": "اصلاح مبنا (ادمین)",
     "comp_reverse": "برگشت جبران تأخیر (سفارش رد شد)",
