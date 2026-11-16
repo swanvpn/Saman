@@ -18,7 +18,9 @@ from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote, urljoin, urlsplit
 
 import jdatetime
-from aiohttp import ClientSession, ClientTimeout, web
+from aiohttp import ClientSession, ClientTimeout, TCPConnector, web
+from aiohttp.abc import AbstractResolver
+from aiohttp.resolver import DefaultResolver
 
 from sqlalchemy import (
     BigInteger,
@@ -41,7 +43,7 @@ from aiogram import BaseMiddleware, Bot, Dispatcher, F, types
 from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter
 from aiogram.filters import BaseFilter, Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -569,6 +571,7 @@ DEFAULTS = {
     "usage_alerts_on": "1",
     "usage_warn_percent": "80",
     "usage_sync_expiry_on": "1",
+    "expiry_hold_days": "7",
     "usage_admin_report_on": "1",
     "usage_group_on": "1",
     "usage_group_min": "3",
@@ -694,6 +697,7 @@ SETTINGS = {
     "usage_alerts_on": dict(page="usage", type="toggle", label="هشدار خودکار حجم برای کاربر"),
     "usage_warn_percent": dict(page="usage", type="num", label="هشدار وقتی مصرف رسید به (٪)", min=50, max=99),
     "usage_sync_expiry_on": dict(page="usage", type="toggle", label="همگام‌سازی تاریخ انقضا با پنل"),
+    "expiry_hold_days": dict(page="usage", type="num", label="مهلت حفظ تمدید/تغییر دستی تا به‌روزشدن پنل (روز)", min=1, max=30),
     "usage_admin_report_on": dict(page="usage", type="toggle", label="گزارش لینک خراب/تموم‌شده به ادمین"),
     "usage_group_on": dict(page="usage", type="toggle", label="گروه‌بندی هشدار لینک‌های خراب بر اساس دامنه (قطعی سرور)"),
     "usage_group_min": dict(page="usage", type="num", label="حداقل تعداد لینک خراب یک دامنه برای هشدار گروهی", min=2, max=100),
@@ -2472,8 +2476,8 @@ def safe_find_duplicate(s, uniq, digest):
         logging.exception("duplicate check failed: %s", e)
         try:
             s.rollback()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            logging.warning("session rollback failed: %s", e)
         return None
 
 
@@ -3015,7 +3019,10 @@ async def trial_request_handler(call: types.CallbackQuery):
         req_id = req.id
         s.commit()
     await call.answer()
-    await edit_or_send(call, "🎁 درخواست سرویس تست شما ثبت شد.\n\n" + pending_notice(), status_markup(req_id))
+    try:
+        await edit_or_send(call, "🎁 درخواست سرویس تست شما ثبت شد.\n\n" + pending_notice(), status_markup(req_id))
+    except Exception as e:  # noqa: BLE001
+        logging.warning("trial confirm message failed: %s", e)
     await notify_staff(
         call.bot,
         f"🎁 درخواست سرویس تست (کد #{req_id})\n👤 کاربر: {user_label(call.from_user)} ({uid})\n"
@@ -3418,8 +3425,8 @@ async def post_purchase_notifications(bot, user_id, monthly_notif, reward):
                 text=f"🔥 <b>تبریک! به سطح {monthly_notif[1]} باشگاه وفاداری رسیدید و "
                 f"{monthly_notif[2]}٪ تخفیف وفاداری برای خریدهای بعدی شما فعال شد.</b>",
             )
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            logging.warning("loyalty tier notice failed: %s", e)
     if reward:
         base = reward[1]
         hits = reward[2] if len(reward) > 2 else []
@@ -3432,8 +3439,8 @@ async def post_purchase_notifications(bot, user_id, monthly_notif, reward):
             lines.append(f"🏅 به پله {n} دعوت موفق رسیدید: {amt:,} تومان پاداش ویژه به کیف پول شما اضافه شد!")
         try:
             await bot.send_message(chat_id=reward[0], text="\n".join(lines))
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            logging.warning("referral reward notice failed: %s", e)
 
 
 async def send_rating_request(bot, user_id, req_id):
@@ -3581,7 +3588,7 @@ async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
             monthly_notif, reward = register_purchase(s, uid, price)
             cfg_id_for_hold = cfg.id
             s.commit()
-            set_setting(f"renewhold_{cfg_id_for_hold}", (today_iran() + timedelta(days=3)).isoformat())
+            set_setting(f"renewhold_{cfg_id_for_hold}", _hold_until())
             result = ("renew", uid, plan, new_exp.isoformat(), (monthly_notif, reward))
         elif rtype == "addon":
             cfg = s.get(UserConfig, r.config_id) if r.config_id else None
@@ -3598,7 +3605,7 @@ async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
                 au.points = (au.points or 0) + earn
             monthly_notif, reward = None, None
             s.commit()
-            set_setting(f"renewhold_{cfg_hold}", (today_iran() + timedelta(days=3)).isoformat())
+            set_setting(f"renewhold_{cfg_hold}", _hold_until())
             result = ("addon", uid, plan, info, (monthly_notif, reward))
         else:
             sid = r.service_id
@@ -3715,8 +3722,8 @@ async def admin_reject_action(call: types.CallbackQuery):
         msg += f"\n💰 مبلغ {refunded:,} تومان به کیف پول شما برگشت داده شد."
     try:
         await call.bot.send_message(chat_id=target_user, text=msg)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        logging.warning("reject notice to user %s failed: %s", target_user, e)
 
 
 # ---------------------------------------------------------------------------
@@ -4064,8 +4071,8 @@ async def delete_config_user_action(call: types.CallbackQuery):
     await call.answer("کانفیگ کاربر حذف شد.", show_alert=True)
     try:
         await call.bot.send_message(chat_id=target_user_id, text="⚠️ یکی از سرویس‌های شما توسط ادمین حذف شد.")
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        logging.warning("delete-config notice to user %s failed: %s", target_user_id, e)
     await _render_user_management(call, target_user_id)
 
 
@@ -4119,15 +4126,15 @@ async def cfg_expiry_save(message: types.Message, state: FSMContext):
         cfg.expires_at = new_date.isoformat()
         cfg.reminded = False
         s.commit()
-    set_setting(f"renewhold_{cfg_id}", (today_iran() + timedelta(days=3)).isoformat())
+    set_setting(f"renewhold_{cfg_id}", _hold_until())
     await state.clear()
     log_action(message.from_user.id, f"تنظیم تاریخ انقضای کانفیگ {cfg_id} به {new_date.isoformat()}")
     try:
         await message.bot.send_message(
             chat_id=uid, text=f"📅 تاریخ پایان یکی از سرویس‌های شما به {jalali_from_iso(new_date.isoformat())} تغییر کرد."
         )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        logging.warning("expiry-change notice to user %s failed: %s", uid, e)
     await _render_user_management(message, uid)
 
 
@@ -4221,8 +4228,8 @@ async def process_balance_adjustment(message: types.Message, state: FSMContext):
                 text=f"⚠️ ادمین فرعی <code>{message.from_user.id}</code> موجودی کاربر <code>{uid}</code> را "
                 f"از {current:,} به {new_balance:,} تومان تغییر داد.",
             )
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            logging.warning("notice to main admin about sub-admin balance change failed: %s", e)
     await message.answer(
         f"✅ موجودی کاربر <code>{uid}</code> از {current:,} به {new_balance:,} تغییر یافت.",
         reply_markup=get_admin_main_keyboard(message.from_user.id),
@@ -4231,8 +4238,8 @@ async def process_balance_adjustment(message: types.Message, state: FSMContext):
         await message.bot.send_message(
             chat_id=uid, text=f"💰 موجودی کیف پول شما توسط پشتیبانی تغییر کرد.\nموجودی فعلی: {new_balance:,} تومان"
         )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        logging.warning("balance-change notice to user %s failed: %s", uid, e)
 
 
 # --- پیام خصوصی و یادداشت ---
@@ -4998,8 +5005,8 @@ async def ticket_close(call: types.CallbackQuery):
     await append_status(call, f"✅ تیکت #{tid} بسته شد.", get_admin_main_keyboard(call.from_user.id))
     try:
         await call.bot.send_message(chat_id=uid, text=f"✅ تیکت #{tid} شما بسته شد. در صورت نیاز تیکت جدید ثبت کنید.")
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        logging.warning("ticket-closed notice to user %s failed: %s", uid, e)
 
 
 # ---------------------------------------------------------------------------
@@ -8239,14 +8246,40 @@ async def report_error(bot, where, exc):
 
 _IGNORED_ERRORS = ("message is not modified", "query is too old", "message to edit not found", "message can't be edited")
 
+# جواب‌دادن به کلیک دکمه (call.answer) فقط یک «تیک» برای ظاهر دکمه است؛ اگر به‌خاطر timeout شبکه یا کلیک قدیمی
+# خطا بدهد، نباید ادامهٔ هندلر (مثلاً اطلاع‌رسانی به ادمین بعد از ثبت درخواست) را بکشد.
+_orig_cb_answer = types.CallbackQuery.answer
+
+
+def _safe_cb_answer(self, *args, **kwargs):
+    method = _orig_cb_answer(self, *args, **kwargs)
+
+    async def _run():
+        try:
+            return await method
+        except TelegramNetworkError as e:
+            logging.warning("callback answer skipped (network): %s", str(e)[:100])
+            return False
+        except TelegramBadRequest as e:
+            if "query is too old" in str(e).lower() or "query id is invalid" in str(e).lower():
+                logging.info("callback answer skipped (stale click)")
+                return False
+            raise
+
+    return _run()
+
+
+types.CallbackQuery.answer = _safe_cb_answer
+
 
 @dp.errors()
 async def global_error_handler(event, bot: Bot):
     exc = getattr(event, "exception", None)
+    if exc is not None and any(m in str(exc).lower() for m in _IGNORED_ERRORS):
+        logging.info("Ignored harmless Telegram error: %s", str(exc)[:120])  # کلیک روی دکمهٔ قدیمی و مشابه؛ بدون traceback
+        return True
     logging.error("Unhandled error: %r", exc, exc_info=exc)
     if exc is None or isinstance(exc, (TelegramForbiddenError, TelegramRetryAfter)):
-        return True
-    if any(m in str(exc).lower() for m in _IGNORED_ERRORS):
         return True
     await report_error(bot, "پردازش پیام کاربر", exc)
     return True
@@ -9556,8 +9589,8 @@ async def job_backup(bot):
                     chat_id=ADMIN_ID,
                     text=f"⚠️ ارسال بکاپ به کانال ناموفق بود: {err_text(e)}\nمطمئن شوید ربات در کانال «ادمین» است.",
                 )
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001
+                logging.warning("backup-failure alert to admin failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -9736,8 +9769,8 @@ async def job_channel_posts(bot):
                         text=f"❌ پست خودکار کانال ناموفق بود: {err_text(e)}\n"
                         "مطمئن شوید ربات در کانال ادمین است و اجازه ارسال پیام دارد.",
                     )
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as e:  # noqa: BLE001
+                    logging.warning("autopost-failure alert to admin failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -9891,6 +9924,36 @@ def parse_userinfo(raw):
     return vals
 
 
+def _hold_until():
+    """تا این تاریخ، تمدید یا تاریخ دستی ثبت‌شده در دیتابیس با تاریخ قدیمی‌تر پنل بازنویسی نمی‌شود."""
+    days = max(1, get_int("expiry_hold_days") or 7)
+    return (today_iran() + timedelta(days=days)).isoformat()
+
+
+def _ip_is_public(ip_text):
+    try:
+        return ipaddress.ip_address(str(ip_text).split("%")[0]).is_global
+    except ValueError:
+        return False
+
+
+class _PublicOnlyResolver(AbstractResolver):
+    """DNS را همان لحظهٔ اتصال بررسی می‌کند (جلوگیری از DNS rebinding بین «بررسی» و «اتصال»)."""
+
+    def __init__(self):
+        self._inner = DefaultResolver()
+
+    async def resolve(self, host, port=0, family=socket.AF_INET):
+        infos = await self._inner.resolve(host, port, family)
+        ok = [i for i in infos if _ip_is_public(i.get("host", ""))]
+        if not ok:
+            raise OSError("blocked: non-public address")
+        return ok
+
+    async def close(self):
+        await self._inner.close()
+
+
 async def _url_is_public(url):
     """فقط آدرس‌های http(s) که به IP عمومی می‌رسند مجازند (جلوگیری از SSRF به شبکه داخلی/متادیتای کلود)."""
     try:
@@ -9939,7 +10002,9 @@ async def fetch_usage(url, force=False, timeout=12):
         return hit[1]
     res = {"ok": False, "error": "", "has_info": False, "used": 0, "total": 0, "expire": 0}
     try:
-        async with ClientSession(timeout=ClientTimeout(total=timeout)) as session:
+        async with ClientSession(
+            timeout=ClientTimeout(total=timeout), connector=TCPConnector(resolver=_PublicOnlyResolver())
+        ) as session:
             current = url
             for _hop in range(4):  # ریدایرکت‌ها دستی دنبال می‌شوند تا هر مقصد بررسی شود
                 if not await _url_is_public(current):
@@ -10458,8 +10523,8 @@ def _cfg_report_block(title, cid, sid, uid, u=None, url=None):
                 plan = f"{svc.category or ''} {svc.name or ''}".strip()
             if usr is not None:
                 user_txt = f"{esc(user_display(usr))} (<code>{uid}</code>)"
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        logging.warning("order text build failed: %s", e)
     lines.append(f"👤 کاربر: {user_txt}")
     lines.append(f"📦 سرویس: {esc(name or plan or '-')} (#{cid})")
     if plan and plan != name:
@@ -10764,8 +10829,8 @@ async def _finish_config_delivery(bot, chat_id, admin_id, state, config_text, no
                          "ثبت سرویس انجام شده؛ کانفیگ را دستی برایش بفرست:\n"
                          f"<code>{esc(config_text)}</code>",
                 )
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001
+                logging.warning("config-delivery alert to admin failed: %s", e)
     await post_purchase_notifications(bot, target_user_id, monthly_notif, reward)
     if not is_trial:
         spawn(post_sale_feed(bot, plan_name, sale_req_type))
@@ -11224,8 +11289,8 @@ async def _push_keyboard(bot, admin_chat):
         await asyncio.sleep(0.05)
     try:
         await bot.send_message(chat_id=admin_chat, text=f"✅ کیبورد جدید برای {ok} نفر از {len(ids)} نفر ارسال شد.")
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        logging.info("admin summary message failed: %s", e)
 
 
 @dp.callback_query(F.data == "kbpushgo", MainAdmin())
@@ -11320,6 +11385,7 @@ DEFAULTS.update(
         "transfer_on": "0",
         "transfer_min": "20000",
         "transfer_fee_percent": "0",
+        "transfer_require_purchase": "1",
         "toprefs_on": "0",
         "promo_toggle_on": "0",
         "anniv_on": "0",
@@ -11372,6 +11438,7 @@ SETTINGS.update(
         "transfer_on": dict(page="grow_b", type="toggle", label="انتقال اعتبار بین کاربران (/transfer)"),
         "transfer_min": dict(page="grow_b", type="num", label="حداقل مبلغ انتقال (تومان)", min=1000, max=100000000),
         "transfer_fee_percent": dict(page="grow_b", type="num", label="کارمزد انتقال (٪)", min=0, max=20),
+        "transfer_require_purchase": dict(page="grow_b", type="toggle", label="انتقال فقط برای کاربرانی که حداقل یک خرید دارند"),
         "toprefs_on": dict(page="grow_b", type="toggle", label="جدول برترین دعوت‌کننده‌ها"),
         "promo_toggle_on": dict(page="grow_b", type="toggle", label="دکمهٔ قطع/وصل تبلیغات برای کاربر"),
         "anniv_on": dict(page="grow_b", type="toggle", label="هدیهٔ سالگرد عضویت"),
@@ -11453,8 +11520,8 @@ async def gsend(bot, uid, text_, markup=None):
         try:
             await bot.send_message(chat_id=uid, text=text_, reply_markup=markup)
             return True
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            logging.info("send to %s failed: %s", uid, e)
     except Exception as e:  # noqa: BLE001
         logging.info("gsend to %s failed: %s", uid, e)
     return False
@@ -11599,7 +11666,10 @@ async def sms_webhook(request):
             body = " ".join(" ".join(v) for v in qs.values())
     if "برداشت" in body and "واریز" not in body:
         return web.json_response({"ok": True, "matched": 0})
-    if "واریز" not in body and "deposit" not in body.lower() and "+" not in body:
+    if (
+        "واریز" not in body and "deposit" not in body.lower()
+        and not re.search(r"\+\s*[\d۰-۹٠-٩][\d۰-۹٠-٩,٬،]{3,}", body)
+    ):
         return web.json_response({"ok": True, "matched": 0})
     hits = sms_match(body)
     bot = GROWTH_BOT
@@ -12216,6 +12286,16 @@ async def transfer_cmd(message: types.Message, command: CommandObject):
             _rows = {u_.user_id: u_ for u_ in (s.get(User, i_, with_for_update=True) for i_ in sorted({uid, to_id}))
                      if u_ is not None}  # قفل به ترتیب ثابت: جلوگیری از deadlock
             me, to = _rows.get(uid), _rows.get(to_id)
+            if me is None:
+                return
+            if get_bool("transfer_require_purchase") and not (
+                s.query(Request.id)
+                .filter(Request.user_id == uid, Request.status == "answered",
+                        Request.req_type.in_(SALE_TYPES), Request.price > 0)
+                .first()
+            ):
+                await message.answer("انتقال اعتبار بعد از اولین خرید فعال می‌شه 🙂", reply_markup=back_home_markup())
+                return
             if to is None or to.is_banned:
                 await message.answer("گیرنده پیدا نشد (باید قبلاً ربات رو استارت کرده باشه).", reply_markup=back_home_markup())
                 return
@@ -15039,8 +15119,8 @@ async def send_leave_bulk(bot, admin_id):
         await asyncio.sleep(0.05)
     try:
         await bot.send_message(admin_id, f"✅ پیام به ترک‌کنندگان کانال: {ok} از {len(ids)} ارسال شد.")
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        logging.info("admin summary message failed: %s", e)
 
 
 _member_scan = {"running": False, "done": 0, "total": 0, "left": 0, "err": 0, "ts": 0.0}
