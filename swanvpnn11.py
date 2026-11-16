@@ -12477,6 +12477,53 @@ async def funnel_cmd(message: types.Message):
     await message.answer(out)
 
 
+def _adjlist_view():
+    with SessionLocal() as s:
+        rows = (
+            s.query(WalletTx).filter(WalletTx.reason.in_(["admin_adjust", ADJ_STAT]))
+            .order_by(WalletTx.id.desc()).limit(15).all()
+        )
+        data = [(r.id, r.user_id, int(r.delta or 0), r.created_iso or "", r.reason == ADJ_STAT) for r in rows]
+    if not data:
+        return "هنوز هیچ تغییر دستی موجودی ثبت نشده.", None
+    text_ = (
+        "✏️ <b>تغییرهای دستی موجودی (۱۵ مورد آخر)</b>\n\n"
+        "روی هر مورد بزن تا در آمار واریز لحاظ شود (✅) یا دوباره لغو شود. "
+        "اصلاحِ یک تایید شارژ اشتباه را اینجا علامت بزن.\n\n"
+    )
+    kb = []
+    for tid, uid, delta, iso, on in data:
+        text_ += f"{'✅' if on else '▫️'} #{tid} | کاربر <code>{uid}</code> | {delta:+,} | {iso.replace('T', ' ')}\n"
+        kb.append([InlineKeyboardButton(
+            text=f"{'✅' if on else '▫️'} {delta:+,} تومان | {uid} | {iso[:10]}", callback_data=f"adjls_{tid}"
+        )])
+    return text_, InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+@dp.message(Command("adjlist"), Perm("balance"))
+async def adjlist_cmd(message: types.Message):
+    text_, markup = _adjlist_view()
+    await message.answer(text_, reply_markup=markup)
+
+
+@dp.callback_query(F.data.regexp(r"^adjls_\d+$"), Perm("balance"))
+async def adjlist_toggle(call: types.CallbackQuery):
+    txid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        tx = s.get(WalletTx, txid)
+        if tx is None or tx.reason not in ("admin_adjust", ADJ_STAT):
+            await call.answer("این مورد پیدا نشد.", show_alert=True)
+            return
+        on = tx.reason != ADJ_STAT
+        tx.reason = ADJ_STAT if on else "admin_adjust"
+        delta, tuid = int(tx.delta or 0), tx.user_id
+        s.commit()
+    log_action(call.from_user.id, f"{'لحاظ' if on else 'لغو لحاظ'} تغییر موجودی کاربر {tuid} ({delta:+,}) در آمار واریز")
+    await call.answer(f"✅ {delta:+,} لحاظ شد." if on else "↩️ لغو شد.")
+    text_, markup = _adjlist_view()
+    await edit_or_send(call, text_, markup)
+
+
 @dp.message(Command("statfix"), MainAdmin())
 async def statfix_cmd(message: types.Message):
     """/statfix مبلغ [تاریخ شمسی] [توضیح] — اصلاح دستی آمار واریز (مثلاً /statfix -500000 1405/08/20)."""
