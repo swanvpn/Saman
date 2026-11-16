@@ -819,7 +819,10 @@ def kb_cols():
     return int(v) if v in ("1", "2", "3") else 3
 
 
-def build_reply_keyboard():
+BTN_ADMIN_KB = "⚙️ پنل مدیریت"
+
+
+def build_reply_keyboard(user_id=None):
     btns = []
     for k in kb_tokens():
         it = kb_find(k)
@@ -829,12 +832,14 @@ def build_reply_keyboard():
         btns = [KeyboardButton(text=BTN_BUY)]
     cols = kb_cols()
     rows = [btns[i : i + cols] for i in range(0, len(btns), cols)]
+    if user_id is not None and is_main(user_id):
+        rows.append([KeyboardButton(text=BTN_ADMIN_KB)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
 def refresh_menu_texts():
     """MENU_TEXTS را درجا به‌روز می‌کند (فیلترهای FSM به همین set اشاره دارند)."""
-    texts = {BTN_TARIFFS}
+    texts = {BTN_TARIFFS, BTN_ADMIN_KB}
     for it in KB_ITEMS:
         texts.add(it["label"])
         texts.add(kb_label(it))
@@ -1513,8 +1518,8 @@ def voice_problem(message: types.Message):
 # ---------------------------------------------------------------------------
 # کیبوردها
 # ---------------------------------------------------------------------------
-def get_user_keyboard():
-    return build_reply_keyboard()
+def get_user_keyboard(user_id=None):
+    return build_reply_keyboard(user_id)
 
 
 def main_inline_markup(user_id=None):
@@ -1913,7 +1918,7 @@ async def show_main_menu(
             logging.warning("banner send failed: %s", e)
     if not sent:
         await message.answer(body, reply_markup=markup)
-    await message.answer("🔽 منوی پایین هم همیشه در دسترسته.", reply_markup=get_user_keyboard())
+    await message.answer("🔽 منوی پایین هم همیشه در دسترسته.", reply_markup=get_user_keyboard(message.from_user.id))
 
 
 @dp.callback_query(F.data == "main_menu")
@@ -3235,6 +3240,14 @@ async def ticket_text_received(message: types.Message, state: FSMContext):
 # ---------------------------------------------------------------------------
 # پنل ادمین: ورود
 # ---------------------------------------------------------------------------
+@dp.message(F.text == BTN_ADMIN_KB, MainAdmin())
+async def kb_admin_message(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        admin_dashboard_text(message.from_user.id), reply_markup=get_admin_main_keyboard(message.from_user.id)
+    )
+
+
 @dp.message(Command("admin"), Staff())
 async def admin_panel_cmd(message: types.Message, state: FSMContext):
     await state.clear()
@@ -8377,7 +8390,7 @@ async def fj_check_handler(call: types.CallbackQuery, state: FSMContext):
         call, build_welcome(call.from_user.id, call.from_user.first_name), main_inline_markup(call.from_user.id)
     )
     await call.bot.send_message(
-        chat_id=call.from_user.id, text="🔽 منوی پایین هم همیشه در دسترسته.", reply_markup=get_user_keyboard()
+        chat_id=call.from_user.id, text="🔽 منوی پایین هم همیشه در دسترسته.", reply_markup=get_user_keyboard(call.from_user.id)
     )
 
 
@@ -8920,6 +8933,8 @@ def ub_build_rows(screen, user_id=None, ctx=None):
                 continue
             if cond == "link" and not ctx.get("has_link"):
                 continue
+            if cond == "admin" and not (user_id is not None and is_main(user_id)):
+                continue
             label = ub_label(screen, it)[:64]
             if it.get("url"):
                 url = channel_url()
@@ -9021,6 +9036,8 @@ def ub_item_view(screen, key):
         out += "\nℹ️ این دکمه فقط وقتی «باشگاه مشتریان» روشن باشد دیده می‌شود."
     if it.get("cond") == "sid":
         out += "\nℹ️ این دکمه فقط برای سرویس‌هایی که از یک پلن ثابت خریداری شده‌اند دیده می‌شود."
+    if it.get("cond") == "admin":
+        out += "\nℹ️ این دکمه فقط برای ادمین اصلی دیده می‌شود."
     if it.get("cond") == "link":
         out += "\nℹ️ این دکمه فقط وقتی کانفیگ شامل لینک باشد دیده می‌شود."
     if it.get("url"):
@@ -11282,7 +11299,7 @@ async def _push_keyboard(bot, admin_chat):
     ok = 0
     for uid in ids:
         try:
-            await send_message_retry(bot, uid, "🔄 منوی پایین به‌روز شد 👇", reply_markup=build_reply_keyboard())
+            await send_message_retry(bot, uid, "🔄 منوی پایین به‌روز شد 👇", reply_markup=build_reply_keyboard(uid))
             ok += 1
         except Exception:  # noqa: BLE001
             pass
@@ -12754,6 +12771,7 @@ UB_ITEMS["support"].insert(-1, dict(key="check", label="🩺 چک وضعیت س�
 UB_ITEMS["support"].insert(-1, dict(key="statuspage", label="📡 وضعیت سرویس‌ها", cb=CB.STATUS, wide=True, cond="statuspage"))
 UB_ITEMS["support"].insert(-1, dict(key="reviews", label="💬 نظرات مشتریان", cb=CB.REVIEWS, wide=True, cond="reviews"))
 UB_ITEMS["account"].insert(1, dict(key="invoice", label="🧾 آخرین فاکتور", cb=CB.INV_LAST, wide=True))
+UB_ITEMS["account"].insert(2, dict(key="admin", label="⚙️ پنل مدیریت", cb="admin_home", wide=True, cond="admin"))
 UB_ITEMS["svc"].insert(-2, dict(key="check", label="🩺 چک وضعیت", cb=CB.CHK + "{id}", cond="link"))
 UB_ITEMS["svc"].insert(-2, dict(key="addon", label="➕ حجم/روز اضافه", cb=CB.ADDON + "{id}", cond="addon"))
 UB_ITEMS["deliv"].insert(-1, dict(key="help", label="🆘 کمک می‌خواهم", cb=CB.HELP, wide=True, cond="help", hide_default=True))
