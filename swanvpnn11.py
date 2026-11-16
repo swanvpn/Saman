@@ -1619,8 +1619,8 @@ def trial_available(user_id):
 def get_admin_main_keyboard(user_id=None):
     b = InlineKeyboardButton
     top = [
-        b(text="🟢 پاسخ داده نشده", callback_data="admin_unanswered"),
-        b(text="🔴 پاسخ داده شده", callback_data="admin_answered"),
+        b(text="🔴 پاسخ داده نشده", callback_data="admin_unanswered"),
+        b(text="🟢 پاسخ داده شده", callback_data="admin_answered"),
     ]
     if user_id is not None and not is_main(user_id):
         # ادمین فرعی: همیشه رسیدها و تیکت‌ها؛ بقیه فقط اگر ادمین اصلی اجازه داده باشد
