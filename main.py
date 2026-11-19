@@ -1,4 +1,5 @@
 import asyncio
+import signal
 import html
 import io
 import json
@@ -1353,8 +1354,9 @@ def discount_breakdown(user_id, ptype=None, cat=None):
     with SessionLocal() as s:
         user = s.get(User, user_id)
         is_new = bool(user.is_new_user) if user else True
-        has_monthly = bool(user.has_monthly_discount) if user else False
-        month_count = (user.purchase_count_current_month or 0) if user else 0
+        _same_m = bool(user and user.last_purchase_month == jalali_today().strftime("%Y/%m"))  # #18: با تغییر ماه، سطح وفاداری صفر می‌شود
+        has_monthly = bool(user.has_monthly_discount) if (user and _same_m) else False
+        month_count = (user.purchase_count_current_month or 0) if (user and _same_m) else 0
     tier = tier_for_count(month_count) if (get_bool("loyalty_on") and has_monthly) else None
     parts = [(p, label) for _k, p, label in _discount_candidates(is_new, tier, ptype, cat)]
     total = min(sum(p for p, _ in parts), discount_cap())
@@ -2887,8 +2889,9 @@ def _account_view(user_id):
     with SessionLocal() as s:
         user = s.get(User, user_id)
         balance = (user.balance if user else 0) or 0
-        count = (user.purchase_count_current_month if user else 0) or 0
-        has_monthly = bool(user and user.has_monthly_discount)
+        _same_m = bool(user and user.last_purchase_month == jalali_today().strftime("%Y/%m"))  # #18
+        count = (user.purchase_count_current_month if (user and _same_m) else 0) or 0
+        has_monthly = bool(user and user.has_monthly_discount and _same_m)
         joined_txt = jalali_join_text(user.joined_at, user.joined_iso) if user else "نامشخص"
         active_count = s.query(func.count(UserConfig.id)).filter(UserConfig.user_id == user_id).scalar()
 
@@ -3868,8 +3871,9 @@ async def _render_user_management(target, user_id: int, back=None):
         name = user_display(user)
         balance = user.balance or 0
         banned = bool(user.is_banned)
-        count = user.purchase_count_current_month or 0
-        has_monthly = bool(user.has_monthly_discount)
+        _same_m = user.last_purchase_month == jalali_today().strftime("%Y/%m")  # #18
+        count = (user.purchase_count_current_month or 0) if _same_m else 0
+        has_monthly = bool(user.has_monthly_discount) and _same_m
         note = user.note or ""
         referred_by = user.referred_by
         joined_txt = jalali_join_text(user.joined_at, user.joined_iso)
@@ -10658,14 +10662,23 @@ async def job_usage_alerts(bot):
         with SessionLocal() as s:
             rows = [
                 (c.id, c.user_id, c.config_name, c.config_details, c.service_id)
-                for c in s.query(UserConfig).all()
+                for c in s.query(UserConfig).order_by(UserConfig.id).all()
             ]
         targets = []
         for cid, uid, name, details, sid in rows:
             url = find_sub_url(details)
             if url:
                 targets.append((cid, uid, name, sid, url))
-        targets = targets[:400]
+        # #52: بیش از ۴۰۰ سرویس → به‌صورت چرخشی (از آخرین آیدی بررسی‌شده ادامه می‌دهد)
+        if len(targets) > 400:
+            try:
+                _cur = int(get_setting("usage_cursor") or 0)
+            except ValueError:
+                _cur = 0
+            _after = [t_ for t_ in targets if t_[0] > _cur]
+            _batch = (_after + [t_ for t_ in targets if t_[0] <= _cur])[:400]
+            set_setting("usage_cursor", str(_batch[-1][0] if _after and len(_after) >= 400 else 0))
+            targets = _batch
         if not targets:
             return
         sem = asyncio.Semaphore(5)
@@ -16666,6 +16679,7 @@ async def run_web_server(app, port):
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
+    return runner
 
 
 async def with_retry(fn, *args, tries=8, **kw):
@@ -16715,11 +16729,11 @@ async def main():
     app.router.add_post("/sms/{secret}", sms_webhook)
     set_growth_bot(bot)
     port = int(os.environ.get("PORT", 8080))
-    await run_web_server(app, port)
+    runner = await run_web_server(app, port)
 
     me = await with_retry(bot.get_me)
     BOT_USERNAME = me.username or ""
-    await with_retry(bot.delete_webhook, drop_pending_updates=True)
+    await with_retry(bot.delete_webhook, drop_pending_updates=False)
     try:
         await update_bot_commands(bot)
     except Exception as e:  # noqa: BLE001
@@ -16733,9 +16747,22 @@ async def main():
     ]
     logging.info("BUILD %s", BUILD_TAG)
     logging.info("Bot @%s is running; web server on port %s", BOT_USERNAME, port)
+    _stop = {"v": False}
+
+    def _on_signal():
+        # #17: خاموشی تمیز روی SIGTERM/SIGINT (دیپلوی Railway)
+        _stop["v"] = True
+        asyncio.ensure_future(dp.stop_polling())
+
+    try:
+        _loop = asyncio.get_running_loop()
+        for _sig in (signal.SIGTERM, signal.SIGINT):
+            _loop.add_signal_handler(_sig, _on_signal)
+    except (NotImplementedError, RuntimeError, ValueError):
+        pass
     try:
         # اگر polling به‌خاطر خطای شبکه/Conflict افتاد، کل برنامه کرش نکند
-        while True:
+        while not _stop["v"]:
             try:
                 await dp.start_polling(bot, handle_signals=False)
                 break
@@ -16745,6 +16772,11 @@ async def main():
     finally:
         for task in background:
             task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)
+        try:
+            await runner.cleanup()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             await bot.session.close()
         except Exception:  # noqa: BLE001
