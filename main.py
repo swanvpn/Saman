@@ -1624,11 +1624,17 @@ async def _staff_send_one(bot, cid, text_, markup, photo):
 
 
 async def notify_staff(bot, text_, markup=None, photo=None):
-    ok = 0
     ids = list(staff_ids())
-    for cid in ids:
-        if await _staff_send_one(bot, cid, text_, markup, photo):
-            ok += 1
+
+    async def _one(cid):
+        try:
+            return await asyncio.wait_for(_staff_send_one(bot, cid, text_, markup, photo), timeout=20)
+        except Exception as e:  # noqa: BLE001
+            logging.warning("notify_staff timeout/failure for %s: %s", cid, e)
+            return False
+
+    results = await asyncio.gather(*[_one(c) for c in ids]) if ids else []  # همزمان، نه پشت‌سرهم
+    ok = sum(1 for r in results if r)
     if ids and not ok:
         logging.error("notify_staff: برای هیچ ادمینی ارسال نشد!")
     return ok
@@ -2622,7 +2628,7 @@ async def receipt_fingerprint(bot, photo):
         return uniq, None
     try:
         buf = io.BytesIO()
-        await asyncio.wait_for(bot.download(photo.file_id, destination=buf), timeout=25)
+        await asyncio.wait_for(bot.download(photo.file_id, destination=buf), timeout=8)
         digest = hashlib.sha256(buf.getvalue()).hexdigest()
     except Exception as e:  # noqa: BLE001
         logging.warning("receipt hash failed: %s", e)
@@ -2826,7 +2832,7 @@ async def receipt_handler(message: types.Message, state: FSMContext):
         fill_text("t_receipt_ok", date=get_current_jalali()) + "\n\n" + pending_notice(),
         reply_markup=status_markup(req_id),
     )
-    await send_sticker(message.bot, message.chat.id, "sticker_purchase")
+    spawn(send_sticker(message.bot, message.chat.id, "sticker_purchase"))  # غیرحیاتی؛ مسیر اصلی را کند نکند
     await notify_staff(
         message.bot, request_caption(req_id, message.from_user, co, req_type, False, pay_amt),
         admin_request_markup(req_id), photo=photo_id,
