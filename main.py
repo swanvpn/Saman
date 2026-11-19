@@ -1217,8 +1217,8 @@ def jalali_join_text(joined_at, joined_iso, short=False):
             d = jalali_from_iso(joined_at)
             if d != "-":
                 return d if short else f"{d} (ساعت ثبت نشده)"
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as _err:  # noqa: BLE001
+        logging.debug("silenced error in jalali_join_text (line 1220): %s", _err)
     return "نامشخص"
 
 
@@ -1822,6 +1822,7 @@ def get_admin_main_keyboard(user_id=None):
             [b(text="🩺 عیب‌یابی خودکار", callback_data="diag_home"), b(text="🚪 خروج کاربران", callback_data="lv_home")],
             [b(text="🎛 دکمه‌های کاربر", callback_data="ubh"), b(text="⚙️ تنظیمات ربات", callback_data="admin_settings")],
             [b(text="📬 بازارسال رسیدها / عذرخواهی", callback_data="rcp_home")],
+            [b(text="🪵 لاگ خطاها", callback_data="errlog_home")],
         ]
     )
 
@@ -1886,8 +1887,8 @@ async def _react(event):
                 chat_id=event.message.chat.id, message_id=event.message.message_id,
                 reaction=[ReactionTypeEmoji(emoji="👍")],
             )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as _err:  # noqa: BLE001
+        logging.debug("silenced error in _react (line 1889): %s", _err)
 
 
 class AccessMiddleware(BaseMiddleware):
@@ -2007,8 +2008,8 @@ class ThrottleMiddleware(BaseMiddleware):
                         await event.answer("⏳ کمی آهسته‌تر لطفاً", show_alert=False)
                     else:
                         await event.answer("⏳ کمی آهسته‌تر لطفاً")
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as _err:  # noqa: BLE001
+                    logging.debug("silenced error in __call__ (line 2010): %s", _err)
             return None
         return await handler(event, data)
 
@@ -3686,8 +3687,8 @@ async def admin_detail_handler(call: types.CallbackQuery):
         if receipt_id and receipt_id != "None":
             try:
                 await call.message.delete()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as _err:  # noqa: BLE001
+                logging.debug("silenced error in admin_detail_handler (line 3689): %s", _err)
             await call.bot.send_photo(chat_id=call.message.chat.id, photo=receipt_id, caption=out, reply_markup=markup)
         else:
             await edit_or_send(call, out, markup)
@@ -7534,8 +7535,8 @@ async def present_view(call: types.CallbackQuery, text_, photo, markup):
     if photo:
         try:
             await msg.delete()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _err:  # noqa: BLE001
+            logging.warning("silenced error in present_view (line 7537): %s", _err)
         try:
             if len(text_) <= 1000:
                 await call.bot.send_photo(chat_id=chat_id, photo=photo, caption=text_, reply_markup=markup)
@@ -7549,8 +7550,8 @@ async def present_view(call: types.CallbackQuery, text_, photo, markup):
     if had_photo:
         try:
             await msg.delete()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _err:  # noqa: BLE001
+            logging.warning("silenced error in present_view (line 7552): %s", _err)
         await call.bot.send_message(chat_id=chat_id, text=text_, reply_markup=markup)
         return
     await edit_or_send(call, text_, markup)
@@ -9098,8 +9099,8 @@ async def pin_set_save(message: types.Message, state: FSMContext):
     raw = (message.text or "").translate(DIGITS_FA).strip()
     try:
         await message.delete()
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as _err:  # noqa: BLE001
+        logging.debug("silenced error in pin_set_save (line 9101): %s", _err)
     if raw == "-":
         set_setting("admin_pin_hash", "")
         note = "🔓 PIN حذف شد؛ از این به بعد کد تصادفی استفاده می‌شود."
@@ -9139,8 +9140,8 @@ async def two_step_check(message: types.Message, state: FSMContext):
             set_setting("admin_pin_hash", pin_hash(entered))  # ارتقای هش قدیمی
         try:
             await message.delete()  # PIN در چت نماند
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _err:  # noqa: BLE001
+            logging.warning("silenced error in two_step_check (line 9142): %s", _err)
     else:
         ok = bool(entered) and entered == str(data.get("cf_code", ""))
     if not ok:
@@ -10053,8 +10054,8 @@ async def broadcast_text(bot, text_):
     for uid in ids:
         try:
             await send_message_retry(bot, uid, text_)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _err:  # noqa: BLE001
+            logging.warning("silenced error in broadcast_text (line 10056): %s", _err)
         await asyncio.sleep(0.05)
 
 
@@ -11715,8 +11716,8 @@ async def _push_keyboard(bot, admin_chat):
         try:
             await send_message_retry(bot, uid, "🔄 منوی پایین به‌روز شد 👇", reply_markup=build_reply_keyboard(uid))
             ok += 1
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _err:  # noqa: BLE001
+            logging.debug("silenced error in _push_keyboard (line 11718): %s", _err)
         await asyncio.sleep(0.05)
     try:
         await bot.send_message(chat_id=admin_chat, text=f"✅ کیبورد جدید برای {ok} نفر از {len(ids)} نفر ارسال شد.")
@@ -17061,8 +17062,8 @@ async def receipt_apology_cancel(call: types.CallbackQuery):
     await call.answer("لغو شد")
     try:
         await call.message.edit_reply_markup(reply_markup=None)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as _err:  # noqa: BLE001
+        logging.warning("silenced error in receipt_apology_cancel (line 17064): %s", _err)
 
 
 async def _run_apologies(bot, ids, admin_id):
@@ -17084,8 +17085,8 @@ async def _run_apologies(bot, ids, admin_id):
                         if u is not None:
                             u.blocked = True
                             s.commit()
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as _err:  # noqa: BLE001
+                    logging.warning("silenced error in _run_apologies (line 17087): %s", _err)
             except TelegramRetryAfter as e:
                 await asyncio.sleep(min(30, float(getattr(e, "retry_after", 3) or 3)))
                 failed += 1
@@ -17099,8 +17100,8 @@ async def _run_apologies(bot, ids, admin_id):
         await bot.send_message(
             admin_id, f"📣 پیام عذرخواهی تمام شد.\n✅ ارسال‌شده: {sent}\n🚫 ربات را بلاک کرده: {blocked}\n❌ ناموفق: {failed}"
         )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as _err:  # noqa: BLE001
+        logging.debug("silenced error in _run_apologies (line 17102): %s", _err)
 
 
 @dp.callback_query(F.data.startswith("rapo_go_"), MainAdmin())
@@ -17112,8 +17113,8 @@ async def receipt_apology_go(call: types.CallbackQuery):
     ids = await asyncio.to_thread(_apology_candidates, days)  # بازمحاسبه تا تکراری/ثبت‌شده‌ها حذف شوند
     try:
         await call.message.edit_reply_markup(reply_markup=None)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as _err:  # noqa: BLE001
+        logging.warning("silenced error in receipt_apology_go (line 17115): %s", _err)
     if not ids:
         await call.answer("کسی برای ارسال نمانده.", show_alert=True)
         return
@@ -17174,6 +17175,154 @@ async def rcp_apo_callback(call: types.CallbackQuery):
 async def orphan_receipt(message: types.Message, state: FSMContext):
     """آخرین سد دفاعی: هر عکس/فایل تصویری که هیچ هندلر دیگری نگرفت (بدون state یا در state نامرتبط)."""
     await handle_stateless_receipt(message)
+
+
+# ---------------------------------------------------------------------------
+# لاگ خطاها در پنل ادمین
+# فقط در حافظه نگه‌داری می‌شود (بدون دیتابیس، دیسک یا شبکه)؛ مصرف عملاً صفر است.
+# با ری‌استارت/دیپلوی پاک می‌شود. حداکثر ERRLOG_MAX مورد (پیش‌فرض ۲۰۰).
+# ---------------------------------------------------------------------------
+import collections  # noqa: E402
+
+ERRLOG_MAX = int(os.environ.get("ERRLOG_MAX", "200"))
+
+
+class ErrorRingHandler(logging.Handler):
+    """آخرین WARNING/ERRORها را در یک صف حلقوی کوچک نگه می‌دارد. خودش هرگز لاگ نمی‌نویسد."""
+
+    def __init__(self, maxlen=200):
+        super().__init__(level=logging.WARNING)
+        self.buf = collections.deque(maxlen=maxlen)
+        self.total = 0
+
+    def emit(self, record):
+        try:
+            msg = record.getMessage()[:400]
+            tb = ""
+            if record.exc_info and record.exc_info[0] is not None:
+                tb = "".join(traceback.format_exception(*record.exc_info))[-700:]
+            last = self.buf[-1] if self.buf else None
+            if last is not None and last["msg"] == msg and last["name"] == record.name:
+                last["count"] += 1
+                last["ts"] = record.created
+            else:
+                self.buf.append(
+                    {"ts": record.created, "lvl": record.levelname, "name": record.name, "msg": msg, "tb": tb, "count": 1}
+                )
+            self.total += 1
+        except Exception:  # noqa: BLE001
+            pass
+
+
+_ERRLOG = ErrorRingHandler(ERRLOG_MAX)
+
+
+def install_error_log():
+    root = logging.getLogger()
+    if _ERRLOG not in root.handlers:
+        root.addHandler(_ERRLOG)
+
+
+def _errlog_ts(ts):
+    return datetime.fromtimestamp(ts, iran_timezone).strftime("%m/%d %H:%M:%S")
+
+
+def _errlog_text(limit=8):
+    items = list(_ERRLOG.buf)
+    now = time.time()
+    last_hour = sum(i["count"] for i in items if now - i["ts"] < 3600)
+    errors = sum(1 for i in items if i["lvl"] in ("ERROR", "CRITICAL"))
+    out = (
+        "🪵 <b>لاگ خطاها</b>\n"
+        f"در حافظه: {len(items)} مورد | ساعت اخیر: {last_hour} رخداد | ERROR: {errors}\n"
+        "<i>با ری‌استارت پاک می‌شود.</i>\n\n"
+    )
+    if not items:
+        return out + "✅ هنوز خطایی ثبت نشده است."
+    for i in reversed(items[-limit:]):
+        cnt = f" ×{i['count']}" if i["count"] > 1 else ""
+        out += f"• {_errlog_ts(i['ts'])} [{i['lvl']}]{cnt}\n<code>{html.escape(i['msg'][:170], quote=False)}</code>\n"
+    return out[:3900]
+
+
+def _errlog_markup():
+    b = InlineKeyboardButton
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [b(text="🔄 تازه‌سازی", callback_data="errlog_home"), b(text="📥 دانلود کامل", callback_data="errlog_dl")],
+            [b(text="🧹 پاک‌کردن", callback_data="errlog_clear"), b(text="♻️ ری‌استارت ربات", callback_data="errlog_restart")],
+            [b(text="🔙 بازگشت", callback_data="admin_home")],
+        ]
+    )
+
+
+@dp.callback_query(F.data == "errlog_home", MainAdmin())
+async def errlog_home_cb(call: types.CallbackQuery):
+    await call.answer()
+    await edit_or_send(call, _errlog_text(), _errlog_markup())
+
+
+@dp.callback_query(F.data == "errlog_clear", MainAdmin())
+async def errlog_clear_cb(call: types.CallbackQuery):
+    _ERRLOG.buf.clear()
+    _ERRLOG.total = 0
+    await call.answer("پاک شد ✅")
+    await edit_or_send(call, _errlog_text(), _errlog_markup())
+
+
+@dp.callback_query(F.data == "errlog_restart", MainAdmin())
+async def errlog_restart_ask_cb(call: types.CallbackQuery):
+    await call.answer()
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[b(text="✅ بله، ری‌استارت", callback_data="errlog_restart_yes"), b(text="❌ انصراف", callback_data="errlog_home")]]
+    )
+    await edit_or_send(
+        call,
+        "♻️ <b>ری‌استارت ربات؟</b>\n\nربات چند ثانیه قطع می‌شود و هاست (Railway) دوباره آن را بالا می‌آورد. "
+        "وضعیت مرحلهٔ پرداخت کاربران در دیتابیس ذخیره است و از دست نمی‌رود.",
+        markup,
+    )
+
+
+async def _do_restart():
+    await asyncio.sleep(1.5)
+    logging.shutdown()
+    os._exit(1)  # کد غیرصفر: سیاست ری‌استارت هاست دوباره اجرا می‌کند
+
+
+@dp.callback_query(F.data == "errlog_restart_yes", MainAdmin())
+async def errlog_restart_do_cb(call: types.CallbackQuery):
+    # جلوگیری از حلقهٔ ری‌استارت: اگر تلگرام همین کلیک را بعد از بالا آمدن دوباره بفرستد، نادیده گرفته می‌شود
+    try:
+        if get_setting("last_restart_cb") == str(call.id):
+            await call.answer()
+            return
+        set_setting("last_restart_cb", str(call.id))
+    except Exception as e:  # noqa: BLE001
+        logging.warning("restart guard failed: %s", e)
+    await call.answer("♻️ در حال ری‌استارت…")
+    await edit_or_send(call, "♻️ ربات تا چند ثانیهٔ دیگر دوباره بالا می‌آید…", None)
+    logging.warning("restart requested by admin %s", call.from_user.id)
+    spawn(_do_restart())
+
+
+@dp.callback_query(F.data == "errlog_dl", MainAdmin())
+async def errlog_dl_cb(call: types.CallbackQuery):
+    items = list(_ERRLOG.buf)
+    if not items:
+        await call.answer("لاگی برای دانلود نیست.", show_alert=True)
+        return
+    await call.answer("در حال ارسال…")
+    parts = []
+    for i in items:
+        cnt = f" (x{i['count']})" if i["count"] > 1 else ""
+        parts.append(f"[{_errlog_ts(i['ts'])}] {i['lvl']} {i['name']}{cnt}\n{i['msg']}\n{i['tb']}".rstrip())
+    data = ("\n" + "-" * 40 + "\n").join(parts).encode("utf-8")
+    await call.message.answer_document(
+        BufferedInputFile(data, filename=f"bot_errors_{today_iran().isoformat()}.txt"),
+        caption=f"📥 {len(items)} مورد آخر",
+    )
 
 
 JOBS = [
@@ -17283,6 +17432,7 @@ async def with_retry(fn, *args, tries=8, **kw):
 
 async def main():
     global BOT_USERNAME
+    install_error_log()
     init_db()
     try:
         with SessionLocal() as _s:
@@ -17370,12 +17520,12 @@ async def main():
         await asyncio.gather(*background, return_exceptions=True)
         try:
             await runner.cleanup()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _err:  # noqa: BLE001
+            logging.debug("silenced error in main (line 17373): %s", _err)
         try:
             await bot.session.close()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _err:  # noqa: BLE001
+            logging.debug("silenced error in main (line 17377): %s", _err)
 
 
 if __name__ == "__main__":
