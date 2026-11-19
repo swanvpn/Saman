@@ -27,6 +27,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
+    Float,
     Integer,
     String,
     Text,
@@ -45,7 +46,7 @@ from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter
-from aiogram.filters import BaseFilter, Command, CommandObject
+from aiogram.filters import BaseFilter, Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -125,6 +126,110 @@ def measure_db_latency(rounds=5):
             conn.execute(text("SELECT 1"))
         return (time.perf_counter() - t0) * 1000 / rounds
 
+class DurableMemoryStorage(MemoryStorage):
+    """MemoryStorage که stateهای مرحلهٔ پرداخت/رسید را در دیتابیس هم نگه می‌دارد.
+
+    با ری‌استارت یا دیپلوی، کاربری که وسط خرید است state و اطلاعات سفارشش را از دست نمی‌دهد
+    و می‌تواند همان رسید را بفرستد. فقط stateهای گروه PaymentState ذخیره می‌شوند.
+    """
+
+    PERSIST_PREFIXES = ("PaymentState:",)
+    TTL = float(os.environ.get("FSM_TTL_HOURS", "12")) * 3600
+
+    def __init__(self):
+        super().__init__()
+        self._checked: set = set()
+        self._persisted: set = set()
+        self._rlock = asyncio.Lock()
+
+    @staticmethod
+    def _k(key):
+        return f"{key.bot_id}:{key.chat_id}:{key.user_id}:{getattr(key, 'thread_id', None)}:{key.destiny}"
+
+    @staticmethod
+    def _db_save(k, state, data):
+        with SessionLocal() as s:
+            s.merge(FsmSnapshot(key=k, state=state, data=data, updated_at=time.time()))
+            s.commit()
+
+    @staticmethod
+    def _db_delete(k):
+        with SessionLocal() as s:
+            s.query(FsmSnapshot).filter(FsmSnapshot.key == k).delete()
+            s.commit()
+
+    @staticmethod
+    def _db_load(k):
+        with SessionLocal() as s:
+            row = s.get(FsmSnapshot, k)
+            return (row.state, row.data, row.updated_at) if row else None
+
+    async def _restore(self, key):
+        try:
+            k = self._k(key)
+            if k in self._checked:
+                return
+            async with self._rlock:
+                if k in self._checked:
+                    return
+                rec = self.storage.get(key)
+                if rec is not None and getattr(rec, "state", None):
+                    self._checked.add(k)
+                    return
+                row = await asyncio.to_thread(self._db_load, k)
+                if len(self._checked) > 50000:
+                    self._checked.clear()
+                self._checked.add(k)
+                if not row:
+                    return
+                state, data, ts = row
+                if time.time() - (ts or 0) > self.TTL:
+                    await asyncio.to_thread(self._db_delete, k)
+                    return
+                rec = self.storage[key]
+                rec.state = state
+                rec.data = json.loads(data or "{}")
+                self._persisted.add(k)
+                logging.info("FSM restored from DB: user=%s state=%s", key.user_id, state)
+        except Exception as e:  # noqa: BLE001
+            logging.warning("FSM restore failed: %s", e)
+
+    async def _sync(self, key):
+        try:
+            k = self._k(key)
+            rec = self.storage.get(key)
+            state = getattr(rec, "state", None) if rec is not None else None
+            if state and state.startswith(self.PERSIST_PREFIXES):
+                data = json.dumps(getattr(rec, "data", {}) or {}, ensure_ascii=False, default=str)
+                self._persisted.add(k)
+                self._checked.add(k)
+                await asyncio.to_thread(self._db_save, k, state, data)
+            elif k in self._persisted or k not in self._checked:
+                self._persisted.discard(k)
+                self._checked.add(k)
+                await asyncio.to_thread(self._db_delete, k)
+        except Exception as e:  # noqa: BLE001
+            logging.warning("FSM persist failed: %s", e)
+
+    async def get_state(self, key):
+        await self._restore(key)
+        return await super().get_state(key)
+
+    async def get_data(self, key):
+        await self._restore(key)
+        return await super().get_data(key)
+
+    async def set_state(self, key, state=None):
+        await self._restore(key)
+        await super().set_state(key, state)
+        await self._sync(key)
+
+    async def set_data(self, key, data):
+        await self._restore(key)
+        await super().set_data(key, data)
+        await self._sync(key)
+
+
 def _make_storage():
     url = os.environ.get("REDIS_URL", "").strip()
     if url:
@@ -132,8 +237,8 @@ def _make_storage():
             from aiogram.fsm.storage.redis import RedisStorage
             return RedisStorage.from_url(url)
         except Exception as e:  # noqa: BLE001
-            logging.error("RedisStorage فعال نشد (پکیج redis نصب نیست؟)، MemoryStorage استفاده می‌شود: %s", e)
-    return MemoryStorage()
+            logging.error("RedisStorage فعال نشد (پکیج redis نصب نیست؟)، از ذخیرهٔ دیتابیسی استفاده می‌شود: %s", e)
+    return DurableMemoryStorage()
 
 
 dp = Dispatcher(storage=_make_storage())
@@ -390,6 +495,15 @@ class ReceiptHash(Base):
     user_id = Column(BigInteger)
     request_id = Column(Integer)
     created_at = Column(String)
+
+
+class FsmSnapshot(Base):
+    """نسخهٔ پایدار stateهای مرحلهٔ پرداخت؛ برای جان‌سالم‌به‌در‌بردن از ری‌استارت/دیپلوی."""
+    __tablename__ = "fsm_snapshots"
+    key = Column(String, primary_key=True)
+    state = Column(String)
+    data = Column(Text)
+    updated_at = Column(Float)
 
 
 class ScheduledBroadcast(Base):
@@ -1471,15 +1585,66 @@ async def append_status(call: types.CallbackQuery, line, markup=None):
         logging.warning("append_status failed: %s", e)
 
 
-async def notify_staff(bot, text_, markup=None, photo=None):
-    for cid in staff_ids():
+async def _staff_send_one(bot, cid, text_, markup, photo):
+    """یک پیام را برای یک ادمین می‌فرستد؛ عکس → فایل → فقط متن (هیچ رسیدی گم نشود)."""
+    short = len(text_ or "") <= 1000
+    if photo:
+        for method, arg in (("send_photo", "photo"), ("send_document", "document")):
+            try:
+                kw = {"chat_id": cid, arg: photo}
+                if short:
+                    kw.update(caption=text_, reply_markup=markup)
+                await getattr(bot, method)(**kw)
+                if not short:
+                    await bot.send_message(chat_id=cid, text=text_, reply_markup=markup)
+                return True
+            except TelegramRetryAfter as e:
+                await asyncio.sleep(min(5, float(getattr(e, "retry_after", 1) or 1)))
+                try:
+                    kw = {"chat_id": cid, arg: photo}
+                    if short:
+                        kw.update(caption=text_, reply_markup=markup)
+                    await getattr(bot, method)(**kw)
+                    if not short:
+                        await bot.send_message(chat_id=cid, text=text_, reply_markup=markup)
+                    return True
+                except Exception as e2:  # noqa: BLE001
+                    logging.warning("notify_staff %s retry failed for %s: %s", method, cid, e2)
+            except Exception as e:  # noqa: BLE001
+                logging.warning("notify_staff %s failed for %s: %s", method, cid, e)
+        text_ = (text_ or "") + "\n\n⚠️ تصویر رسید ارسال نشد؛ از «مشاهدهٔ درخواست» ببینید."
+    for attempt in range(2):
         try:
-            if photo:
-                await bot.send_photo(chat_id=cid, photo=photo, caption=text_, reply_markup=markup)
-            else:
-                await bot.send_message(chat_id=cid, text=text_, reply_markup=markup)
+            await bot.send_message(chat_id=cid, text=text_, reply_markup=markup)
+            return True
         except Exception as e:  # noqa: BLE001
-            logging.warning("notify_staff failed for %s: %s", cid, e)
+            logging.warning("notify_staff text failed for %s: %s", cid, e)
+            await asyncio.sleep(1.5)
+    return False
+
+
+async def notify_staff(bot, text_, markup=None, photo=None):
+    ok = 0
+    ids = list(staff_ids())
+    for cid in ids:
+        if await _staff_send_one(bot, cid, text_, markup, photo):
+            ok += 1
+    if ids and not ok:
+        logging.error("notify_staff: برای هیچ ادمینی ارسال نشد!")
+    return ok
+
+
+async def answer_retry(message, text_, tries=3, **kw):
+    """پاسخ به کاربر با تلاش مجدد؛ شکست آن هرگز نباید ثبتِ انجام‌شده را خراب کند."""
+    for i in range(tries):
+        try:
+            return await message.answer(text_, **kw)
+        except TelegramForbiddenError:
+            return None
+        except Exception as e:  # noqa: BLE001
+            logging.warning("answer_retry %s/%s failed: %s", i + 1, tries, e)
+            await asyncio.sleep(1.5 * (i + 1))
+    return None
 
 
 async def send_sticker(bot, chat_id, key):
@@ -1636,7 +1801,9 @@ def get_admin_main_keyboard(user_id=None):
             ("codes", b(text="🏷 کدهای تخفیف", callback_data="admin_codes")),
             ("broadcast", b(text="📢 پیام همگانی", callback_data="admin_broadcast_start")),
         ]
-        buttons = [b(text="🎫 تیکت‌ها", callback_data="admin_tickets")] + [btn for p, btn in optional if p in perms]
+        buttons = [b(text="🎫 تیکت‌ها", callback_data="admin_tickets"), b(text="📬 بازارسال رسیدها", callback_data="rcp_home")] + [
+            btn for p, btn in optional if p in perms
+        ]
         rows = [top] + [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
         return InlineKeyboardMarkup(inline_keyboard=rows)
     return InlineKeyboardMarkup(
@@ -1648,6 +1815,7 @@ def get_admin_main_keyboard(user_id=None):
             [b(text="📢 پیام همگانی", callback_data="admin_broadcast_start"), b(text="🧰 بکاپ", callback_data="admin_backup")],
             [b(text="🩺 عیب‌یابی خودکار", callback_data="diag_home"), b(text="🚪 خروج کاربران", callback_data="lv_home")],
             [b(text="🎛 دکمه‌های کاربر", callback_data="ubh"), b(text="⚙️ تنظیمات ربات", callback_data="admin_settings")],
+            [b(text="📬 بازارسال رسیدها / عذرخواهی", callback_data="rcp_home")],
         ]
     )
 
@@ -1736,7 +1904,15 @@ class AccessMiddleware(BaseMiddleware):
                 else:
                     await event.answer(esc(msg))
                 return None
-            if get_bool("force_join_on") and not (
+            _mid_payment = False
+            if isinstance(event, types.Message) and (event.photo or event.document):
+                try:
+                    _st = data.get("state")
+                    _cur = await _st.get_state() if _st is not None else None
+                    _mid_payment = bool(_cur and _cur.startswith("PaymentState:"))
+                except Exception:  # noqa: BLE001
+                    _mid_payment = False
+            if get_bool("force_join_on") and not _mid_payment and not (
                 isinstance(event, types.CallbackQuery) and event.data == "fj_check"
             ):
                 if not await is_channel_member(event.bot, user.id):
@@ -1794,6 +1970,7 @@ class ThrottleMiddleware(BaseMiddleware):
     def __init__(self, limit=int(os.environ.get("THROTTLE_LIMIT", "12")), window=float(os.environ.get("THROTTLE_WINDOW", "5"))):
         self.limit, self.window = limit, window
         self.hits: dict = {}
+        self.media_hits: dict = {}
         self.warned: dict = {}
 
     async def __call__(self, handler, event, data):
@@ -1801,6 +1978,16 @@ class ThrottleMiddleware(BaseMiddleware):
         if user is None or is_staff(user.id):
             return await handler(event, data)
         now = time.monotonic()
+        if isinstance(event, types.Message) and (event.photo or event.document):
+            # رسید/آلبوم هرگز بی‌صدا حذف نمی‌شود؛ فقط حد جداگانهٔ سخاوتمندانه برای ضد-اسپم
+            mq = [x for x in self.media_hits.get(user.id, ()) if now - x < 30]
+            mq.append(now)
+            self.media_hits[user.id] = mq
+            if len(self.media_hits) > 5000:
+                self.media_hits = {k: v for k, v in self.media_hits.items() if v and now - v[-1] < 30}
+            if len(mq) > 25:
+                return None
+            return await handler(event, data)
         q = [x for x in self.hits.get(user.id, ()) if now - x < self.window]
         q.append(now)
         self.hits[user.id] = q
@@ -2435,7 +2622,7 @@ async def receipt_fingerprint(bot, photo):
         return uniq, None
     try:
         buf = io.BytesIO()
-        await bot.download(photo.file_id, destination=buf)
+        await asyncio.wait_for(bot.download(photo.file_id, destination=buf), timeout=25)
         digest = hashlib.sha256(buf.getvalue()).hexdigest()
     except Exception as e:  # noqa: BLE001
         logging.warning("receipt hash failed: %s", e)
@@ -2510,12 +2697,98 @@ async def handle_duplicate_receipt(message: types.Message, dup):
     )
 
 
+_RECEIPT_OK: dict = {}  # user_id -> (زمان, media_group_id, message_id) آخرین رسید موفق
+_ORPHAN_SEEN: dict = {}  # user_id -> زمان آخرین پاسخ «بدون سفارش» (ضد تکرار)
+
+
+def mark_receipt_ok(message: types.Message):
+    if len(_RECEIPT_OK) > 5000:
+        _RECEIPT_OK.clear()
+    _RECEIPT_OK[message.from_user.id] = (time.time(), message.media_group_id, message.message_id)
+
+
+async def forward_receipt_to_staff(message: types.Message, note: str):
+    """رسیدی که به هر دلیل ثبت خودکار نشد را با توضیح برای ادمین می‌فرستد تا هرگز گم نشود."""
+    media = receipt_media(message)
+    b = InlineKeyboardButton
+    await notify_staff(
+        message.bot,
+        f"⚠️ <b>رسید نیازمند بررسی دستی</b>\n👤 {user_label(message.from_user)} (<code>{message.from_user.id}</code>)\n{note}",
+        InlineKeyboardMarkup(inline_keyboard=[[b(text="✉️ پیام به کاربر", callback_data=f"pm_{message.from_user.id}")]]),
+        photo=media.file_id if media else None,
+    )
+
+
+def _recent_request_for(user_id, minutes=45):
+    """آخرین درخواست کاربر اگر در چند دقیقهٔ اخیر ثبت شده و رد نشده باشد."""
+    try:
+        with SessionLocal() as s:
+            r = s.query(Request).filter(Request.user_id == user_id).order_by(Request.id.desc()).first()
+            if r is None or r.status == "rejected" or not r.created_iso:
+                return None
+            created = datetime.strptime(r.created_iso, "%Y-%m-%dT%H:%M")
+            if 0 <= (now_naive() - created).total_seconds() <= minutes * 60:
+                return r.id
+    except Exception as e:  # noqa: BLE001
+        logging.warning("recent request lookup failed: %s", e)
+    return None
+
+
+async def handle_stateless_receipt(message: types.Message):
+    """عکس/فایل تصویری که state مرحلهٔ رسید ندارد (ری‌استارت، انقضا، ارسال دوم/آلبوم).
+    کاربر هرگز بی‌جواب نمی‌ماند و رسید برای ادمین فوروارد می‌شود."""
+    uid = message.from_user.id
+    if is_staff(uid):
+        return
+    ok = _RECEIPT_OK.get(uid)
+    if ok and time.time() - ok[0] < 600 and message.media_group_id and ok[1] == message.media_group_id:
+        return  # بقیهٔ عکس‌های همان آلبوم؛ سفارش قبلاً ثبت شده
+    now = time.time()
+    if now - _ORPHAN_SEEN.get(uid, 0) < 20:
+        return  # چند عکس پشت‌سرهم → فقط یک پاسخ
+    if len(_ORPHAN_SEEN) > 5000:
+        _ORPHAN_SEEN.clear()
+    _ORPHAN_SEEN[uid] = now
+    b = InlineKeyboardButton
+    rid = _recent_request_for(uid)
+    if rid:
+        await answer_retry(
+            message,
+            f"✅ رسیدت قبلاً با کد <b>#{rid}</b> ثبت شده و در صف بررسیه.\n"
+            "این عکس رو هم برای پشتیبانی فرستادم؛ نیازی به ارسال دوباره نیست 🙏",
+            reply_markup=status_markup(rid),
+        )
+        await forward_receipt_to_staff(message, f"📎 تصویر اضافه از کاربر (درخواست #{rid})")
+        return
+    try:
+        with SessionLocal() as _s:
+            glog_add(_s, uid, "orphan_receipt", message.message_id)
+            _s.commit()
+    except Exception as e:  # noqa: BLE001
+        logging.warning("orphan log failed: %s", e)
+    await answer_retry(
+        message,
+        "🙏 ببخشید، ارتباط سفارشت با این عکس قطع شده بود و نتونستم خودکار ثبتش کنم.\n"
+        "عکس رو برای پشتیبانی فرستادم تا دستی بررسی بشه؛ اگه تا چند دقیقه خبری نشد، "
+        "از «🛒 خرید سرویس» دوباره سفارش بده و رسید رو بفرست.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[b(text="🛒 خرید سرویس", callback_data="main_buy")]]),
+    )
+    await forward_receipt_to_staff(
+        message, "کاربر رسید فرستاد ولی سفارش فعالی نداشت (احتمالاً ری‌استارت/انقضا). سفارش را دستی ثبت یا با کاربر هماهنگ کنید."
+    )
+
+
 async def receipt_handler(message: types.Message, state: FSMContext):
     data = await state.get_data()
     co = compute_checkout(message.from_user.id, data)
     if co is None:
         await state.clear()
-        await message.answer("این سفارش دیگه معتبر نیست، دوباره از خرید شروع کن 🔄")
+        await answer_retry(
+            message,
+            "این سفارش دیگه معتبر نیست 🔄 ولی نگران نباش، رسیدت رو برای پشتیبانی فرستادم تا بررسی کنن. "
+            "اگه هنوز پرداخت نکردی، دوباره از خرید شروع کن.",
+        )
+        await forward_receipt_to_staff(message, "سفارش کاربر منقضی/نامعتبر شده بود (مثلاً تغییر قیمت یا پلن) ولی رسید فرستاد.")
         return
 
     user_id = message.from_user.id
@@ -2542,9 +2815,14 @@ async def receipt_handler(message: types.Message, state: FSMContext):
         await handle_duplicate_receipt(message, dup)
         return
 
-    await state.clear()
-    fstep(user_id, "receipt")
-    await message.answer(
+    mark_receipt_ok(message)  # از این لحظه سفارش ثبت‌شده است؛ خطای بعدی نباید به کاربر «ناموفق» نشان بدهد
+    try:
+        await state.clear()
+        fstep(user_id, "receipt")
+    except Exception as e:  # noqa: BLE001
+        logging.warning("post-commit cleanup failed: %s", e)
+    await answer_retry(
+        message,
         fill_text("t_receipt_ok", date=get_current_jalali()) + "\n\n" + pending_notice(),
         reply_markup=status_markup(req_id),
     )
@@ -2555,7 +2833,7 @@ async def receipt_handler(message: types.Message, state: FSMContext):
     )
 
 
-BUILD_TAG = "growth-pack-v12b"
+BUILD_TAG = "growth-pack-v12c-receipt-safe"
 
 
 def has_receipt_media(message: types.Message) -> bool:
@@ -2588,12 +2866,29 @@ async def receipt_router(message: types.Message, state: FSMContext):
     if has_receipt_media(message):
         async with user_lock(message.from_user.id):
             cur = await state.get_state()
-            if cur is None:  # عکس دوم آلبوم/ارسال همزمان: سفارش قبلاً ثبت شده
+            if cur is None:  # عکس دوم آلبوم/ارسال همزمان یا state گم‌شده
+                await handle_stateless_receipt(message)
                 return
-            if cur == PaymentState.waiting_for_charge_receipt.state:
-                await process_charge_receipt_handler(message, state)
-            else:
-                await receipt_handler(message, state)
+            try:
+                if cur == PaymentState.waiting_for_charge_receipt.state:
+                    await process_charge_receipt_handler(message, state)
+                else:
+                    await receipt_handler(message, state)
+            except Exception as e:  # noqa: BLE001
+                logging.exception("receipt processing failed for %s: %s", message.from_user.id, e)
+                ok = _RECEIPT_OK.get(message.from_user.id)
+                if ok and ok[2] == message.message_id:
+                    return  # سفارش ثبت شده؛ فقط مرحلهٔ پس از آن خطا داشته
+                await answer_retry(
+                    message,
+                    "⚠️ موقع ثبت رسید مشکلی پیش اومد، ولی رسیدت گم نشد؛ برای پشتیبانی فرستادم تا دستی ثبت بشه 🙏\n"
+                    "نیازی به ارسال دوباره نیست. اگه خواستی می‌تونی چند لحظهٔ دیگه دوباره بفرستی.",
+                )
+                try:
+                    await forward_receipt_to_staff(message, f"خطا هنگام ثبت خودکار رسید: <code>{esc(type(e).__name__)}: {esc(str(e)[:150])}</code>")
+                    await report_error(message.bot, "ثبت رسید", e)
+                except Exception as e2:  # noqa: BLE001
+                    logging.error("forward after receipt failure failed: %s", e2)
         return
     if message.document:
         await message.answer("رسید رو به‌صورت «عکس» بفرست (فایل تصویری هم قبوله، PDF نه) 📸", reply_markup=_receipt_nav(cur))
@@ -2724,7 +3019,12 @@ async def process_charge_receipt_handler(message: types.Message, state: FSMConte
     amount = data.get("charge_amount", 0)
     if not amount:
         await state.clear()
-        await message.answer("درخواست منقضی شده است. لطفاً دوباره مبلغ شارژ را انتخاب کنید.")
+        await answer_retry(
+            message,
+            "درخواست شارژ منقضی شده بود؛ ولی رسیدت رو برای پشتیبانی فرستادم تا بررسی کنن. "
+            "اگه هنوز پرداخت نکردی، دوباره مبلغ شارژ رو انتخاب کن.",
+        )
+        await forward_receipt_to_staff(message, "درخواست شارژ کاربر منقضی شده بود ولی رسید فرستاد.")
         return
 
     user_id = message.from_user.id
@@ -2753,8 +3053,13 @@ async def process_charge_receipt_handler(message: types.Message, state: FSMConte
         await handle_duplicate_receipt(message, dup)
         return
 
-    await state.clear()
-    await message.answer(
+    mark_receipt_ok(message)
+    try:
+        await state.clear()
+    except Exception as e:  # noqa: BLE001
+        logging.warning("post-commit cleanup failed: %s", e)
+    await answer_retry(
+        message,
         fill_text("t_charge_receipt_ok"),
         reply_markup=status_markup(req_id),
     )
@@ -8366,6 +8671,9 @@ def _safe_cb_answer(self, *args, **kwargs):
 types.CallbackQuery.answer = _safe_cb_answer
 
 
+_ERR_NOTIFIED: dict = {}
+
+
 @dp.errors()
 async def global_error_handler(event, bot: Bot):
     exc = getattr(event, "exception", None)
@@ -8375,6 +8683,15 @@ async def global_error_handler(event, bot: Bot):
     logging.error("Unhandled error: %r", exc, exc_info=exc)
     if exc is None or isinstance(exc, (TelegramForbiddenError, TelegramRetryAfter)):
         return True
+    try:
+        upd = getattr(event, "update", None)
+        tgt = (getattr(upd, "message", None) or getattr(getattr(upd, "callback_query", None), "message", None))
+        usr = getattr(getattr(upd, "message", None), "from_user", None) or getattr(getattr(upd, "callback_query", None), "from_user", None)
+        if tgt is not None and usr is not None and not is_staff(usr.id) and time.time() - _ERR_NOTIFIED.get(usr.id, 0) > 60:
+            _ERR_NOTIFIED[usr.id] = time.time()
+            await bot.send_message(tgt.chat.id, "⚠️ یه مشکل موقت پیش اومد. لطفاً چند لحظه دیگه دوباره امتحان کن؛ اطلاعاتت سر جاشه 🙏")
+    except Exception as e2:  # noqa: BLE001
+        logging.warning("error notice to user failed: %s", e2)
     await report_error(bot, "پردازش پیام کاربر", exc)
     return True
 
@@ -16589,6 +16906,270 @@ async def ap_add_kind_cb(call: types.CallbackQuery, state: FSMContext):
     await edit_or_send(call, "✅ پست اضافه شد و روشن است.\n\n" + out, markup)
 
 
+# ---------------------------------------------------------------------------
+# ابزار ادمین: بازارسال رسیدهای در انتظار + پیام عذرخواهی به کاربران آسیب‌دیده
+# ---------------------------------------------------------------------------
+def _user_line(s, uid):
+    u = s.get(User, uid)
+    name = ""
+    if u is not None:
+        name = (u.first_name or "") + (f" @{u.username}" if u.username else "")
+    return f"{esc(name.strip()) or 'کاربر'} (<code>{uid}</code>)"
+
+
+async def _pending_receipts_send(target: types.Message, days: int, offset: int = 0):
+    """درخواست‌های بی‌پاسخِ دارای رسید را با عکس برای ادمین (همان چت) می‌فرستد."""
+    days = max(1, min(days, 90))
+    cutoff = (now_naive() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M")
+    PAGE = 40
+    with SessionLocal() as s:
+        q = (
+            s.query(Request)
+            .filter(Request.status == "unanswered", Request.receipt_file_id.isnot(None))
+            .filter(or_(Request.created_iso.is_(None), Request.created_iso >= cutoff))
+            .order_by(Request.id.asc())
+        )
+        total = q.count()
+        rows = q.offset(offset).limit(PAGE).all()
+        items = []
+        for r in rows:
+            cap = (
+                f"📌 <b>درخواست در انتظار #{r.id}</b> ({esc(TYPE_LABELS.get(r.req_type, r.req_type or ''))})\n"
+                f"👤 {_user_line(s, r.user_id)}\n"
+                f"📦 {esc(r.plan_name or '-')}\n"
+                f"💰 {(r.price or 0):,} تومان"
+                + (f"\n💳 مبلغ واریزی دقیق: <b>{r.pay_amount:,}</b>" if r.pay_amount and r.pay_amount != r.price else "")
+                + f"\n⏱ {esc(r.created_at or '-')}"
+            )
+            items.append((r.id, r.receipt_file_id, cap))
+    b = InlineKeyboardButton
+    back = [b(text="🔙 منوی رسیدها", callback_data="rcp_home")]
+    if not items:
+        await target.answer(
+            f"✅ در {days} روز اخیر درخواست بی‌پاسخِ دارای رسید پیدا نشد.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[back])
+        )
+        return
+    await target.answer(f"📬 {total} درخواست بی‌پاسخ با رسید (نمایش {offset + 1} تا {offset + len(items)})؛ در حال ارسال…")
+    sent = failed = 0
+    for rid, fid, cap in items:
+        ok = await _staff_send_one(target.bot, target.chat.id, cap, admin_request_markup(rid), fid)
+        sent += 1 if ok else 0
+        failed += 0 if ok else 1
+        await asyncio.sleep(0.5)
+    rows_kb = []
+    if total > offset + PAGE:
+        rows_kb.append([b(text=f"➡️ {min(PAGE, total - offset - PAGE)} مورد بعدی", callback_data=f"rcp_pend_{days}_{offset + PAGE}")])
+    rows_kb.append(back)
+    await target.answer(
+        f"✅ {sent} مورد ارسال شد" + (f"، {failed} مورد ناموفق" if failed else ""),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows_kb),
+    )
+
+
+@dp.message(Command("pendingreceipts"), Staff())
+async def pending_receipts_cmd(message: types.Message, command: CommandObject):
+    """استفاده: /pendingreceipts [روز=۷] [شروع=۰]"""
+    parts = (command.args or "").split()
+    days = int(parts[0]) if parts and parts[0].isdigit() else 7
+    offset = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+    await _pending_receipts_send(message, days, offset)
+
+
+APOLOGY_TEXT = (
+    "سلام 🌱\n"
+    "اگه در چند روز گذشته برای خرید یا شارژ، عکس رسید پرداخت فرستادی و جوابی نگرفتی، "
+    "به‌خاطر یه مشکل فنی از طرف ما بوده و بابتش واقعاً عذر می‌خوام 🙏\n\n"
+    "لطفاً همین‌جا یک‌بار دیگه عکس رسیدت رو بفرست (یا از «🛒 خرید سرویس» سفارش رو دوباره بزن). "
+    "رسید مستقیم برای پشتیبانی می‌رسه و سریع بررسی می‌شه."
+)
+_APOLOGY_RUNNING = {"v": False}
+
+
+def _apology_candidates(days):
+    cutoff_date = (today_iran() - timedelta(days=days)).isoformat()
+    with SessionLocal() as s:
+        reached = {
+            uid
+            for (uid,) in s.query(GrowthLog.user_id)
+            .filter(GrowthLog.created_iso >= cutoff_date)
+            .filter(or_(GrowthLog.kind == "orphan_receipt", (GrowthLog.kind == "fstep") & GrowthLog.ref.like("pay:%")))
+            .all()
+        }
+        if not reached:
+            return []
+        requested = {
+            uid
+            for (uid,) in s.query(Request.user_id)
+            .filter(Request.created_iso >= cutoff_date, Request.status != "rejected")
+            .all()
+        }
+        already = {
+            uid for (uid,) in s.query(GrowthLog.user_id).filter(GrowthLog.kind == "rapology", GrowthLog.created_iso >= cutoff_date).all()
+        }
+        ids = [u for u in reached if u not in requested and u not in already and not is_staff(u)]
+        if not ids:
+            return []
+        ok = []
+        for u in s.query(User).filter(User.user_id.in_(ids)).all():
+            if not u.blocked and not u.is_banned:
+                ok.append(u.user_id)
+        return ok
+
+
+async def _apology_preview(message: types.Message, days: int):
+    """پیش‌نمایش لیست کاربرانی که به صفحهٔ واریز رسیده‌اند ولی درخواستی ثبت نکرده‌اند + تأیید ارسال."""
+    days = max(1, min(days, 30))
+    ids = await asyncio.to_thread(_apology_candidates, days)
+    if not ids:
+        await message.answer(
+            f"✅ در {days} روز اخیر کاربر مشکوکی (رسیدِ بی‌ثبت) پیدا نشد.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 منوی رسیدها", callback_data="rcp_home")]]),
+        )
+        return
+    with SessionLocal() as s:
+        preview = "\n".join("• " + _user_line(s, u) for u in ids[:10])
+    b = InlineKeyboardButton
+    await message.answer(
+        f"📣 <b>{len(ids)} کاربر</b> در {days} روز اخیر به صفحهٔ واریز رسیده (یا عکسی بدون سفارش فرستاده) ولی درخواستی ثبت نکرده‌اند.\n"
+        f"⚠️ بعضی‌شان ممکن است فقط سر زده باشند و نخریده باشند.\n\n{preview}"
+        + ("\n…" if len(ids) > 10 else "")
+        + f"\n\n<b>متن پیام:</b>\n{APOLOGY_TEXT}",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [b(text=f"✅ ارسال به {len(ids)} نفر", callback_data=f"rapo_go_{days}")],
+                [b(text="❌ انصراف", callback_data="rapo_no")],
+            ]
+        ),
+    )
+
+
+@dp.message(Command("receiptapology"), MainAdmin())
+async def receipt_apology_cmd(message: types.Message, command: CommandObject):
+    """استفاده: /receiptapology [روز=۳]"""
+    days = int(command.args.strip()) if command.args and command.args.strip().isdigit() else 3
+    await _apology_preview(message, days)
+
+
+@dp.callback_query(F.data == "rapo_no", MainAdmin())
+async def receipt_apology_cancel(call: types.CallbackQuery):
+    await call.answer("لغو شد")
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _run_apologies(bot, ids, admin_id):
+    sent = blocked = failed = 0
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 خرید سرویس", callback_data="main_buy")]])
+    try:
+        for i, uid in enumerate(ids, 1):
+            try:
+                await bot.send_message(uid, APOLOGY_TEXT, reply_markup=kb)
+                sent += 1
+                with SessionLocal() as s:
+                    glog_add(s, uid, "rapology", "1")
+                    s.commit()
+            except TelegramForbiddenError:
+                blocked += 1
+                try:
+                    with SessionLocal() as s:
+                        u = s.get(User, uid)
+                        if u is not None:
+                            u.blocked = True
+                            s.commit()
+                except Exception:  # noqa: BLE001
+                    pass
+            except TelegramRetryAfter as e:
+                await asyncio.sleep(min(30, float(getattr(e, "retry_after", 3) or 3)))
+                failed += 1
+            except Exception as e:  # noqa: BLE001
+                failed += 1
+                logging.warning("apology to %s failed: %s", uid, e)
+            await asyncio.sleep(0.1)
+    finally:
+        _APOLOGY_RUNNING["v"] = False
+    try:
+        await bot.send_message(
+            admin_id, f"📣 پیام عذرخواهی تمام شد.\n✅ ارسال‌شده: {sent}\n🚫 ربات را بلاک کرده: {blocked}\n❌ ناموفق: {failed}"
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@dp.callback_query(F.data.startswith("rapo_go_"), MainAdmin())
+async def receipt_apology_go(call: types.CallbackQuery):
+    if _APOLOGY_RUNNING["v"]:
+        await call.answer("ارسال قبلی هنوز در حال انجام است.", show_alert=True)
+        return
+    days = int(call.data.rsplit("_", 1)[1])
+    ids = await asyncio.to_thread(_apology_candidates, days)  # بازمحاسبه تا تکراری/ثبت‌شده‌ها حذف شوند
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:  # noqa: BLE001
+        pass
+    if not ids:
+        await call.answer("کسی برای ارسال نمانده.", show_alert=True)
+        return
+    _APOLOGY_RUNNING["v"] = True
+    await call.answer(f"ارسال به {len(ids)} نفر شروع شد")
+    spawn(_run_apologies(call.bot, ids, call.from_user.id))
+
+
+@dp.callback_query(F.data == "rcp_home", Staff())
+async def rcp_home_callback(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    b = InlineKeyboardButton
+    rows = [
+        [b(text="📬 رسیدهای در انتظار (۳ روز)", callback_data="rcp_pend_3_0")],
+        [b(text="📬 رسیدهای در انتظار (۷ روز)", callback_data="rcp_pend_7_0")],
+        [b(text="📬 رسیدهای در انتظار (۳۰ روز)", callback_data="rcp_pend_30_0")],
+    ]
+    text_ = (
+        "📬 <b>بازارسال رسیدها</b>\n"
+        "همهٔ درخواست‌های بی‌پاسخِ دارای رسید دوباره با عکس برایت فرستاده می‌شود تا هیچ رسیدی جا نماند."
+    )
+    if is_main(call.from_user.id):
+        rows += [
+            [b(text="📣 عذرخواهی از کاربران (۳ روز)", callback_data="rcp_apo_3")],
+            [b(text="📣 عذرخواهی از کاربران (۷ روز)", callback_data="rcp_apo_7")],
+        ]
+        text_ += "\n📣 عذرخواهی: به کاربرانی که به صفحهٔ واریز رسیده‌اند ولی درخواستی ثبت نکرده‌اند پیام می‌دهد (اول پیش‌نمایش و تأیید)."
+    rows.append([b(text="🔙 بازگشت به پنل", callback_data="admin_home")])
+    await edit_or_send(call, text_, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@dp.callback_query(F.data.startswith("rcp_pend_"), Staff())
+async def rcp_pend_callback(call: types.CallbackQuery):
+    parts = call.data.split("_")  # rcp_pend_<days>_<offset>
+    try:
+        days = int(parts[2])
+        offset = int(parts[3]) if len(parts) > 3 else 0
+    except (ValueError, IndexError):
+        await call.answer("دادهٔ نامعتبر", show_alert=True)
+        return
+    await call.answer("در حال ارسال…")
+    await _pending_receipts_send(call.message, days, offset)
+
+
+@dp.callback_query(F.data.startswith("rcp_apo_"), MainAdmin())
+async def rcp_apo_callback(call: types.CallbackQuery):
+    try:
+        days = int(call.data.rsplit("_", 1)[1])
+    except ValueError:
+        await call.answer("دادهٔ نامعتبر", show_alert=True)
+        return
+    await call.answer()
+    await _apology_preview(call.message, days)
+
+
+@dp.message(IMG_RECEIPT)
+async def orphan_receipt(message: types.Message, state: FSMContext):
+    """آخرین سد دفاعی: هر عکس/فایل تصویری که هیچ هندلر دیگری نگرفت (بدون state یا در state نامرتبط)."""
+    await handle_stateless_receipt(message)
+
+
 JOBS = [
     ("backup", 3, 0, job_backup),
     ("reconcile", 3, 30, job_reconcile),
@@ -16697,6 +17278,14 @@ async def with_retry(fn, *args, tries=8, **kw):
 async def main():
     global BOT_USERNAME
     init_db()
+    try:
+        with SessionLocal() as _s:
+            _s.query(FsmSnapshot).filter(FsmSnapshot.updated_at < time.time() - 2 * 86400).delete()
+            _s.commit()
+    except Exception as e:  # noqa: BLE001
+        logging.warning("fsm snapshot purge failed: %s", e)
+    if not os.environ.get("REDIS_URL", "").strip():
+        logging.info("FSM: REDIS_URL ندارد؛ stateهای پرداخت در دیتابیس ذخیره می‌شوند (جان‌سالم‌به‌در از ری‌استارت).")
     if not os.environ.get("BACKUP_KEY", "").strip():
         logging.warning("BACKUP_KEY تنظیم نشده؛ بکاپ‌ها (شامل ساب‌لینک مشتری‌ها) رمز نمی‌شوند.")
     try:
