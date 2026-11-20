@@ -805,7 +805,7 @@ SETTINGS = {
     "backup_event_on": dict(page="backup", type="toggle", label="بکاپ رویدادی هوشمند (بعد از تغییرات مهم، سبک، به کانال)"),
     "backup_event_min": dict(page="backup", type="num", label="حداقل فاصلهٔ بکاپ‌های رویدادی (دقیقه)", min=5, max=720),
     "backup_keep": dict(page="backup", type="num", label="تعداد بکاپ نگهداری‌شده در کانال (برای هر نوع؛ قدیمی‌ترها پاک می‌شوند)", min=5, max=200),
-    "railway_daily_on": dict(page="auto", type="toggle", label="گزارش روزانهٔ مصرف و اعتبار Railway (نیاز به RAILWAY_API_TOKEN)"),
+    "railway_daily_on": dict(page="railway", type="toggle", label="گزارش روزانهٔ مصرف و اعتبار Railway (نیاز به RAILWAY_API_TOKEN)"),
     "weekly_report_on": dict(page="auto", type="toggle", label="گزارش هفتگی خودکار (شنبه‌ها)"),
     "cleanup_on": dict(page="backup", type="toggle", label="پاکسازی خودکار آمار و لاگ قدیمی"),
     "log_keep_days": dict(page="backup", type="num", label="نگهداری لاگ و تیکت بسته (روز)", min=7, max=3650),
@@ -852,6 +852,7 @@ SETTING_PAGES = {
     "support": "🎧 پشتیبانی و سوالات متداول",
     "ref": "🎁 دعوت دوستان",
     "auto": "🔔 یادآوری، گزارش و نظرسنجی",
+    "railway": "🚆 مصرف Railway",
     "mon": "📡 مانیتور سرور و اعلان قطعی",
     "custom": "✨ پلن دلخواه (حجم و روز)",
     "deliv": "📦 تحویل سرویس، QR و تست رایگان",
@@ -6168,7 +6169,7 @@ SETTING_GROUPS = [
     ("cust", "🎁 مشتریان و بازاریابی", ["ref", "club", "grow_a", "grow_b", "chpost", "ap", "join"]),
     ("deliv", "📦 تحویل و سرویس", ["deliv", "trial", "usage", "guide", "guide2"]),
     ("msg", "💬 پیام‌ها و پشتیبانی", ["start", "texts", "support", "supp2", "trust"]),
-    ("mon", "📡 پایش و اعلان", ["mon", "auto", "backup", "maint"]),
+    ("mon", "📡 پایش و اعلان", ["mon", "auto", "railway", "backup", "maint"]),
     ("sec", "🔐 امنیت و مالی", ["sec", "fin"]),
 ]
 
@@ -6394,6 +6395,15 @@ def render_settings_page(page, show_all=False):
         out += "\nPIN مدیریتی: " + ("✅ تنظیم شده" if pin_is_set() else "— (بدون PIN، کد تصادفی استفاده می‌شود)") + "\n"
         keyboard.append([InlineKeyboardButton(text="🔐 تنظیم / تغییر / حذف PIN", callback_data="pin_set")])
         keyboard.append([InlineKeyboardButton(text="👮 ادمین‌ها و دسترسی‌ها", callback_data="sadmins")])
+    if page == "railway":
+        _ok = lambda k: "✅ تنظیم شده" if os.getenv(k) else "❌ تنظیم نشده"
+        out += (
+            "\nRAILWAY_API_TOKEN: " + _ok("RAILWAY_API_TOKEN")
+            + "\nRAILWAY_PROJECT_ID: " + _ok("RAILWAY_PROJECT_ID")
+            + "\nRAILWAY_ENVIRONMENT_ID: " + _ok("RAILWAY_ENVIRONMENT_ID") + "\n"
+            + "ℹ️ گزارش روزانه ساعت ۰۹:۳۰ برای ادمین اصلی ارسال می‌شود.\n"
+        )
+        keyboard.append([InlineKeyboardButton(text="📊 گزارش همین الان", callback_data="railway_usage")])
     if page == "backup":
         keyboard.append([InlineKeyboardButton(text="📤 ارسال بکاپ به کانال (تست)", callback_data="backup_to_channel")])
     if page == "join":
