@@ -853,6 +853,7 @@ SETTING_PAGES = {
     "ref": "🎁 دعوت دوستان",
     "auto": "🔔 یادآوری، گزارش و نظرسنجی",
     "railway": "🚆 مصرف Railway",
+    "adminui": "🧭 چیدمان دکمه‌های پنل ادمین",
     "mon": "📡 مانیتور سرور و اعلان قطعی",
     "custom": "✨ پلن دلخواه (حجم و روز)",
     "deliv": "📦 تحویل سرویس، QR و تست رایگان",
@@ -1823,6 +1824,26 @@ def get_admin_main_keyboard(user_id=None):
         ]
         rows = [top] + [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
         return InlineKeyboardMarkup(inline_keyboard=rows)
+    pat = parse_layout(get_setting("apat_admin"))
+    if pat:
+        flat = [
+            b(text="👥 مدیریت کاربران", callback_data="admin_users"),
+            b(text="🎫 تیکت‌ها", callback_data="admin_tickets"),
+            b(text="📊 آمار کلی فروش", callback_data="admin_sales_stats"),
+            b(text="🧾 لاگ فعالیت‌ها", callback_data="admin_logs"),
+            b(text="📦 مدیریت پلن‌ها", callback_data="admin_plans"),
+            b(text="🏷 کدهای تخفیف", callback_data="admin_codes"),
+            b(text="📢 پیام همگانی", callback_data="admin_broadcast_start"),
+            b(text="🧰 بکاپ", callback_data="admin_backup"),
+            b(text="🩺 عیب‌یابی خودکار", callback_data="diag_home"),
+            b(text="🚪 خروج کاربران", callback_data="lv_home"),
+            b(text="🎛 دکمه‌های کاربر", callback_data="ubh"),
+            b(text="⚙️ تنظیمات ربات", callback_data="admin_settings"),
+            b(text="📬 بازارسال رسیدها / عذرخواهی", callback_data="rcp_home"),
+            b(text="🪵 لاگ خطاها", callback_data="errlog_home"),
+            b(text="📊 مصرف Railway", callback_data="railway_usage"),
+        ]
+        return InlineKeyboardMarkup(inline_keyboard=[top] + apply_layout(flat, pat))
     return InlineKeyboardMarkup(
         inline_keyboard=[
             top,
@@ -6170,7 +6191,7 @@ SETTING_GROUPS = [
     ("deliv", "📦 تحویل و سرویس", ["deliv", "trial", "usage", "guide", "guide2"]),
     ("msg", "💬 پیام‌ها و پشتیبانی", ["start", "texts", "support", "supp2", "trust"]),
     ("mon", "📡 پایش و اعلان", ["mon", "auto", "railway", "backup", "maint"]),
-    ("sec", "🔐 امنیت و مالی", ["sec", "fin"]),
+    ("sec", "🔐 امنیت و مالی", ["sec", "adminui", "fin"]),
 ]
 
 # گزینه‌های «تنظیم ریز» که فقط وقتی کلید اصلی‌شان روشن است در صفحه دیده می‌شوند (با دکمه‌ی «نمایش همه»)
@@ -6395,6 +6416,14 @@ def render_settings_page(page, show_all=False):
         out += "\nPIN مدیریتی: " + ("✅ تنظیم شده" if pin_is_set() else "— (بدون PIN، کد تصادفی استفاده می‌شود)") + "\n"
         keyboard.append([InlineKeyboardButton(text="🔐 تنظیم / تغییر / حذف PIN", callback_data="pin_set")])
         keyboard.append([InlineKeyboardButton(text="👮 ادمین‌ها و دسترسی‌ها", callback_data="sadmins")])
+    if page == "adminui":
+        _p = parse_layout(get_setting("apat_admin"))
+        out += (
+            "\nچیدمان دکمه‌های منوی اصلی پنل مدیریت (همان روش «دکمه‌های کاربر»).\n"
+            + (f"الگوی فعلی: <b>{layout_text(_p)}</b>\n{layout_preview(_p)}\n" if _p else "الگوی دلخواه فعال نیست (چیدمان پیش‌فرض).\n")
+            + "ردیف «پاسخ داده نشده / داده شده» بالای منو ثابت می‌ماند. این چیدمان فقط برای ادمین اصلی اعمال می‌شود.\n"
+        )
+        keyboard.append([InlineKeyboardButton(text="🧩 تغییر چیدمان", callback_data="apalay")])
     if page == "railway":
         _ok = lambda k: "✅ تنظیم شده" if os.getenv(k) else "❌ تنظیم نشده"
         out += (
@@ -9609,6 +9638,34 @@ async def ub_layout_custom(call: types.CallbackQuery, state: FSMContext):
     await edit_or_send(call, LAYOUT_ASK, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data=f"ublay_{screen}")]]))
 
 
+def _apal_view():
+    return layout_menu_view("apat_admin", "apalset_{code}", "apalcus", "spage_adminui", "منوی اصلی پنل ادمین")
+
+
+@dp.callback_query(F.data == "apalay", MainAdmin())
+async def apal_menu(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    await edit_or_send(call, *_apal_view())
+
+
+@dp.callback_query(F.data.regexp(r"^apalset_\d+$"), MainAdmin())
+async def apal_set(call: types.CallbackQuery):
+    code = call.data.split("_")[1]
+    set_setting("apat_admin", "" if code == "0" else layout_text(parse_layout(" ".join(code))))
+    log_action(call.from_user.id, f"چیدمان دکمه‌های پنل ادمین ← {code}")
+    await call.answer("چیدمان ذخیره شد ✅")
+    await edit_or_send(call, *_apal_view())
+
+
+@dp.callback_query(F.data == "apalcus", MainAdmin())
+async def apal_custom(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.set_state(PaymentState.layout_pattern)
+    await state.update_data(pat_key="apat_admin", pat_back="apalay")
+    await edit_or_send(call, LAYOUT_ASK, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data="apalay")]]))
+
+
 @dp.callback_query(F.data.regexp(rf"^ubreset_{UB_SCREEN_RE}$"), MainAdmin())
 async def ub_reset_handler(call: types.CallbackQuery):
     screen = call.data.split("_")[1]
@@ -9770,18 +9827,25 @@ async def _do_sadmin_delete(target, rm):
 def build_backup_full(light=False):
     """(bytes, counts) برمی‌گرداند. light=True فقط جدول‌های حیاتی را می‌گیرد و فایل «جزئی» علامت می‌خورد.
     بعد از ساخت، خودِ فایل باز می‌شود تا از سالم بودن (رمزگذاری/فشرده‌سازی) مطمئن شویم."""
-    payload = {"version": 1, "created_at": get_current_jalali(), "tables": {}}
+    head = {"version": 1, "created_at": get_current_jalali()}
     if light:
-        payload["partial"] = True
+        head["partial"] = True
     counts = {}
+    table_parts = []
     with engine.connect() as conn:
         for table in Base.metadata.sorted_tables:
             if light and table.name not in BACKUP_LIGHT_TABLES:
                 continue
             rows = conn.execute(table.select()).mappings().all()
-            payload["tables"][table.name] = [dict(r) for r in rows]
             counts[table.name] = len(rows)
-    raw = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+            # سریال‌سازی تکه‌تکه: json.dumps یک‌جا GIL را تا ثانیه‌ها نگه می‌دارد و event loop ربات را قفل می‌کند
+            chunks = []
+            for i in range(0, len(rows), 200):
+                part = json.dumps([dict(r) for r in rows[i : i + 200]], ensure_ascii=False, default=str)
+                chunks.append(part[1:-1])
+                time.sleep(0.002)  # فرصت دادن به event loop
+            table_parts.append(json.dumps(table.name, ensure_ascii=False) + ":[" + ",".join(c for c in chunks if c) + "]")
+    raw = (json.dumps(head, ensure_ascii=False)[:-1] + ',"tables":{' + ",".join(table_parts) + "}}").encode("utf-8")
     data = _pack_backup(raw)
     if _unpack_backup(data) != raw:
         raise RuntimeError("تأیید سلامت بکاپ ناموفق بود (فایل بعد از بازگشایی با اصل یکی نیست).")
