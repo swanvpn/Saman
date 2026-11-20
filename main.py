@@ -17662,20 +17662,47 @@ def _rw_args_literal(field, env_map):
     return ", ".join(pairs), None
 
 
-async def _rw_credit_lines():
+async def _rw_try_select(field_name, depth=2):
+    """فیلد سطح‌بالای Query را با آرگومان‌های قابل‌حدس امتحان می‌کند و خطوط داده را برمی‌گرداند."""
     fields = await _rw_query_fields()
-    f = fields.get("customerForUser")
+    f = fields.get(field_name)
     if not f:
-        raise RuntimeError("کوئری customerForUser در API پیدا نشد (Railway ممکن است آن را تغییر داده باشد).")
-    env_map = {"projectId": os.environ.get("RAILWAY_PROJECT_ID", ""), "environmentId": os.environ.get("RAILWAY_ENVIRONMENT_ID", "")}
-    args, missing = _rw_args_literal(f, env_map)
+        return []
+    env_map = {
+        "projectId": os.environ.get("RAILWAY_PROJECT_ID", ""),
+        "environmentId": os.environ.get("RAILWAY_ENVIRONMENT_ID", ""),
+    }
+    args, _missing = _rw_args_literal(f, env_map)
     if args is None:
-        raise RuntimeError(f"customerForUser آرگومان اجباری «{missing}» می‌خواهد که ربات نمی‌داند.")
-    sel = await _rw_select(_rw_base(f["type"]).get("name"))
+        return []
+    sel = await _rw_select(_rw_base(f["type"]).get("name"), depth)
     if not sel:
-        raise RuntimeError("فیلد مرتبط با اعتبار در پاسخ customerForUser پیدا نشد.")
-    data = await _rw_gql("query { customerForUser%s { %s } }" % (f"({args})" if args else "", sel))
-    return _rw_lines(data.get("customerForUser"))
+        return []
+    data = await _rw_gql("query { %s%s { %s } }" % (field_name, f"({args})" if args else "", sel))
+    return _rw_lines(data.get(field_name))
+
+
+async def _rw_credit_lines():
+    """اعتبار/حساب: چند مسیر محتمل را به‌ترتیب امتحان می‌کند (API ریل‌وی تغییر می‌کند)."""
+    fields = await _rw_query_fields()
+    tried, errors = [], []
+    for name in ("customerForUser", "me", "usage"):
+        if name not in fields:
+            continue
+        tried.append(name)
+        try:
+            lines = await _rw_try_select(name, depth=3 if name == "me" else 2)
+            if lines:
+                return lines
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{name}: {err_text(e)[:90]}")
+    hint = "، ".join(sorted(n for n in fields if re.search(r"customer|credit|billing|usage|subscription|workspace|me$", n, re.I))[:14])
+    raise RuntimeError(
+        "اعتبار از API قابل‌خواندن نبود"
+        + (f" (امتحان‌شده: {', '.join(tried)})" if tried else "")
+        + (f" — {'; '.join(errors)}" if errors else "")
+        + (f". فیلدهای مرتبط موجود: {hint}" if hint else "")
+    )
 
 
 async def _rw_estimated_lines():
@@ -17693,13 +17720,47 @@ async def _rw_estimated_lines():
     if "measurements" in arg_names:
         enum_name = _rw_base(arg_names["measurements"]["type"]).get("name")
         vals = [v["name"] for v in (await _rw_type_info(enum_name)).get("enumValues") or []]
-        use = [v for v in vals if re.search(r"CPU|MEMORY|NETWORK|DISK|EGRESS", v, re.I)] or vals
-        parts.append("measurements: [%s]" % ", ".join(use[:8]))
+        use = [v for v in vals if re.search(r"CPU|MEMORY|NETWORK|DISK|EGRESS", v, re.I) and "LIMIT" not in v and not v.endswith("_2")] or vals
+        parts.append("measurements: [%s]" % ", ".join(use[:12]))
     sel = await _rw_select(_rw_base(f["type"]).get("name"), depth=0)
     if not sel:
         return []
     data = await _rw_gql("query { estimatedUsage(%s) { %s } }" % (", ".join(parts), sel))
-    return _rw_lines(data.get("estimatedUsage"))
+    return data.get("estimatedUsage") or []
+
+
+# نرخ‌های عمومی Railway (دلار) برای تبدیل مقدار به هزینهٔ تقریبی؛ واحدها: CPU = vCPU-دقیقه، رم/دیسک = GB-دقیقه، شبکه = GB
+_RW_RATES = {
+    "CPU_USAGE": (0.000463, "vCPU-min"),
+    "MEMORY_USAGE_GB": (0.000231, "GB-min"),
+    "NETWORK_TX_GB": (0.05, "GB"),
+    "DISK_USAGE_GB": (0.00000579, "GB-min"),
+}
+
+
+def _rw_estimated_text(items):
+    rows, total = [], 0.0
+    if isinstance(items, dict):
+        items = [items]
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        m = str(it.get("measurement", ""))
+        try:
+            v = float(it.get("estimatedValue", 0))
+        except (TypeError, ValueError):
+            continue
+        rate = _RW_RATES.get(m)
+        if rate:
+            cost = v * rate[0]
+            total += cost
+            rows.append(f"• {m}: <code>{v:,.2f}</code> {rate[1]} ≈ <b>${cost:.3f}</b>")
+        elif v:
+            rows.append(f"• {m}: <code>{v:,.3f}</code> (رایگان/نامشخص)")
+    if not rows:
+        return []
+    rows.append(f"\n💵 جمع هزینهٔ تقریبی: <b>${total:.2f}</b>")
+    return rows
 
 
 async def railway_report():
@@ -17718,14 +17779,14 @@ async def railway_report():
         logging.warning("railway credit query failed: %s", e)
         out.append(f"\n⚠️ اعتبار: {html.escape(err_text(e))}")
     try:
-        est = await _rw_estimated_lines()
+        est = _rw_estimated_text(await _rw_estimated_lines())
         if est:
             out.append("\n<b>مصرف تخمینی این دوره:</b>")
-            out += [f"• {html.escape(str(k))}: <code>{html.escape(str(v))}</code>" for k, v in est]
+            out += est
     except Exception as e:  # noqa: BLE001
         logging.warning("railway estimated usage failed: %s", e)
         out.append(f"\n⚠️ مصرف تخمینی: {html.escape(err_text(e))}")
-    out.append("\n<i>اعداد خام از API هستند و واحدشان را Railway تعیین می‌کند.</i>")
+    out.append("\n<i>هزینه‌ها با نرخ‌های عمومی Railway محاسبه شده‌اند و تقریبی‌اند؛ عدد دقیق در داشبورد Railway است.</i>")
     return "\n".join(out)[:3900]
 
 
