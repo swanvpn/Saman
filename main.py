@@ -670,6 +670,11 @@ DEFAULTS = {
     "leave_msg_btn": "📢 بازگشت به کانال",
     # --- بکاپ، گزارش، نگهداری، خطا ---
     "backup_channel": "",
+    "backup_channel2": "",
+    "backup_event_on": "1",
+    "backup_event_min": "30",
+    "backup_keep": "30",
+    "railway_daily_on": "0",
     "weekly_report_on": "1",
     "cleanup_on": "1",
     "log_keep_days": "90",
@@ -796,6 +801,11 @@ SETTINGS = {
     "leave_msg_btn": dict(page="join", type="text", label="متن دکمهٔ بازگشت به کانال (خالی = بدون دکمه)"),
     # --- بکاپ، گزارش، نگهداری، خطا ---
     "backup_channel": dict(page="backup", type="text", label="کانال بکاپ (@username، -100... یا یک پیام فورواردشده از کانال خصوصی؛ ربات باید ادمین باشد)"),
+    "backup_channel2": dict(page="backup", type="text", label="کانال دوم بکاپ (اختیاری؛ همان قالب کانال بکاپ)"),
+    "backup_event_on": dict(page="backup", type="toggle", label="بکاپ رویدادی هوشمند (بعد از تغییرات مهم، سبک، به کانال)"),
+    "backup_event_min": dict(page="backup", type="num", label="حداقل فاصلهٔ بکاپ‌های رویدادی (دقیقه)", min=5, max=720),
+    "backup_keep": dict(page="backup", type="num", label="تعداد بکاپ نگهداری‌شده در کانال (برای هر نوع؛ قدیمی‌ترها پاک می‌شوند)", min=5, max=200),
+    "railway_daily_on": dict(page="auto", type="toggle", label="گزارش روزانهٔ مصرف و اعتبار Railway (نیاز به RAILWAY_API_TOKEN)"),
     "weekly_report_on": dict(page="auto", type="toggle", label="گزارش هفتگی خودکار (شنبه‌ها)"),
     "cleanup_on": dict(page="backup", type="toggle", label="پاکسازی خودکار آمار و لاگ قدیمی"),
     "log_keep_days": dict(page="backup", type="num", label="نگهداری لاگ و تیکت بسته (روز)", min=7, max=3650),
@@ -1823,6 +1833,7 @@ def get_admin_main_keyboard(user_id=None):
             [b(text="🎛 دکمه‌های کاربر", callback_data="ubh"), b(text="⚙️ تنظیمات ربات", callback_data="admin_settings")],
             [b(text="📬 بازارسال رسیدها / عذرخواهی", callback_data="rcp_home")],
             [b(text="🪵 لاگ خطاها", callback_data="errlog_home")],
+            [b(text="📊 مصرف Railway", callback_data="railway_usage")],
         ]
     )
 
@@ -6177,7 +6188,7 @@ SETTING_DEPENDS = {
 SENSITIVE_ON = {"maintenance_on", "force_join_on"}  # روشن‌کردن این‌ها تایید می‌خواهد
 SENSITIVE_TEXT = {"card_number", "card_holder"}  # تغییر این‌ها تایید می‌خواهد
 RESET_PROTECTED = {
-    "card_number", "card_holder", "support_info", "force_join_channel", "backup_channel", "post_channel",
+    "card_number", "card_holder", "support_info", "force_join_channel", "backup_channel", "backup_channel2", "post_channel",
     "monitor_urls", "maint_allow",
 }
 SAMPLE_VALUES = {
@@ -6316,6 +6327,7 @@ def set_setting_logged(actor, key, new):
         return False
     set_setting(key, new)
     shist_add(actor, key, old, new)
+    _BK["dirty"] = True
     return True
 
 
@@ -6532,7 +6544,7 @@ async def admin_setting_save(message: types.Message, state: FSMContext):
 
     t, value = meta["type"], None
     text_in = (message.text or "").strip()
-    if key in ("backup_channel", "force_join_channel", "post_channel"):
+    if key in ("backup_channel", "backup_channel2", "force_join_channel", "post_channel"):
         fchat = forwarded_channel_id(message)
         if fchat is not None:  # پیام فورواردشده از کانال (برای کانال خصوصی بدون @username)
             text_in = str(fchat)
@@ -6583,7 +6595,7 @@ async def admin_setting_save(message: types.Message, state: FSMContext):
                 await message.answer("فرمت نامعتبر است. مثال: 500000:5,1000000:8 (حداکثر ۸ پله؛ درصد حداکثر ۱۰۰)")
                 return
             value = ",".join(f"{a}:{b}" for a, b in tiers)
-        if key in ("force_join_channel", "backup_channel") and value:
+        if key in ("force_join_channel", "backup_channel", "backup_channel2") and value:
             if re.search(r"t\.me/(\+|joinchat/)", value):
                 if key == "backup_channel":
                     set_setting("backup_channel_link", value.strip())  # لینک برای یادآوری ذخیره می‌شود
@@ -9694,6 +9706,13 @@ async def _run_restore(bot, chat_id, admin_id, state):
         buf = io.BytesIO()
         await bot.download(file_id, destination=buf)
         payload = parse_backup(buf.getvalue())
+        try:  # بکاپ خودکار قبل از بازیابی تا همیشه راه برگشت باشد
+            pre_data, pre_counts = await asyncio.to_thread(build_backup_full, False)
+            pre_cap = _backup_caption("🛡 بکاپ خودکار قبل از بازیابی", pre_counts, pre_data)
+            await send_backup(bot, chat_id, pre_cap, pre_data)
+            await _send_to_channels(bot, pre_data, pre_cap, "ev")
+        except Exception as e:  # noqa: BLE001
+            logging.warning("pre-restore backup failed: %s", e)
         await asyncio.to_thread(apply_backup, payload)
         refresh_menu_texts()
     except Exception as e:  # noqa: BLE001
@@ -9720,7 +9739,7 @@ async def backup_to_channel(call: types.CallbackQuery):
         return
     await call.answer("در حال ارسال...")
     try:
-        await send_backup(call.bot, chat_ref(chan), f"🧰 بکاپ دستی - {get_current_jalali()}")
+        await send_backup(call.bot, chat_ref(chan), f"🧰 بکاپ دستی - {get_current_jalali()}", pool="ev")
         log_action(call.from_user.id, "ارسال بکاپ به کانال")
         await call.message.answer("✅ بکاپ به کانال ارسال شد.")
     except Exception as e:  # noqa: BLE001
@@ -9738,14 +9757,29 @@ async def _do_sadmin_delete(target, rm):
 # ---------------------------------------------------------------------------
 # بکاپ و بازیابی
 # ---------------------------------------------------------------------------
-def build_backup_bytes():
+def build_backup_full(light=False):
+    """(bytes, counts) برمی‌گرداند. light=True فقط جدول‌های حیاتی را می‌گیرد و فایل «جزئی» علامت می‌خورد.
+    بعد از ساخت، خودِ فایل باز می‌شود تا از سالم بودن (رمزگذاری/فشرده‌سازی) مطمئن شویم."""
     payload = {"version": 1, "created_at": get_current_jalali(), "tables": {}}
+    if light:
+        payload["partial"] = True
+    counts = {}
     with engine.connect() as conn:
         for table in Base.metadata.sorted_tables:
+            if light and table.name not in BACKUP_LIGHT_TABLES:
+                continue
             rows = conn.execute(table.select()).mappings().all()
             payload["tables"][table.name] = [dict(r) for r in rows]
+            counts[table.name] = len(rows)
     raw = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-    return _pack_backup(raw)
+    data = _pack_backup(raw)
+    if _unpack_backup(data) != raw:
+        raise RuntimeError("تأیید سلامت بکاپ ناموفق بود (فایل بعد از بازگشایی با اصل یکی نیست).")
+    return data, counts
+
+
+def build_backup_bytes():
+    return build_backup_full(False)[0]
 
 
 _BACKUP_MAGIC = b"SWANENC1:"
@@ -9804,6 +9838,8 @@ def parse_backup(raw_bytes):
 def apply_backup(payload):
     tables = payload["tables"]
     ordered = list(Base.metadata.sorted_tables)
+    if payload.get("partial"):  # بکاپ سبک: فقط جدول‌های موجود در فایل جایگزین می‌شوند
+        ordered = [t for t in ordered if t.name in tables]
     with engine.begin() as conn:
         for t in reversed(ordered):
             conn.execute(t.delete())
@@ -9834,10 +9870,13 @@ def apply_backup(payload):
     _user_seen.clear()
 
 
-async def send_backup(bot, chat_id, caption, data=None):
+async def send_backup(bot, chat_id, caption, data=None, pool=None):
     data = data if data is not None else await asyncio.to_thread(build_backup_bytes)
     name = f"swan_backup_{now_iran().strftime('%Y%m%d_%H%M')}.json" + (".enc" if data.startswith(_BACKUP_MAGIC) else ".gz")
-    await bot.send_document(chat_id=chat_id, document=BufferedInputFile(data, filename=name), caption=caption)
+    msg = await bot.send_document(chat_id=chat_id, document=BufferedInputFile(data, filename=name), caption=caption)
+    if pool:
+        await _bk_track(bot, chat_id, msg.message_id, pool)
+    return msg
 
 
 @dp.callback_query(F.data == "admin_backup", MainAdmin())
@@ -9850,12 +9889,13 @@ async def admin_backup_menu(call: types.CallbackQuery, state: FSMContext):
             [b(text="📤 دریافت بکاپ (ربات + کانال)", callback_data="backup_now")],
             [b(text="📤 ارسال بکاپ به کانال خصوصی", callback_data="backup_to_channel")],
             [b(text="📥 بازیابی از فایل بکاپ", callback_data="backup_restore")],
+            [b(text="🧪 تست سلامت بکاپ", callback_data="backup_selftest")],
             [b(text="🔙 بازگشت به پنل", callback_data="admin_home")],
         ]
     )
     await edit_or_send(
         call,
-        "🧰 <b>بکاپ دیتابیس</b>\n\nبکاپ شامل کاربران، موجودی‌ها، سرویس‌ها، درخواست‌ها و تنظیمات است. "
+        "🧰 <b>بکاپ دیتابیس</b>\n\n" + _backup_status_text() + "\n\nبکاپ شامل کاربران، موجودی‌ها، سرویس‌ها، درخواست‌ها و تنظیمات است. "
         "فایل را جای امنی نگه دارید.",
         markup,
     )
@@ -9883,7 +9923,7 @@ async def backup_now(call: types.CallbackQuery):
         )
         return
     try:
-        await send_backup(call.bot, chat_ref(chan), caption, data)
+        await send_backup(call.bot, chat_ref(chan), caption, data, pool="ev")
         log_action(call.from_user.id, "ارسال بکاپ دستی به کانال")
         await call.message.answer("✅ بکاپ برای کانال هم ارسال شد.", reply_markup=back)
     except Exception as e:  # noqa: BLE001
@@ -9919,6 +9959,8 @@ async def backup_restore_file(message: types.Message, state: FSMContext):
         return
 
     summary = "\n".join(f"• {name}: {len(rows)}" for name, rows in payload["tables"].items())
+    if payload.get("partial"):
+        summary += "\n\nℹ️ این یک بکاپ سبک (جزئی) است؛ فقط جدول‌های بالا جایگزین می‌شوند و بقیه (لاگ‌ها، تیکت‌ها و…) دست‌نخورده می‌مانند."
     await state.update_data(restore_file_id=message.document.file_id)
     b = InlineKeyboardButton
     markup = InlineKeyboardMarkup(
@@ -9998,22 +10040,11 @@ async def job_report(bot):
 async def job_backup(bot):
     if not get_bool("backup_on"):
         return
-    data = await asyncio.to_thread(build_backup_bytes)
-    caption = f"🧰 بکاپ شبانه خودکار - {get_current_jalali()}"
+    data, counts = await asyncio.to_thread(build_backup_full, False)
+    caption = _backup_caption("🧰 بکاپ شبانه خودکار", counts, data)
     await send_backup(bot, ADMIN_ID, caption, data)
-    chan = get_setting("backup_channel").strip()
-    if chan:
-        try:
-            await send_backup(bot, chat_ref(chan), caption, data)
-        except Exception as e:  # noqa: BLE001
-            logging.warning("backup to channel failed: %s", e)
-            try:
-                await bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=f"⚠️ ارسال بکاپ به کانال ناموفق بود: {err_text(e)}\nمطمئن شوید ربات در کانال «ادمین» است.",
-                )
-            except Exception as e:  # noqa: BLE001
-                logging.warning("backup-failure alert to admin failed: %s", e)
+    await _send_to_channels(bot, data, caption, "nt")
+    await _backup_after_success(bot, counts, data)
 
 
 # ---------------------------------------------------------------------------
@@ -17325,8 +17356,393 @@ async def errlog_dl_cb(call: types.CallbackQuery):
     )
 
 
+# ---------------------------------------------------------------------------
+# بکاپ هوشمند: رویدادی (سبک)، تأیید سلامت، نگهداری محدود در کانال، وضعیت و تست
+# ---------------------------------------------------------------------------
+BACKUP_LIGHT_TABLES = {
+    "users", "services", "user_configs", "requests", "kv_settings", "wallet_tx", "discount_codes",
+    "code_uses", "categories", "custom_buttons", "setting_versions", "gift_codes", "gift_uses",
+}
+_BK_KEY_TABLES = {"users": "👥 کاربر", "requests": "🧾 درخواست", "wallet_tx": "💳 تراکنش", "user_configs": "📦 کانفیگ"}
+_BK = {"dirty": False, "last_event": 0.0, "busy": False, "fails": 0, "start": time.time(), "last_stale_alert": 0.0, "last_ch_alert": 0.0}
+
+
+def install_backup_watch():
+    """هر تغییر در جدول‌های مهم (پرداخت، کیف پول، سرویس، تخفیف، نسخهٔ تنظیمات) علامت «تغییر کرده» می‌زند."""
+    watch = tuple(c for c in (WalletTx, Request, UserConfig, SettingVersion, DiscountCode, GiftCode, Service, Category))
+
+    def _after_flush(session, flush_context):
+        try:
+            if _BK["dirty"]:
+                return
+            for obj in list(session.new) + list(session.dirty):
+                if isinstance(obj, watch):
+                    _BK["dirty"] = True
+                    return
+        except Exception:  # noqa: BLE001
+            pass
+
+    sa_event.listen(SessionLocal, "after_flush", _after_flush)
+
+
+def _backup_channels():
+    out = []
+    for k in ("backup_channel", "backup_channel2"):
+        raw = (get_setting(k) or "").strip()
+        if raw:
+            try:
+                ref = chat_ref(raw)
+            except ValueError:
+                continue
+            if ref not in out:
+                out.append(ref)
+    return out
+
+
+def _backup_caption(title, counts, data):
+    parts = [f"{label}: {counts[t]}" for t, label in _BK_KEY_TABLES.items() if t in counts]
+    enc = "🔐 رمزنگاری‌شده" if data.startswith(_BACKUP_MAGIC) else "⚠️ بدون رمز"
+    return f"{title} - {get_current_jalali()}\n" + " | ".join(parts) + f"\nحجم: {len(data) // 1024} KB | {enc}"
+
+
+async def _bk_track(bot, chat_id, msg_id, pool):
+    """شناسهٔ پیام‌های بکاپ هر کانال را نگه می‌دارد و مازاد بر backup_keep را حذف می‌کند (جدا برای شبانه و رویدادی)."""
+    try:
+        try:
+            d = json.loads(get_setting("backup_msgs") or "{}")
+        except ValueError:
+            d = {}
+        if not isinstance(d, dict):
+            d = {}
+        key = f"{chat_id}|{pool}"
+        ids = [i for i in d.get(key, []) if isinstance(i, int)]
+        ids.append(int(msg_id))
+        keep = max(5, get_int("backup_keep") or 30)
+        while len(ids) > keep:
+            old = ids.pop(0)
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=old)
+            except Exception as e:  # noqa: BLE001
+                logging.warning("backup retention: delete %s failed: %s", old, e)
+        d[key] = ids
+        set_setting("backup_msgs", json.dumps(d))
+    except Exception as e:  # noqa: BLE001
+        logging.warning("backup tracking failed: %s", e)
+
+
+async def _send_to_channels(bot, data, caption, pool):
+    ok = 0
+    for ch in _backup_channels():
+        try:
+            await send_backup(bot, ch, caption, data, pool=pool)
+            ok += 1
+        except Exception as e:  # noqa: BLE001
+            logging.warning("backup to channel %s failed: %s", ch, e)
+            if time.time() - _BK["last_ch_alert"] > 6 * 3600:
+                _BK["last_ch_alert"] = time.time()
+                try:
+                    await bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=f"⚠️ ارسال بکاپ به کانال ({esc(str(ch))}) ناموفق بود: {err_text(e)}\nمطمئن شوید ربات در کانال «ادمین» است و اجازهٔ ارسال فایل دارد.",
+                    )
+                except Exception as e2:  # noqa: BLE001
+                    logging.warning("backup-failure alert to admin failed: %s", e2)
+    return ok
+
+
+async def _backup_after_success(bot, counts, data):
+    set_setting("last_backup_ok_ts", str(int(time.time())))
+    set_setting("last_backup_enc", "1" if data.startswith(_BACKUP_MAGIC) else "0")
+    try:
+        prev = json.loads(get_setting("backup_prev_counts") or "{}")
+    except ValueError:
+        prev = {}
+    if not isinstance(prev, dict):
+        prev = {}
+    warn = []
+    for t, label in _BK_KEY_TABLES.items():
+        if t in counts and isinstance(prev.get(t), int) and prev[t] >= 20 and counts[t] < prev[t] * 0.8:
+            warn.append(f"{label}: {prev[t]} ← {counts[t]}")
+    set_setting("backup_prev_counts", json.dumps({**prev, **counts}))
+    if warn:
+        try:
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text="⚠️ <b>کاهش ناگهانی داده نسبت به بکاپ قبلی</b>\n" + "\n".join(warn)
+                + "\nاگر عمدی نبوده، قبل از هر کاری فایل بکاپ قبلی را نگه دارید.",
+            )
+        except Exception as e:  # noqa: BLE001
+            logging.warning("backup drop alert failed: %s", e)
+
+
+async def _backup_event_step(bot):
+    if _BK["busy"] or not _BK["dirty"] or not get_bool("backup_event_on"):
+        return
+    gap = max(5, get_int("backup_event_min") or 30) * 60
+    if time.time() - _BK["last_event"] < gap or not _backup_channels():
+        return
+    _BK["busy"] = True
+    try:
+        _BK["dirty"] = False  # تغییرهای حین ساخت دوباره علامت می‌خورند
+        data, counts = await asyncio.to_thread(build_backup_full, True)
+        caption = _backup_caption("🔄 بکاپ رویدادی (سبک)", counts, data)
+        if not await _send_to_channels(bot, data, caption, "ev"):
+            raise RuntimeError("ارسال به هیچ کانالی موفق نبود")
+        _BK["last_event"] = time.time()
+        _BK["fails"] = 0
+        await _backup_after_success(bot, counts, data)
+    except Exception as e:  # noqa: BLE001
+        _BK["dirty"] = True
+        _BK["fails"] += 1
+        _BK["last_event"] = time.time() - gap + 300  # تلاش دوباره بعد از ۵ دقیقه
+        logging.warning("event backup failed (%d): %s", _BK["fails"], e)
+        if _BK["fails"] == 3:
+            await report_error(bot, "بکاپ رویدادی", e)
+    finally:
+        _BK["busy"] = False
+
+
+async def _backup_stale_step(bot):
+    if not get_bool("backup_on"):
+        return
+    now = time.time()
+    try:
+        last = float(get_setting("last_backup_ok_ts") or 0)
+    except ValueError:
+        last = 0.0
+    if now - (last or _BK["start"]) > 26 * 3600 and now - _BK["last_stale_alert"] > 6 * 3600:
+        _BK["last_stale_alert"] = now
+        await bot.send_message(
+            chat_id=ADMIN_ID,
+            text="⚠️ بیش از ۲۶ ساعت است هیچ بکاپ موفقی انجام نشده. منوی «🧰 بکاپ ← 🧪 تست سلامت بکاپ» را بزنید و لاگ خطاها را ببینید.",
+        )
+
+
+async def job_backup_tick(bot):
+    """هر دقیقه از scheduler صدا زده می‌شود: بکاپ رویدادی + هشدار بکاپ‌نخورده."""
+    try:
+        await _backup_event_step(bot)
+        await _backup_stale_step(bot)
+    except Exception as e:  # noqa: BLE001
+        logging.warning("backup tick error: %s", e)
+
+
+def _backup_status_text():
+    try:
+        last = float(get_setting("last_backup_ok_ts") or 0)
+    except ValueError:
+        last = 0.0
+    enc = "فعال ✅" if _backup_fernet() is not None else "غیرفعال ⚠️ (BACKUP_KEY ست نشده)"
+    ev = f"روشن (حداکثر هر {max(5, get_int('backup_event_min') or 30)} دقیقه)" if get_bool("backup_event_on") else "خاموش"
+    return (
+        f"🕒 آخرین بکاپ موفق: {_errlog_ts(last) if last else '—'}\n"
+        f"🔐 رمزنگاری: {enc}\n"
+        f"📡 کانال‌های بکاپ: {len(_backup_channels())}\n"
+        f"🔄 بکاپ رویدادی: {ev}\n"
+        f"🗂 نگهداری در کانال: {max(5, get_int('backup_keep') or 30)} بکاپ (برای هر نوع)"
+    )
+
+
+@dp.callback_query(F.data == "backup_selftest", MainAdmin())
+async def backup_selftest(call: types.CallbackQuery):
+    await call.answer("در حال ساخت و بررسی بکاپ…")
+    back = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin_backup")]])
+    try:
+        data, counts = await asyncio.to_thread(build_backup_full, False)
+        await asyncio.to_thread(parse_backup, data)  # رمزگشایی + ساختار، دقیقاً مثل بازیابی
+        rows = "\n".join(f"• {k}: {v}" for k, v in counts.items())
+        warn = "" if data.startswith(_BACKUP_MAGIC) else "\n\n⚠️ بکاپ رمزنگاری نشده است؛ متغیر BACKUP_KEY را در هاست ست کنید."
+        text = f"✅ <b>تست بکاپ موفق بود</b> (ساخت، فشرده‌سازی، رمزگشایی و بررسی ساختار)\nحجم: {len(data) // 1024} KB\n\n{rows}{warn}"
+    except Exception as e:  # noqa: BLE001
+        logging.warning("backup selftest failed: %s", e)
+        text = f"❌ تست بکاپ ناموفق بود: {err_text(e)}"
+    await edit_or_send(call, text[:3900], back)
+
+
+# ---------------------------------------------------------------------------
+# مصرف و اعتبار Railway (نیاز به متغیر RAILWAY_API_TOKEN)
+# ساختار API (نام فیلدها) از طریق introspection کشف می‌شود تا با تغییر Railway نشکند.
+# ---------------------------------------------------------------------------
+RAILWAY_GQL = "https://backboard.railway.com/graphql/v2"
+_RW = {"fields": None}
+_RW_TYPEREF = "kind name ofType { kind name ofType { kind name ofType { kind name } } }"
+_RW_SCALARS = {"Int", "Float", "String", "Boolean", "DateTime", "BigInt"}
+_RW_WANT = re.compile(r"credit|balance|trial|remain|usage|day|limit|value|measure|cost|estimat", re.I)
+
+
+def _rw_base(t):
+    while t and t.get("kind") in ("NON_NULL", "LIST"):
+        t = t.get("ofType")
+    return t or {}
+
+
+async def _rw_gql(query, variables=None):
+    token = os.environ.get("RAILWAY_API_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("RAILWAY_API_TOKEN ست نشده است.")
+    async with ClientSession(timeout=ClientTimeout(total=20)) as session:
+        async with session.post(
+            RAILWAY_GQL,
+            json={"query": query, "variables": variables or {}},
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        ) as resp:
+            body = await resp.json(content_type=None)
+    if not isinstance(body, dict):
+        raise RuntimeError("پاسخ نامعتبر از Railway.")
+    if body.get("errors"):
+        raise RuntimeError("; ".join(str(e.get("message", e))[:160] for e in body["errors"][:2]))
+    return body.get("data") or {}
+
+
+async def _rw_query_fields():
+    if _RW["fields"] is None:
+        q = 'query { __type(name: "Query") { fields { name args { name type { %s } } type { %s } } } }' % (_RW_TYPEREF, _RW_TYPEREF)
+        data = await _rw_gql(q)
+        _RW["fields"] = {f["name"]: f for f in (data.get("__type") or {}).get("fields", [])}
+    return _RW["fields"]
+
+
+async def _rw_type_info(type_name):
+    q = "query($n:String!){ __type(name:$n){ kind fields { name type { %s } } enumValues { name } } }" % _RW_TYPEREF
+    return (await _rw_gql(q, {"n": type_name})).get("__type") or {}
+
+
+async def _rw_select(type_name, depth=1):
+    info = await _rw_type_info(type_name)
+    parts = []
+    for fl in info.get("fields") or []:
+        base, nm = _rw_base(fl["type"]), fl["name"]
+        if not _RW_WANT.search(nm):
+            continue
+        if base.get("name") in _RW_SCALARS or base.get("kind") == "ENUM":
+            parts.append(nm)
+        elif depth > 0 and base.get("kind") == "OBJECT":
+            sub = await _rw_select(base["name"], depth - 1)
+            if sub:
+                parts.append(f"{nm} {{ {sub} }}")
+    return " ".join(parts[:14])
+
+
+def _rw_lines(obj, prefix=""):
+    out = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            out += _rw_lines(v, f"{prefix}{k}.")
+    elif isinstance(obj, list):
+        for v in obj[:12]:
+            if isinstance(v, dict) and all(not isinstance(x, (dict, list)) for x in v.values()):
+                out.append((prefix[:-1] or "item", ", ".join(f"{k}={x}" for k, x in v.items())))
+            else:
+                out += _rw_lines(v, prefix)
+    elif obj is not None:
+        out.append((prefix[:-1], obj))
+    return out
+
+
+def _rw_args_literal(field, env_map):
+    """آرگومان‌های اجباری فیلد را از متغیرهای محیطی Railway پر می‌کند؛ اگر نشد None برمی‌گرداند."""
+    pairs = []
+    for a in field.get("args") or []:
+        if (a.get("type") or {}).get("kind") != "NON_NULL":
+            continue
+        val = env_map.get(a["name"])
+        if not val:
+            return None, a["name"]
+        pairs.append(f"{a['name']}: {json.dumps(val)}")
+    return ", ".join(pairs), None
+
+
+async def _rw_credit_lines():
+    fields = await _rw_query_fields()
+    f = fields.get("customerForUser")
+    if not f:
+        raise RuntimeError("کوئری customerForUser در API پیدا نشد (Railway ممکن است آن را تغییر داده باشد).")
+    env_map = {"projectId": os.environ.get("RAILWAY_PROJECT_ID", ""), "environmentId": os.environ.get("RAILWAY_ENVIRONMENT_ID", "")}
+    args, missing = _rw_args_literal(f, env_map)
+    if args is None:
+        raise RuntimeError(f"customerForUser آرگومان اجباری «{missing}» می‌خواهد که ربات نمی‌داند.")
+    sel = await _rw_select(_rw_base(f["type"]).get("name"))
+    if not sel:
+        raise RuntimeError("فیلد مرتبط با اعتبار در پاسخ customerForUser پیدا نشد.")
+    data = await _rw_gql("query { customerForUser%s { %s } }" % (f"({args})" if args else "", sel))
+    return _rw_lines(data.get("customerForUser"))
+
+
+async def _rw_estimated_lines():
+    pid = os.environ.get("RAILWAY_PROJECT_ID", "").strip()
+    if not pid:
+        return []
+    fields = await _rw_query_fields()
+    f = fields.get("estimatedUsage")
+    if not f:
+        return []
+    arg_names = {a["name"]: a for a in f.get("args") or []}
+    parts = []
+    if "projectId" in arg_names:
+        parts.append(f"projectId: {json.dumps(pid)}")
+    if "measurements" in arg_names:
+        enum_name = _rw_base(arg_names["measurements"]["type"]).get("name")
+        vals = [v["name"] for v in (await _rw_type_info(enum_name)).get("enumValues") or []]
+        use = [v for v in vals if re.search(r"CPU|MEMORY|NETWORK|DISK|EGRESS", v, re.I)] or vals
+        parts.append("measurements: [%s]" % ", ".join(use[:8]))
+    sel = await _rw_select(_rw_base(f["type"]).get("name"), depth=0)
+    if not sel:
+        return []
+    data = await _rw_gql("query { estimatedUsage(%s) { %s } }" % (", ".join(parts), sel))
+    return _rw_lines(data.get("estimatedUsage"))
+
+
+async def railway_report():
+    if not os.environ.get("RAILWAY_API_TOKEN", "").strip():
+        return (
+            "📊 <b>مصرف Railway</b>\n\nمتغیر <code>RAILWAY_API_TOKEN</code> ست نشده است.\n"
+            "از railway.com/account/tokens یک توکن بسازید و در Variables با همین نام بگذارید.\n"
+            "(روی Render این قابلیت کار نمی‌کند؛ Render API اعتبار ندارد.)"
+        )
+    out = ["📊 <b>مصرف و اعتبار Railway</b>"]
+    try:
+        lines = await _rw_credit_lines()
+        out.append("\n<b>اعتبار / حساب:</b>")
+        out += [f"• {html.escape(str(k))}: <code>{html.escape(str(v))}</code>" for k, v in lines] or ["• داده‌ای برنگشت."]
+    except Exception as e:  # noqa: BLE001
+        logging.warning("railway credit query failed: %s", e)
+        out.append(f"\n⚠️ اعتبار: {html.escape(err_text(e))}")
+    try:
+        est = await _rw_estimated_lines()
+        if est:
+            out.append("\n<b>مصرف تخمینی این دوره:</b>")
+            out += [f"• {html.escape(str(k))}: <code>{html.escape(str(v))}</code>" for k, v in est]
+    except Exception as e:  # noqa: BLE001
+        logging.warning("railway estimated usage failed: %s", e)
+        out.append(f"\n⚠️ مصرف تخمینی: {html.escape(err_text(e))}")
+    out.append("\n<i>اعداد خام از API هستند و واحدشان را Railway تعیین می‌کند.</i>")
+    return "\n".join(out)[:3900]
+
+
+@dp.callback_query(F.data == "railway_usage", MainAdmin())
+async def railway_usage_cb(call: types.CallbackQuery):
+    await call.answer("در حال دریافت…")
+    b = InlineKeyboardButton
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[b(text="🔄 تازه‌سازی", callback_data="railway_usage"), b(text="🔙 بازگشت", callback_data="admin_home")]]
+    )
+    try:
+        text = await railway_report()
+    except Exception as e:  # noqa: BLE001
+        logging.warning("railway report failed: %s", e)
+        text = f"❌ خطا: {html.escape(err_text(e))}"
+    await edit_or_send(call, text, markup)
+
+
+async def job_railway(bot):
+    if not get_bool("railway_daily_on") or not os.environ.get("RAILWAY_API_TOKEN", "").strip():
+        return
+    await bot.send_message(chat_id=ADMIN_ID, text=await railway_report())
+
+
 JOBS = [
     ("backup", 3, 0, job_backup),
+    ("railway", 9, 30, job_railway),
     ("reconcile", 3, 30, job_reconcile),
     ("cleanup", 4, 0, job_cleanup),
     ("weekly", 9, 0, job_weekly_report),
@@ -17366,6 +17782,7 @@ async def scheduler(bot):
     while True:
         try:
             await run_jobs(bot)
+            await job_backup_tick(bot)
             await job_scheduled_broadcasts(bot)
             await job_channel_posts(bot)
             await job_autoposts(bot)
@@ -17433,6 +17850,7 @@ async def with_retry(fn, *args, tries=8, **kw):
 async def main():
     global BOT_USERNAME
     install_error_log()
+    install_backup_watch()
     init_db()
     try:
         with SessionLocal() as _s:
