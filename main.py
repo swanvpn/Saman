@@ -675,6 +675,7 @@ DEFAULTS = {
     "backup_event_min": "30",
     "backup_keep": "30",
     "railway_daily_on": "0",
+    "shop_steps_on": "1",
     "weekly_report_on": "1",
     "cleanup_on": "1",
     "log_keep_days": "90",
@@ -813,6 +814,7 @@ SETTINGS = {
     # --- امنیت ---
     "twostep_on": dict(page="sec", type="toggle", label="تأیید دومرحله‌ای کارهای حساس (بازیابی بکاپ، حذف ادمین)"),
     # --- فروشگاه ---
+    "shop_steps_on": dict(page="shop", type="toggle", label="خرید مرحله‌ای: اول انتخاب نوع پنل (گیمینگ، VIP، اقتصادی...)، بعد حجم/پلن، بعد پرداخت"),
     "bestseller_on": dict(page="shop", type="toggle", label="برچسب روی پرفروش‌ترین پلن"),
     "bestseller_label": dict(page="shop", type="text", label="متن برچسب (مثلاً ⭐ پرفروش یا 👌 پیشنهاد ما)"),
     "bestseller_min": dict(page="shop", type="num", label="حداقل فروش برای نمایش برچسب", min=1, max=1000),
@@ -2171,6 +2173,24 @@ async def kb_home_message(message: types.Message, state: FSMContext):
 # ---------------------------------------------------------------------------
 # تعرفه‌ها
 # ---------------------------------------------------------------------------
+def shop_stepped():
+    """خرید مرحله‌ای فعال است؟ (کلید روشن + حداقل دو دستهٔ فعال دارای پلن)"""
+    if not get_bool("shop_steps_on"):
+        return False
+    try:
+        with SessionLocal() as s:
+            n = (
+                s.query(func.count(func.distinct(Service.category)))
+                .join(Category, Category.key == Service.category)
+                .filter(Category.is_active.is_(True))
+                .scalar()
+            )
+        return (n or 0) >= 2
+    except Exception as e:  # noqa: BLE001
+        logging.warning("shop_stepped failed: %s", e)
+        return False
+
+
 def shop_view(user_id, cat_key=None):
     """تعرفه و خرید در یک صفحه؛ دسته‌ها به‌شکل تب."""
     with SessionLocal() as s:
@@ -2184,6 +2204,16 @@ def shop_view(user_id, cat_key=None):
         if not cats:
             return "فعلاً پلنی برای فروش ثبت نشده است.", back_home_markup()
         keys = [c[0] for c in cats]
+        counts = {
+            k: n for k, n in s.query(Service.category, func.count(Service.id)).group_by(Service.category).all()
+        }
+        mins = {
+            k: m for k, m in s.query(Service.category, func.min(Service.price)).group_by(Service.category).all()
+        }
+        with_plans = [c for c in cats if counts.get(c[0], 0) > 0]
+        stepped = get_bool("shop_steps_on") and len(with_plans) >= 2
+        if stepped and cat_key not in [c[0] for c in with_plans]:
+            return shop_panels_view(user_id, with_plans, counts, mins)
         if cat_key not in keys:
             cat_key = keys[0]
         services = [
@@ -2194,7 +2224,10 @@ def shop_view(user_id, cat_key=None):
     total, parts = discount_breakdown(user_id, "new", cat_key)
     b = InlineKeyboardButton
     cur = next(c for c in cats if c[0] == cat_key)
-    out = "🛒 <b>خرید سرویس</b> | مرحله ۱ از ۳\nیه دسته انتخاب کن، بعدش پلن مورد نظرت رو بزن 👇\n"
+    if stepped:
+        out = "🛒 <b>خرید سرویس</b> | مرحله ۲ از ۴\nحجم و مدت مورد نظرت رو انتخاب کن 👇\n"
+    else:
+        out = "🛒 <b>خرید سرویس</b> | مرحله ۱ از ۳\nیه دسته انتخاب کن، بعدش پلن مورد نظرت رو بزن 👇\n"
     if total > 0:
         out += "\n" + breakdown_text(total, parts) + "\n"
     left = flash_remaining()
@@ -2206,7 +2239,8 @@ def shop_view(user_id, cat_key=None):
         b(text=("• " if k == cat_key else "") + f"{em} {label}".strip(), callback_data=f"shop_{k}")
         for k, label, em in cats
     ]
-    keyboard.extend(tabs[i : i + 3] for i in range(0, len(tabs), 3))
+    if not stepped:
+        keyboard.extend(tabs[i : i + 3] for i in range(0, len(tabs), 3))
     best = bestseller_id()
     badge = get_setting("bestseller_label").strip() or "⭐ پرفروش"
     for sid, name, price in services:
@@ -2225,6 +2259,36 @@ def shop_view(user_id, cat_key=None):
             f"۴ خرید 🥈 {get_int('loyalty_silver_percent')}٪ | "
             f"۶ خرید 🥇 {get_int('loyalty_gold_percent')}٪"
         )
+    if stepped:
+        keyboard.append([b(text="🔙 تغییر نوع پنل", callback_data="shopcats")])
+    else:
+        if get_bool("custom_on") and get_int("custom_price_per_gb") > 0:
+            keyboard.append(
+                [b(text=f"✨ پلن دلخواه (هر گیگ {get_int('custom_price_per_gb'):,} تومان)", callback_data="custom_start")]
+            )
+        if get_bool("pick_on"):
+            keyboard.append([b(text="🤔 نمی‌دونم کدوم رو بخرم؟", callback_data="pk_start")])
+        keyboard.append([b(text="💳 شارژ کیف پول", callback_data="wallet_menu")])
+    keyboard.append([b(text="🏠 بازگشت به منوی اصلی", callback_data="main_menu")])
+    return out, InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def shop_panels_view(user_id, with_plans, counts, mins):
+    """مرحله ۱: انتخاب نوع پنل (هر دستهٔ فعالِ دارای پلن، شامل دسته‌هایی که ادمین بعداً اضافه کرده)."""
+    b = InlineKeyboardButton
+    out = "🛒 <b>خرید سرویس</b> | مرحله ۱ از ۴\nاول نوع پنل مورد نظرت رو انتخاب کن 👇\n"
+    left = flash_remaining()
+    if left is not None:
+        out += f"\n⏳ تخفیف زمان‌دار {fmt_remaining(left)} دیگر ادامه دارد!\n"
+    out += "\n"
+    btns = []
+    for key, label, em in with_plans:
+        total, _parts = discount_breakdown(user_id, "new", key)
+        start = price_with_percent(mins.get(key, 0) or 0, total)
+        name = f"{em} {label}".strip()
+        out += f"• <b>{esc(name)}</b> — {counts.get(key, 0)} پلن، از {start:,} تومان\n"
+        btns.append(b(text=name, callback_data=f"shop_{key}"))
+    keyboard = [btns[i : i + 2] for i in range(0, len(btns), 2)]
     if get_bool("custom_on") and get_int("custom_price_per_gb") > 0:
         keyboard.append(
             [b(text=f"✨ پلن دلخواه (هر گیگ {get_int('custom_price_per_gb'):,} تومان)", callback_data="custom_start")]
@@ -2252,6 +2316,12 @@ async def message_buy_handler(message: types.Message, state: FSMContext):
 async def main_buy_handler(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
     await state.clear()
+    await _show_shop(call, call.from_user.id)
+
+
+@dp.callback_query(F.data == "shopcats")
+async def shop_cats_handler(call: types.CallbackQuery):
+    await call.answer()
     await _show_shop(call, call.from_user.id)
 
 
@@ -2328,7 +2398,7 @@ def checkout_view(co, balance=0):
     else:
         price_display = f"{co['base']:,} تومان"
     title = "🔄 تمدید سرویس" if co["renew_cfg_id"] else "🛒 سفارش شما"
-    out = f"<b>مرحله ۲ از ۳ | پرداخت</b>\n\n{title}: {esc(co['label'])}\n💰 قیمت: {price_display}\n"
+    out = f"<b>مرحله {'۳ از ۴' if shop_stepped() else '۲ از ۳'} | پرداخت</b>\n\n{title}: {esc(co['label'])}\n💰 قیمت: {price_display}\n"
     if co["percent"] > 0:
         extra = f"{co['code_pct']}٪ کد تخفیف" if co["code"] else None
         out += breakdown_text(co["percent"], co["parts"], extra) + "\n"
@@ -2600,7 +2670,7 @@ async def confirm_payment_handler(call: types.CallbackQuery, state: FSMContext):
     fstep(call.from_user.id, "pay")
     card_no, card_holder = pick_card(call.from_user.id)
     out = (
-        "<b>مرحله ۳ از ۳ | واریز و ارسال رسید</b>\n\n"
+        f"<b>مرحله {'۴ از ۴' if shop_stepped() else '۳ از ۳'} | واریز و ارسال رسید</b>\n\n"
         f"📦 {esc(co['label'])}\n💰 مبلغ قابل پرداخت: <b>{amount:,}</b> تومان\n"
         + pay_note(co["final"], amount)
         + "\n"
