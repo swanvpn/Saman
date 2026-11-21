@@ -676,6 +676,8 @@ DEFAULTS = {
     "backup_keep": "30",
     "railway_daily_on": "0",
     "shop_steps_on": "1",
+    "bars_on": "1",
+    "summary_on": "1",
     "weekly_report_on": "1",
     "cleanup_on": "1",
     "log_keep_days": "90",
@@ -815,6 +817,8 @@ SETTINGS = {
     "twostep_on": dict(page="sec", type="toggle", label="تأیید دومرحله‌ای کارهای حساس (بازیابی بکاپ، حذف ادمین)"),
     # --- فروشگاه ---
     "shop_steps_on": dict(page="shop", type="toggle", label="خرید مرحله‌ای: اول انتخاب نوع پنل (گیمینگ، VIP، اقتصادی...)، بعد حجم/پلن، بعد پرداخت"),
+    "bars_on": dict(page="usage", type="toggle", label="نوار پیشرفت رنگی برای حجم و زمان سرویس (🟩🟨🟥)"),
+    "summary_on": dict(page="shop", type="toggle", label="خلاصه‌ی حساب بالای منوی اصلی (موجودی، سرویس فعال، نزدیک‌ترین انقضا)"),
     "bestseller_on": dict(page="shop", type="toggle", label="برچسب روی پرفروش‌ترین پلن"),
     "bestseller_label": dict(page="shop", type="text", label="متن برچسب (مثلاً ⭐ پرفروش یا 👌 پیشنهاد ما)"),
     "bestseller_min": dict(page="shop", type="num", label="حداقل فروش برای نمایش برچسب", min=1, max=1000),
@@ -2088,16 +2092,32 @@ def build_welcome(user_id, first_name):
         is_new = bool(u.is_new_user) if u else True
         active = s.query(func.count(UserConfig.id)).filter(UserConfig.user_id == user_id).scalar()
         expiring = expiring_list(s, user_id, get_int("reminder_days"))
+        exp_all = [e for (e,) in s.query(UserConfig.expires_at).filter(UserConfig.user_id == user_id).all() if e]
+
+    summary = ""
+    if get_bool("summary_on") and (active or balance):
+        lefts = []
+        for e in exp_all:
+            try:
+                lefts.append((date.fromisoformat(e) - today_iran()).days)
+            except ValueError:
+                pass
+        alive = [d for d in lefts if d >= 0]
+        dead = len([d for d in lefts if d < 0])
+        lines = [f"💳 موجودی: <b>{balance:,}</b> تومان", f"📦 سرویس‌ها: <b>{active}</b>" + (f" ({dead} منقضی)" if dead else "")]
+        if alive:
+            nxt = min(alive)
+            lines.append(f"⏰ نزدیک‌ترین انقضا: <b>{nxt}</b> روز دیگر" if nxt > 0 else "⏰ نزدیک‌ترین انقضا: <b>امروز</b>")
+        summary = "┌ 📋 <b>خلاصه‌ی حساب</b>\n" + "\n".join("│ " + ln for ln in lines) + "\n└─────────\n\n"
 
     if custom:
         body = esc(custom.replace("{name}", name))
     elif is_new:
         body = f"سلام {esc(name)} جان 👋\nخوش اومدی! امروز چی می‌خوای؟"
     else:
-        body = (
-            f"خوش برگشتی {esc(name)} جان 😊 دلمون برات تنگ شده بود\n\n"
-            f"💳 موجودی: {balance:,} تومان\n📦 سرویس‌های فعال: {active}"
-        )
+        body = f"خوش برگشتی {esc(name)} جان 😊 دلمون برات تنگ شده بود"
+        if not summary:
+            body += f"\n\n💳 موجودی: {balance:,} تومان\n📦 سرویس‌های فعال: {active}"
 
     total, parts = discount_breakdown(user_id)
     if total > 0:
@@ -2111,7 +2131,7 @@ def build_welcome(user_id, first_name):
 
     body += v3_welcome_extras(user_id, is_new)
     body += "\n\nبرای برگشت به منوی اصلی /start رو بزن."
-    return body
+    return summary + body
 
 
 @dp.message(Command("start"))
@@ -3284,7 +3304,10 @@ async def view_config_detail_handler(call: types.CallbackQuery):
             status = "🟢 فعال"
         total = max(30, left)
         filled = 0 if left <= 0 else max(1, round(10 * min(left, total) / total))
-        out += f"{status}\n{'▰' * filled}{'▱' * (10 - filled)}\n"
+        if get_bool("bars_on"):
+            out += f"{status}\n⏳ زمان باقی‌مانده\n{color_bar(100 * max(left, 0) / total, 'left')}\n"
+        else:
+            out += f"{status}\n{'▰' * filled}{'▱' * (10 - filled)}\n"
         if left >= 0:
             out += f"⏳ {left} روز مانده | 📅 پایان: {jalali_from_iso(exp)}\n"
         else:
@@ -10701,6 +10724,17 @@ def usage_is_finished(u):
     return bool(u and u.get("ok") and u.get("has_info") and u.get("total", 0) > 0 and u["used"] >= u["total"])
 
 
+def color_bar(pct, mode="used", width=10):
+    """نوار رنگی. mode=used: پرشدن = مصرف (سبز←زرد←قرمز)؛ mode=left: پرشدن = باقی‌مانده (کم‌شدنش خطرناک است)."""
+    pct = max(0, min(100, int(pct)))
+    filled = 0 if pct <= 0 else max(1, round(width * pct / 100))
+    if mode == "used":
+        sq = "🟥" if pct >= 90 else ("🟨" if pct >= 70 else "🟩")
+    else:
+        sq = "🟥" if pct <= 10 else ("🟨" if pct <= 30 else "🟩")
+    return sq * filled + "⬜" * (width - filled)
+
+
 def usage_lines(u):
     if not u or not u.get("ok") or not u.get("has_info"):
         return ""
@@ -10709,7 +10743,8 @@ def usage_lines(u):
         return f"📊 مصرف: {fmt_bytes(used)} (حجم نامحدود ♾)\n"
     pct = min(100, int(used * 100 / total))
     filled = round(pct / 10)
-    out = f"📊 مصرف: {fmt_bytes(used)} از {fmt_bytes(total)} ({pct}٪)\n{'▰' * filled}{'▱' * (10 - filled)}\n"
+    bar = color_bar(pct, "used") if get_bool("bars_on") else f"{'▰' * filled}{'▱' * (10 - filled)}"
+    out = f"📊 مصرف حجم: {fmt_bytes(used)} از {fmt_bytes(total)} ({pct}٪)\n{bar}\n"
     if used >= total:
         out += "🔴 حجمت تموم شده؛ برای ادامه تمدید کن.\n"
     else:
