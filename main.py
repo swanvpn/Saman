@@ -967,6 +967,9 @@ def build_reply_keyboard(user_id=None):
     rows = [btns[i : i + cols] for i in range(0, len(btns), cols)]
     if user_id is not None and is_main(user_id):
         rows.append([KeyboardButton(text=BTN_ADMIN_KB)])
+    ph = (get_setting("placeholder_text") or "").strip()[:60] if get_bool("placeholder_on") else ""
+    if ph:
+        return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, input_field_placeholder=ph)
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
@@ -1478,6 +1481,9 @@ def _discount_candidates(is_new, tier, ptype=None, cat=None):
     flash = flash_percent_now()
     if flash > 0 and dsc_applies("flash", ptype, cat):
         out.append(("flash", flash, "🔥 تخفیف زمان‌دار"))
+    hh = happy_percent_now()
+    if hh > 0 and dsc_applies("flash", ptype, cat):
+        out.append(("flash", hh, "⏰ ساعت تخفیف"))
     return out
 
 
@@ -1715,7 +1721,13 @@ def get_user_keyboard(user_id=None):
 
 def main_inline_markup(user_id=None):
     """دکمه‌های شیشه‌ای منوی اصلی؛ از «دکمه‌های کاربر» در پنل ادمین قابل تنظیم است."""
-    return InlineKeyboardMarkup(inline_keyboard=ub_build_rows("main", user_id))
+    rows = ub_build_rows("main", user_id)
+    try:
+        if user_id is not None and get_bool("onboard_on") and onboarding_needed(user_id):
+            rows.insert(0, [InlineKeyboardButton(text="🚀 راه‌اندازی سریع (۳ قدم)", callback_data="onb_start")])
+    except Exception as e:  # noqa: BLE001
+        logging.warning("onboarding row failed: %s", e)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def back_home_markup():
@@ -1871,8 +1883,8 @@ def admin_request_markup(req_id):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                b(text="✅ تایید", callback_data=f"admin_confirm_{req_id}"),
-                b(text="❌ رد درخواست", callback_data=f"admin_reject_{req_id}"),
+                sbtn("✅ تایید", "success", callback_data=f"admin_confirm_{req_id}"),
+                sbtn("❌ رد درخواست", "danger", callback_data=f"admin_reject_{req_id}"),
             ],
             [b(text="⚙️ پنل مدیریت", callback_data="admin_home")],
         ]
@@ -2110,12 +2122,17 @@ def build_welcome(user_id, first_name):
             lines.append(f"⏰ نزدیک‌ترین انقضا: <b>{nxt}</b> روز دیگر" if nxt > 0 else "⏰ نزدیک‌ترین انقضا: <b>امروز</b>")
         summary = "┌ 📋 <b>خلاصه‌ی حساب</b>\n" + "\n".join("│ " + ln for ln in lines) + "\n└─────────\n\n"
 
+    greet = greeting_text() if get_bool("greet_on") else ""
     if custom:
-        body = esc(custom.replace("{name}", name))
+        body = esc(custom.replace("{name}", name).replace("{greeting}", greet))
     elif is_new:
-        body = f"سلام {esc(name)} جان 👋\nخوش اومدی! امروز چی می‌خوای؟"
+        body = f"{greet or 'سلام'} {esc(name)} جان 👋\nخوش اومدی! امروز چی می‌خوای؟"
     else:
-        body = f"خوش برگشتی {esc(name)} جان 😊 دلمون برات تنگ شده بود"
+        body = (
+            f"{greet} {esc(name)} جان 😊 خوش برگشتی، دلمون برات تنگ شده بود"
+            if greet
+            else f"خوش برگشتی {esc(name)} جان 😊 دلمون برات تنگ شده بود"
+        )
         if not summary:
             body += f"\n\n💳 موجودی: {balance:,} تومان\n📦 سرویس‌های فعال: {active}"
 
@@ -2190,6 +2207,39 @@ async def kb_home_message(message: types.Message, state: FSMContext):
     )
 
 
+# --- دستورهای کوتاه منوی «/» (قبل از هندلرهای حالت‌دار ثبت می‌شوند تا همیشه کار کنند) ---
+@dp.message(Command("buy"))
+async def cmd_buy(message: types.Message, state: FSMContext):
+    await message_buy_handler(message, state)
+
+
+@dp.message(Command("my"))
+async def cmd_my(message: types.Message, state: FSMContext):
+    await my_services_handler(message, state)
+
+
+@dp.message(Command("wallet"))
+async def cmd_wallet(message: types.Message, state: FSMContext):
+    await wallet_menu_handler(message, state)
+
+
+@dp.message(Command("support"))
+async def cmd_support(message: types.Message, state: FSMContext):
+    await support_handler(message, state)
+
+
+@dp.message(Command("status"))
+async def cmd_status(message: types.Message, state: FSMContext):
+    await state.clear()
+    b = InlineKeyboardButton
+    await message.answer(
+        status_page_text(),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[b(text="🎧 پشتیبانی", callback_data="support_menu")], [b(text="🏠 منوی اصلی", callback_data="main_menu")]]
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # تعرفه‌ها
 # ---------------------------------------------------------------------------
@@ -2253,6 +2303,9 @@ def shop_view(user_id, cat_key=None):
     left = flash_remaining()
     if left is not None:
         out += f"⏳ تخفیف زمان‌دار {fmt_remaining(left)} دیگر ادامه دارد!\n"
+    _hh = happy_line()
+    if _hh:
+        out += _hh + "\n"
     out += f"\n📂 <b>{esc((cur[2] + ' ' + cur[1]).strip())}</b>\n"
     keyboard = []
     tabs = [
@@ -2262,14 +2315,14 @@ def shop_view(user_id, cat_key=None):
     if not stepped:
         keyboard.extend(tabs[i : i + 3] for i in range(0, len(tabs), 3))
     best = bestseller_id()
-    badge = get_setting("bestseller_label").strip() or "⭐ پرفروش"
+    tags = plan_tags(services, best)
     plan_btns = []
     for sid, name, price in services:
         final = price_with_percent(price, total)
-        is_best = best is not None and sid == best
-        out += price_line(name, price, final, badge if is_best else "")
+        tag = tags.get(sid, "")
+        out += price_line(name, price, final, tag)
         plan_btns.append(
-            b(text=f"🛒 {name} — {final:,} تومان" + (f" {badge}" if is_best else ""), callback_data=f"buy_{sid}")
+            sbtn(_fit_label(f"🛒 {name} — {final:,} تومان" + (f" {tag}" if tag else "")), "primary", callback_data=f"buy_{sid}")
         )
     pat = parse_layout(get_setting("upat_shop2"))
     keyboard.extend(apply_layout(plan_btns, pat) if pat else [[x] for x in plan_btns])
@@ -2408,11 +2461,17 @@ def compute_checkout(user_id, data):
     if code and not dsc_applies("code", ptype, cat):
         code, code_pct = None, 0
     total, parts = discount_breakdown(user_id, ptype, cat)
-    percent = min(total + code_pct, discount_cap())
+    lt_pct = 0
+    if is_custom and get_bool("longterm_on") and (custom_days or 0) >= 60:
+        lt_pct = min(get_int("longterm_max"), ((custom_days // 30) - 1) * get_int("longterm_per_month"))
+        if lt_pct > 0:
+            parts = list(parts) + [(lt_pct, "تخفیف بلندمدت")]
+    percent = min(total + code_pct + lt_pct, discount_cap())
     return dict(
         service_id=sid, label=label, base=base, percent=percent, parts=parts,
         code=code, code_pct=code_pct, final=price_with_percent(base, percent),
         renew_cfg_id=data.get("renew_cfg_id"), custom_days=custom_days,
+        custom_gb=gb if is_custom else None, lt_pct=lt_pct,
     )
 
 
@@ -2426,12 +2485,19 @@ def checkout_view(co, balance=0):
     if co["percent"] > 0:
         extra = f"{co['code_pct']}٪ کد تخفیف" if co["code"] else None
         out += breakdown_text(co["percent"], co["parts"], extra) + "\n"
+    if co.get("custom_gb") and (co.get("custom_days") or 0) >= 60 and get_bool("longterm_on"):
+        monthly = int(co["final"] / (co["custom_days"] / 30.0))
+        ref30 = price_with_percent(custom_price(co["custom_gb"], 30), max(0, co["percent"] - co.get("lt_pct", 0)))
+        line = f"📆 قیمت ماهانه: ≈ <b>{monthly:,}</b> تومان"
+        if ref30 > monthly:
+            line += f" — {int((ref30 - monthly) * 100 / ref30)}٪ ارزان‌تر از خرید ماهانه"
+        out += line + "\n"
     out += f"\n💳 موجودی کیف پولت: {balance:,} تومان\n"
     b = InlineKeyboardButton
     btns = []
     if balance >= co["final"]:
         out += "\nروش پرداخت رو انتخاب کن:"
-        btns.append(b(text="💳 پرداخت از کیف پول (سریع‌تر)", callback_data="pay_with_wallet"))
+        btns.append(sbtn("💳 پرداخت از کیف پول (سریع‌تر)", "success", callback_data="pay_with_wallet"))
         btns.append(b(text="🏦 کارت‌به‌کارت", callback_data="confirm_payment"))
     else:
         shortage = co["final"] - balance
@@ -2671,11 +2737,13 @@ async def pay_with_wallet_handler(call: types.CallbackQuery, state: FSMContext):
         await state.clear()  # داخل قفل؛ کلیک دوم داده‌ای پیدا نمی‌کند
 
     await call.answer()
-    await edit_or_send(
-        call,
-        fill_text("t_wallet_paid") + "\n\n" + pending_notice(),
-        status_markup(req_id),
-    )
+    _w_base = fill_text("t_wallet_paid") + "\n\n" + pending_notice()
+    _w_card = pending_card(req_id, co["label"], co["final"], True)
+    if _w_card:
+        _w_base += "\n\n" + _w_card
+    await edit_or_send(call, _w_base, status_markup(req_id))
+    live_register(req_id, call.message, _w_base)
+    spawn(live_progress(call.bot, req_id))
     await send_sticker(call.bot, call.message.chat.id, "sticker_purchase")
     await notify_staff(call.bot, request_caption(req_id, call.from_user, co, req_type, True), admin_request_markup(req_id))
 
@@ -2955,11 +3023,13 @@ async def receipt_handler(message: types.Message, state: FSMContext):
         fstep(user_id, "receipt")
     except Exception as e:  # noqa: BLE001
         logging.warning("post-commit cleanup failed: %s", e)
-    await answer_retry(
-        message,
-        fill_text("t_receipt_ok", date=get_current_jalali()) + "\n\n" + pending_notice(),
-        reply_markup=status_markup(req_id),
-    )
+    _rc_base = fill_text("t_receipt_ok", date=get_current_jalali()) + "\n\n" + pending_notice()
+    _rc_card = pending_card(req_id, co["label"], co["final"])
+    if _rc_card:
+        _rc_base += "\n\n" + _rc_card
+    _rc_msg = await answer_retry(message, _rc_base, reply_markup=status_markup(req_id))
+    live_register(req_id, _rc_msg, _rc_base)
+    spawn(live_progress(message.bot, req_id))
     spawn(send_sticker(message.bot, message.chat.id, "sticker_purchase"))  # غیرحیاتی؛ مسیر اصلی را کند نکند
     await notify_staff(
         message.bot, request_caption(req_id, message.from_user, co, req_type, False, pay_amt),
@@ -2967,7 +3037,7 @@ async def receipt_handler(message: types.Message, state: FSMContext):
     )
 
 
-BUILD_TAG = "growth-pack-v12c-receipt-safe"
+BUILD_TAG = "v13-ui-sales-pack"
 
 
 def has_receipt_media(message: types.Message) -> bool:
@@ -3213,7 +3283,7 @@ async def process_charge_receipt_handler(message: types.Message, state: FSMConte
 def _my_services_view(user_id):
     with SessionLocal() as s:
         configs = [
-            (c.id, c.config_name, c.expires_at, c.service_id)
+            (c.id, c.config_name, c.expires_at, c.service_id, c.config_details)
             for c in s.query(UserConfig).filter(UserConfig.user_id == user_id).all()
         ]
     if not configs:
@@ -3225,30 +3295,45 @@ def _my_services_view(user_id):
         )
 
     remind = get_int("reminder_days")
+    badges_on = get_bool("svc_badges_on")
     buttons, renew_rows = [], []
-    for cfg_id, name, exp, sid in configs:
-        suffix, icon, soon = "", "🌐", False
-        if exp:
-            try:
-                left = (date.fromisoformat(exp) - today_iran()).days
-                suffix = f" ({left} روز)" if left >= 0 else " (منقضی)"
-                soon = left <= remind
-            except ValueError:
-                pass
-        if soon:
-            icon = "⚠️"
-        buttons.append(InlineKeyboardButton(text=f"{icon} {name}{suffix}", callback_data=f"view_cfg_{cfg_id}"))
+    for cfg_id, name, exp, sid, details in configs:
+        left = _days_left(exp)
+        soon = left is not None and left <= remind
+        if badges_on:
+            em, pct = svc_status(left, cached_usage(details))
+            parts = []
+            if left is not None:
+                parts.append(f"{left} روز" if left >= 0 else "منقضی")
+            if pct is not None:
+                parts.append(f"{pct}٪")
+            tail = (" · " + " · ".join(parts)) if parts else ""
+            label = _fit_label(f"{em} {name or ''}", tail)
+            soon = soon or em != "🟢"
+        else:
+            suffix = ((f" ({left} روز)" if left >= 0 else " (منقضی)") if left is not None else "")
+            label = _fit_label(f"{'⚠️' if soon else '🌐'} {name or ''}", suffix)
+        buttons.append(InlineKeyboardButton(text=label, callback_data=f"view_cfg_{cfg_id}"))
         if soon and sid:
             renew_rows.append(
-                [InlineKeyboardButton(text=f"🔄 تمدید سریع: {name}"[:60], callback_data=f"renew_{cfg_id}")]
+                [InlineKeyboardButton(text=f"🔄 تمدید سریع: {name or ''}"[:60], callback_data=f"renew_{cfg_id}")]
             )
-    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    per = 1 if badges_on else 2
+    rows = [buttons[i : i + per] for i in range(0, len(buttons), per)]
     rows.extend(renew_rows)
+    if get_bool("glance_on") and len(configs) >= 2:
+        rows.append([InlineKeyboardButton(text="🧭 همه‌ی سرویس‌ها در یک نگاه", callback_data="svc_glance")])
+    wa = webapp_url()
+    if wa:
+        try:
+            rows.append([InlineKeyboardButton(text="📱 داشبورد زنده (مینی‌اپ)", web_app=WebAppInfo(url=wa))])
+        except Exception as e:  # noqa: BLE001
+            logging.info("webapp button failed: %s", e)
     rows.append([InlineKeyboardButton(text="🏠 بازگشت به منوی اصلی", callback_data="main_menu")])
-    return (
-        "📦 <b>سرویس‌های تو</b> (برای دیدن جزئیات و لینک، روی سرویس بزن 👇):",
-        InlineKeyboardMarkup(inline_keyboard=rows),
-    )
+    head = "📦 <b>سرویس‌های تو</b> (برای دیدن جزئیات و لینک، روی سرویس بزن 👇)"
+    if badges_on:
+        head += "\n🟢 فعال   🟡 نزدیک پایان   🔴 تمام‌شده"
+    return head, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @dp.message(KbBtn("my"))
@@ -3268,7 +3353,10 @@ async def my_services_callback_handler(call: types.CallbackQuery, state: FSMCont
 
 @dp.callback_query(F.data.startswith("view_cfg_"))
 async def view_config_detail_handler(call: types.CallbackQuery):
-    cfg_id = int(call.data.split("_")[2])
+    await _render_cfg_detail(call, int(call.data.split("_")[2]))
+
+
+async def _render_cfg_detail(call, cfg_id, answered=False):
     with SessionLocal() as s:
         cfg = s.get(UserConfig, cfg_id)
         if cfg is None or cfg.user_id != call.from_user.id:
@@ -3276,15 +3364,20 @@ async def view_config_detail_handler(call: types.CallbackQuery):
             return
         name, details, exp, sid = cfg.config_name, cfg.config_details, cfg.expires_at, cfg.service_id
 
-    await call.answer()
+    if not answered:
+        await call.answer()
+    _BAR_THEME.set(user_bar_theme(call.from_user.id))
     usage = None
     sub = find_sub_url(details) if get_bool("usage_on") else None
     if sub:
+        await send_typing(call.bot, call.from_user.id)
         usage = await fetch_usage(sub, timeout=6)
-        if usage.get("ok") and usage.get("has_info") and get_bool("usage_sync_expiry_on"):
-            new_exp = sync_real_expiry(cfg_id, usage)
-            if new_exp:
-                exp = new_exp
+        if usage.get("ok") and usage.get("has_info"):
+            usage_hist_record(cfg_id, usage)
+            if get_bool("usage_sync_expiry_on"):
+                new_exp = sync_real_expiry(cfg_id, usage)
+                if new_exp:
+                    exp = new_exp
 
     out = f"📦 <b>{esc(name or '')}</b>\n"
     left = None
@@ -3315,11 +3408,20 @@ async def view_config_detail_handler(call: types.CallbackQuery):
     ul = usage_lines(usage)
     if ul:
         out += "\n" + ul
+    spark = usage_spark_text(cfg_id)
+    if spark:
+        out += "\n" + spark
+    if get_bool("autorenew_on") and sid:
+        out += "\n♻️ تمدید خودکار: " + ("🟢 روشن" if get_setting(f"autorenew_{cfg_id}") == "1" else "⚪ خاموش") + "\n"
     out += f"\n🔗 <b>ساب‌لینک / کانفیگ</b> (برای کپی، روی متن بزن):\n<code>{esc((details or '')[:3000])}</code>"
     udesc = get_setting(f"cudesc_{cfg_id}").strip()
     if udesc:
         out += f"\n{esc(udesc[:500])}"
-    ctx = {"id": cfg_id, "sid": sid, "has_link": bool(LINK_RE.search(details or ""))}
+    link = (sub or find_sub_url(details or "") or (details or "").strip())
+    ctx = {
+        "id": cfg_id, "sid": sid, "has_link": bool(LINK_RE.search(details or "")),
+        "copy_text": link if 0 < len(link) <= 256 else "",
+    }
     rows = ub_build_rows("svc", call.from_user.id, ctx)
     await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -3470,7 +3572,10 @@ async def trial_request_handler(call: types.CallbackQuery):
         s.commit()
     await call.answer()
     try:
-        await edit_or_send(call, "🎁 درخواست سرویس تست شما ثبت شد.\n\n" + pending_notice(), status_markup(req_id))
+        _t_base = "🎁 درخواست سرویس تست شما ثبت شد.\n\n" + pending_notice()
+        await edit_or_send(call, _t_base, status_markup(req_id))
+        live_register(req_id, call.message, _t_base)
+        spawn(live_progress(call.bot, req_id))
     except Exception as e:  # noqa: BLE001
         logging.warning("trial confirm message failed: %s", e)
     await notify_staff(
@@ -3807,8 +3912,8 @@ async def admin_detail_handler(call: types.CallbackQuery):
         keyboard.insert(
             0,
             [
-                b(text="✅ تایید", callback_data=f"admin_confirm_{req_id}"),
-                b(text="❌ رد درخواست", callback_data=f"admin_reject_{req_id}"),
+                sbtn("✅ تایید", "success", callback_data=f"admin_confirm_{req_id}"),
+                sbtn("❌ رد درخواست", "danger", callback_data=f"admin_reject_{req_id}"),
             ],
         )
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -3869,11 +3974,18 @@ def register_purchase(s, user_id, price=0):
                 user.balance = min(MAX_BALANCE, _b1 + inv)
                 wlog(s, user_id, _b1, user.balance, "invitee_reward", ref.user_id)
                 _INVITEE_NOTICE[user_id] = inv
+    try:
+        agent_commission(s, user, price)
+    except Exception as e:  # noqa: BLE001
+        logging.warning("agent commission failed: %s", e)
     return monthly_notif, reward
 
 
 async def post_purchase_notifications(bot, user_id, monthly_notif, reward):
     inv_amount = _INVITEE_NOTICE.pop(user_id, 0)
+    _ag = _AGENT_NOTICE.pop(user_id, None)
+    if _ag:
+        await gsend(bot, _ag[0], f"💼 کمیسیون نمایندگی: {_ag[1]:,} تومان بابت خرید یکی از زیرمجموعه‌هات به کیف پولت اضافه شد.")
     if inv_amount:
         await gsend(bot, user_id, f"🎁 هدیهٔ دعوت: {inv_amount:,} تومان به کیف پولت اضافه شد. ممنون که با دعوت دوستت اومدی!")
     if monthly_notif:
@@ -3906,9 +4018,10 @@ async def send_rating_request(bot, user_id, req_id):
     if not get_bool("rating_on"):
         return
     b = InlineKeyboardButton
-    markup = InlineKeyboardMarkup(
-        inline_keyboard=[[b(text=f"{n} ⭐", callback_data=f"rate_{req_id}_{n}") for n in range(1, 6)]]
-    )
+    def _star(n):
+        return b(text="⭐" * n, callback_data=f"rate_{req_id}_{n}")
+
+    markup = InlineKeyboardMarkup(inline_keyboard=[[_star(5)], [_star(4), _star(3)], [_star(2), _star(1)]])
     try:
         await bot.send_message(
             chat_id=user_id,
@@ -4125,6 +4238,7 @@ async def admin_confirm_action(call: types.CallbackQuery, state: FSMContext):
         except Exception as e:  # noqa: BLE001
             logging.error("notify renew failed: %s", e)
         await post_purchase_notifications(call.bot, uid, extra[0], extra[1])
+        spawn(live_finish(call.bot, req_id, True))
         await v3_post_delivery(call.bot, uid, req_id)
         try:
             await v3_upsell(call.bot, uid, req_id)
@@ -4174,6 +4288,7 @@ async def admin_reject_action(call: types.CallbackQuery):
 
     await call.answer("درخواست رد شد.")
     log_action(call.from_user.id, f"رد درخواست #{req_id}")
+    spawn(live_finish(call.bot, req_id, False))
     await append_status(call, "❌ وضعیت: درخواست رد شد.", get_admin_main_keyboard(call.from_user.id))
     msg = fill_text("t_rejected")
     if refunded:
@@ -8883,6 +8998,7 @@ def admin_dashboard_text(user_id):
             f"👥 کاربر جدید امروز: {n['new_today']} (کل: {n['total_users']})\n"
             f"🔴 در انتظار تایید: {n['unanswered']}  |  🎫 تیکت باز: {n['open_tickets']}\n"
             f"⏰ سرویس نزدیک انقضا (۳ روز): {expiring_soon_count(3)}"
+            + admin_yday_block(n)
         )
     except Exception as e:  # noqa: BLE001
         logging.warning("dashboard failed: %s", e)
@@ -8974,6 +9090,8 @@ def club_view(user_id):
         out += "🎖 سطح فعلی: هنوز سطحی ندارید (با ۲ خرید در یک ماه به برنزی می‌رسید)\n"
     if next_need:
         out += f"🎯 تا سطح بعدی: {next_need - count} خرید دیگر\n"
+    if get_bool("club_bar_on") and get_bool("loyalty_on"):
+        out += club_tier_bar(count)
     if per > 0 and value > 0:
         out += f"\n💡 با هر {per:,} تومان خرید، ۱ امتیاز می‌گیرید و هر امتیاز {value:,} تومان اعتبار کیف پول است."
         if min_redeem > 0:
@@ -9495,7 +9613,14 @@ def ub_build_rows(screen, user_id=None, ctx=None):
                     continue
                 btn = InlineKeyboardButton(text=label, url=url)
             else:
-                btn = InlineKeyboardButton(text=label, callback_data=it["cb"].replace("{id}", str(ctx.get("id", ""))))
+                btn = None
+                if it["key"] == "copy" and ctx.get("copy_text") and _COPY_BTN_OK and get_bool("copybtn_on"):
+                    try:
+                        btn = InlineKeyboardButton(text=label, copy_text=CopyTextButton(text=ctx["copy_text"]))
+                    except Exception:  # noqa: BLE001
+                        btn = None
+                if btn is None:
+                    btn = InlineKeyboardButton(text=label, callback_data=it["cb"].replace("{id}", str(ctx.get("id", ""))))
             entries.append((bool(it.get("wide")), btn))
         elif tok in customs:
             kind, label, url = customs[tok]
@@ -10725,14 +10850,15 @@ def usage_is_finished(u):
 
 
 def color_bar(pct, mode="used", width=10):
-    """نوار رنگی. mode=used: پرشدن = مصرف (سبز←زرد←قرمز)؛ mode=left: پرشدن = باقی‌مانده (کم‌شدنش خطرناک است)."""
+    """نوار رنگی با تم انتخابی کاربر. mode=used: پرشدن = مصرف؛ mode=left: پرشدن = باقی‌مانده."""
     pct = max(0, min(100, int(pct)))
     filled = 0 if pct <= 0 else max(1, round(width * pct / 100))
+    th = BAR_THEMES.get(_BAR_THEME.get(), BAR_THEMES["sq"])
     if mode == "used":
-        sq = "🟥" if pct >= 90 else ("🟨" if pct >= 70 else "🟩")
+        key = "bad" if pct >= 90 else ("mid" if pct >= 70 else "ok")
     else:
-        sq = "🟥" if pct <= 10 else ("🟨" if pct <= 30 else "🟩")
-    return sq * filled + "⬜" * (width - filled)
+        key = "bad" if pct <= 10 else ("mid" if pct <= 30 else "ok")
+    return th[key] * filled + th["empty"] * (width - filled)
 
 
 def usage_lines(u):
@@ -11307,6 +11433,7 @@ async def job_usage_alerts(bot):
                     set_setting(f"ufail_{cid}", "0")
                 if sync_on and u["has_info"]:
                     sync_real_expiry(cid, u)
+                usage_hist_record(cid, u)
                 if u["has_info"] and u["total"] > 0:
                     set_setting(f"utotal_{cid}", str(int(u["total"])))
                 if u["has_info"] and u["total"] > 0:
@@ -11332,9 +11459,20 @@ async def job_usage_alerts(bot):
                         f"⚠️ {pct_i}٪ حجم سرویس «{esc(name or '')}» مصرف شده "
                         f"({fmt_bytes(u['total'] - u['used'])} باقی مونده). قبل از تموم شدن تمدیدش کن 👇"
                     )
+                if "f" in new and sid and get_bool("rebuy_disc_on"):
+                    try:
+                        _cb_code = await asyncio.to_thread(make_comeback_code, uid)
+                        msg += (
+                            f"\n\n🎁 یه کد {get_int('rebuy_disc_percent') or 10}٪ تخفیف مخصوص تمدید دوباره داری: "
+                            f"<code>{_cb_code}</code> (تا {max(1, get_int('rebuy_disc_days') or 2)} روز اعتبار داره)"
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logging.warning("comeback code failed: %s", e)
                 rows_kb = []
                 if sid:
-                    rows_kb.append([InlineKeyboardButton(text="🔄 تمدید سرویس", callback_data=f"renew_{cid}")])
+                    rows_kb.append([sbtn("🔄 تمدید سرویس", "success", callback_data=f"renew_{cid}")])
+                    if "f" in new and get_bool("rebuy_disc_on"):
+                        rows_kb.append([InlineKeyboardButton(text="➕ همین پلن رو دوباره بگیر", callback_data=f"rebuy_{cid}")])
                 rows_kb.append([InlineKeyboardButton(text="📦 سرویس‌های من", callback_data="my_services_callback")])
                 try:
                     await bot.send_message(chat_id=uid, text=msg, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows_kb))
@@ -11419,6 +11557,7 @@ async def _finish_config_delivery(bot, chat_id, admin_id, state, config_text, no
 
     await state.clear()
     log_action(admin_id, f"ارسال کانفیگ برای درخواست #{req_id}")
+    spawn(live_finish(bot, req_id, True))
     await bot.send_message(
         chat_id=chat_id,
         text=f"✅ کانفیگ با موفقیت برای کاربر {target_user_id} ارسال و ثبت شد.{note}"
@@ -11465,12 +11604,15 @@ async def _finish_config_delivery(bot, chat_id, admin_id, state, config_text, no
                 qr_png = make_qr_png(m_.group(0))
         qr_hint = "\n📷 QR بالا را هم می‌توانید اسکن کنید."
         check_on = (not is_trial) and get_bool("connect_check_on")
-        inv_line = invoice_line(req_id, target_user_id) if (not is_trial and get_bool("invoice_on")) else ""
+        inv_line = (
+            invoice_line(req_id, target_user_id, end=jalali_from_iso(end_date.isoformat()))
+            if (not is_trial and get_bool("invoice_on")) else ""
+        )
         ck_text = "🔌 خب، با آموزش وصل شدی؟" if check_on else ""
         b_ = InlineKeyboardButton
         ck_rows = (
-            [[b_(text="✅ وصل شدم", callback_data=f"{CB.CK_OK}{req_id}"),
-              b_(text="❌ وصل نشدم", callback_data=f"{CB.CK_NO}{req_id}")]]
+            [[sbtn("✅ وصل شدم", "success", callback_data=f"{CB.CK_OK}{req_id}"),
+              sbtn("❌ وصل نشدم", "danger", callback_data=f"{CB.CK_NO}{req_id}")]]
             if check_on else []
         )
 
@@ -11496,7 +11638,8 @@ async def _finish_config_delivery(bot, chat_id, admin_id, state, config_text, no
             ):
                 cap = _join(body, with_inv, True)
                 if _ap_plain_len(cap) <= 1020:
-                    await bot.send_photo(
+                    await send_with_fx(
+                        bot.send_photo,
                         chat_id=target_user_id, photo=BufferedInputFile(qr_png, filename="qr.png"),
                         caption=cap, reply_markup=_mk(base),
                     )
@@ -11504,7 +11647,7 @@ async def _finish_config_delivery(bot, chat_id, admin_id, state, config_text, no
                     inv_included = with_inv and bool(inv_line)
                     break
         if not sent_photo:
-            await bot.send_message(chat_id=target_user_id, text=_join(notify, True, False), reply_markup=_mk(dmarkup))
+            await send_with_fx(bot.send_message, chat_id=target_user_id, text=_join(notify, True, False), reply_markup=_mk(dmarkup))
             inv_included = bool(inv_line)
         post_merged, merged_check, merged_inv = True, check_on, inv_included
         await send_sticker(bot, target_user_id, "sticker_config")
@@ -11695,7 +11838,7 @@ PK_USAGE = {
     "2": ("🌐 متوسط — وب، اینستاگرام، یوتیوب", 40),
     "3": ("🎬 زیاد — فیلم، دانلود، آپدیت", 90),
 }
-PK_PURPOSE = {"t": "💬 بیشتر تلگرام و چت", "v": "🎬 فیلم و شبکه‌های اجتماعی", "g": "🎮 بازی آنلاین"}
+PK_PURPOSE = {"t": "💬 بیشتر تلگرام و چت", "v": "🎬 فیلم و شبکه‌های اجتماعی", "g": "🎮 بازی آنلاین", "w": "💼 کار و ریموت"}
 PK_PEOPLE = {"1": ("👤 فقط خودم", 1.0), "2": ("👥 ۲ نفر", 1.7), "3": ("👨‍👩‍👧 ۳ نفر یا بیشتر", 2.4)}
 
 
@@ -11760,7 +11903,7 @@ async def pk_q2(call: types.CallbackQuery):
     await edit_or_send(call, "🤔 <b>راهنمای انتخاب</b> | سوال ۲ از ۳\n\nبیشتر برای چی می‌خوایش؟", _pk_markup(rows))
 
 
-@dp.callback_query(F.data.regexp(r"^pk2_[123]_[tvg]$"))
+@dp.callback_query(F.data.regexp(r"^pk2_[123]_[tvgw]$"))
 async def pk_q3(call: types.CallbackQuery):
     await call.answer()
     _, u, p = call.data.split("_")
@@ -11769,7 +11912,7 @@ async def pk_q3(call: types.CallbackQuery):
     await edit_or_send(call, "🤔 <b>راهنمای انتخاب</b> | سوال ۳ از ۳\n\nچند نفر ازش استفاده می‌کنن؟", _pk_markup(rows))
 
 
-@dp.callback_query(F.data.regexp(r"^pk3_[123]_[tvg]_[123]$"))
+@dp.callback_query(F.data.regexp(r"^pk3_[123]_[tvgw]_[123]$"))
 async def pk_result(call: types.CallbackQuery):
     await call.answer()
     _, u, p, n = call.data.split("_")
@@ -13922,9 +14065,20 @@ def social_stats():
             )
             n_rate, avg = s.query(func.count(Rating.id), func.avg(Rating.score)).first()
         mins = delivery_minutes_list(50)
+        since = (today_iran() - timedelta(days=7)).isoformat()
+        with SessionLocal() as s2:
+            week = (
+                s2.query(func.count(func.distinct(Request.user_id)))
+                .filter(
+                    Request.status == "answered", Request.req_type.in_(("buy", "renew")),
+                    Request.created_iso >= since,
+                )
+                .scalar()
+                or 0
+            )
         return dict(
             customers=int(cust), n_rate=int(n_rate or 0), avg=float(avg) if avg is not None else None,
-            deliv=trimmed_mean(mins), n_deliv=len(mins),
+            deliv=trimmed_mean(mins), n_deliv=len(mins), week=int(week),
         )
 
     return v3_cached("social", 600, calc)
@@ -13936,6 +14090,8 @@ def social_line():
     st = social_stats()
     need, need_d = max(1, get_int("social_min")), max(1, get_int("social_deliv_min"))
     parts = []
+    if get_bool("social_week_on") and st.get("week", 0) >= max(1, get_int("social_week_min")):
+        parts.append(f"🔥 این هفته {fa(st['week'])} نفر خرید کردن")
     if st["customers"] >= need:
         parts.append(f"👥 {fa(st['customers'])} مشتری فعال")
     if st["n_rate"] >= need and st["avg"] is not None:
@@ -14110,13 +14266,18 @@ def invoice_text(req_id, uid=None):
     return out
 
 
-def invoice_line(req_id, uid):
-    """خلاصهٔ یک‌خطی فاکتور برای قرارگرفتن داخل پیام تحویل سرویس."""
+def invoice_line(req_id, uid, end=None):
+    """خلاصهٔ فاکتور برای قرارگرفتن داخل پیام تحویل سرویس (با تاریخ پایان، شبیه رسید)."""
     with SessionLocal() as s:
         r = s.get(Request, req_id)
         if r is None or r.user_id != uid:
             return ""
-        price, wallet = r.price or 0, bool(r.paid_wallet)
+        price, wallet, plan = r.price or 0, bool(r.paid_wallet), r.plan_name
+    if end and get_bool("receipt_card_on"):
+        return (
+            f"🧾 رسید <code>SW-{req_id:06d}</code> | {price:,} تومان | {'کیف پول' if wallet else 'کارت‌به‌کارت'}\n"
+            f"📦 {esc(plan or '')} | 📅 پایان: {end}"
+        )
     return f"🧾 فاکتور <code>SW-{req_id:06d}</code> | {price:,} تومان | {'کیف پول' if wallet else 'کارت‌به‌کارت'}"
 
 
@@ -18089,6 +18250,7 @@ async def scheduler(bot):
             spawn(job_usage_alerts(bot))
             spawn(job_growth_tick(bot))
             spawn(job_v3_tick(bot))
+            spawn(job_v13_tick(bot))
         except Exception as e:  # noqa: BLE001
             logging.error("scheduler error: %s", e)
             await report_error(bot, "زمان‌بند اصلی", e)
@@ -18110,6 +18272,1226 @@ async def keepalive():
                 logging.info("keepalive ping failed: %s", e)
 
 
+# ===========================================================================
+# v13 — ظاهر پنل کاربر، ابزارهای فروش و خلاصه‌ی ادمین
+# همه‌ی قابلیت‌ها از «تنظیمات ربات ← 🎨 ظاهر پنل کاربر / 🚀 ابزارهای فروش» قابل خاموش/روشن‌اند.
+# ===========================================================================
+import contextvars
+from urllib.parse import parse_qsl
+
+try:
+    from aiogram.types import CopyTextButton
+except Exception:  # noqa: BLE001  (نسخه‌ی قدیمی aiogram)
+    CopyTextButton = None
+try:
+    from aiogram.types import WebAppInfo
+except Exception:  # noqa: BLE001
+    WebAppInfo = None
+
+
+def _model_has_field(model, name):
+    try:
+        return name in model.model_fields
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_COPY_BTN_OK = CopyTextButton is not None and _model_has_field(InlineKeyboardButton, "copy_text")
+_STYLE_OK = _model_has_field(InlineKeyboardButton, "style")
+TRIAL_PLAN_NAME = "🎁 سرویس تست رایگان"
+
+DEFAULTS.update(
+    {
+        # --- ظاهر پنل کاربر ---
+        "greet_on": "1",
+        "svc_badges_on": "1",
+        "glance_on": "1",
+        "club_bar_on": "1",
+        "plan_tags_on": "1",
+        "tag_eco_label": "💸 اقتصادی‌ترین",
+        "tag_big_label": "📦 پرحجم‌ترین",
+        "receipt_card_on": "1",
+        "live_status_on": "1",
+        "usage_hist_on": "1",
+        "copybtn_on": "1",
+        "placeholder_on": "1",
+        "placeholder_text": "از منوی پایین یا دکمه‌های بالا انتخاب کن 👇",
+        "typing_on": "1",
+        "fa_digits_on": "0",
+        "onboard_on": "1",
+        "bartheme_on": "1",
+        "celebrate_on": "1",
+        "celebrate_effect": "5046509860389126442",
+        "btn_colors_on": "0",
+        "about_on": "1",
+        "bot_description": "🔒 Swan VPN — سرویس پرسرعت و پایدار با پشتیبانی سریع.\nاز دکمه «شروع» بزن، پلن مناسبت رو انتخاب کن و در چند دقیقه وصل شو.",
+        "bot_short_description": "🔒 Swan VPN | خرید و تمدید سریع، پشتیبانی انسانی",
+        # --- ابزارهای فروش ---
+        "autorenew_on": "1",
+        "autorenew_days": "1",
+        "gift_on": "1",
+        "gift_days": "30",
+        "longterm_on": "1",
+        "longterm_per_month": "3",
+        "longterm_max": "15",
+        "social_week_on": "1",
+        "social_week_min": "10",
+        "hh_on": "0",
+        "hh_from": "20",
+        "hh_to": "23",
+        "hh_percent": "10",
+        "rebuy_disc_on": "1",
+        "rebuy_disc_percent": "10",
+        "rebuy_disc_days": "2",
+        "webapp_on": "1",
+        "agent_on": "1",
+        "trialend_on": "1",
+        "trialend_percent": "20",
+        # --- ادمین ---
+        "admin_yday_on": "1",
+    }
+)
+
+SETTING_PAGES.update(
+    {
+        "ui13": "🎨 ظاهر پنل کاربر",
+        "sales13": "🚀 ابزارهای فروش بیشتر",
+    }
+)
+
+SETTINGS.update(
+    {
+        "greet_on": dict(page="ui13", type="toggle", label="خوش‌آمدگویی بر اساس ساعت (صبح/ظهر/عصر/شب بخیر)"),
+        "svc_badges_on": dict(page="ui13", type="toggle", label="نشان وضعیت 🟢🟡🔴 با روز و درصد کنار هر سرویس"),
+        "glance_on": dict(page="ui13", type="toggle", label="صفحه‌ی «همه‌ی سرویس‌ها در یک نگاه»"),
+        "club_bar_on": dict(page="ui13", type="toggle", label="نوار سطح باشگاه تا سطح بعد"),
+        "plan_tags_on": dict(page="ui13", type="toggle", label="برچسب اقتصادی‌ترین / پرحجم‌ترین روی پلن‌ها"),
+        "tag_eco_label": dict(page="ui13", type="text", label="متن برچسب اقتصادی‌ترین"),
+        "tag_big_label": dict(page="ui13", type="text", label="متن برچسب پرحجم‌ترین"),
+        "receipt_card_on": dict(page="ui13", type="toggle", label="کارت رسید (پلن، مبلغ، شماره‌ی پیگیری، تاریخ پایان)"),
+        "live_status_on": dict(page="ui13", type="toggle", label="پیام زنده‌ی «رسید دریافت شد ← بررسی ← ساخت ← تحویل»"),
+        "usage_hist_on": dict(page="ui13", type="toggle", label="مینی‌نمودار مصرف ۷ روز اخیر"),
+        "copybtn_on": dict(page="ui13", type="toggle", label="دکمه‌ی کپی واقعی تلگرام (با یک لمس)"),
+        "placeholder_on": dict(page="ui13", type="toggle", label="متن راهنما داخل کادر تایپ"),
+        "placeholder_text": dict(page="ui13", type="text", label="متن راهنمای کادر تایپ (حداکثر ۶۰ نویسه)"),
+        "typing_on": dict(page="ui13", type="toggle", label="نشانگر «در حال تایپ…» هنگام کارهای کند"),
+        "fa_digits_on": dict(page="ui13", type="toggle", label="ارقام فارسی در همه‌ی پیام‌ها (داخل کد/لینک تغییر نمی‌کند)"),
+        "onboard_on": dict(page="ui13", type="toggle", label="مسیر راه‌اندازی کاربر جدید (دستگاه ← آموزش ← تست)"),
+        "bartheme_on": dict(page="ui13", type="toggle", label="انتخاب تم نوار حجم توسط کاربر"),
+        "celebrate_on": dict(page="ui13", type="toggle", label="افکت جشن روی پیام تحویل سرویس (نیاز به aiogram جدید)"),
+        "celebrate_effect": dict(page="ui13", type="text", label="شناسه‌ی افکت (پیش‌فرض 🎉)"),
+        "btn_colors_on": dict(page="ui13", type="toggle", label="دکمه‌های رنگی (نیاز به Bot API 9.4 و aiogram جدید)"),
+        "about_on": dict(page="ui13", type="toggle", label="«درباره‌ی ربات» و منوی دستورها"),
+        "bot_description": dict(page="ui13", type="text", label="متن توضیح ربات (حداکثر ۵۱۲ نویسه)"),
+        "bot_short_description": dict(page="ui13", type="text", label="توضیح کوتاه ربات (حداکثر ۱۲۰ نویسه)"),
+        # --- فروش ---
+        "autorenew_on": dict(page="sales13", type="toggle", label="تمدید خودکار از کیف پول (کاربر برای هر سرویس روشن می‌کند)"),
+        "autorenew_days": dict(page="sales13", type="num", label="تمدید خودکار وقتی روز مانده ≤", min=0, max=7),
+        "gift_on": dict(page="sales13", type="toggle", label="هدیه دادن سرویس با کد هدیه"),
+        "gift_days": dict(page="sales13", type="num", label="اعتبار کد هدیه (روز)", min=1, max=365),
+        "longterm_on": dict(page="sales13", type="toggle", label="تخفیف پلن‌های بلندمدت (پلن دلخواه ≥ ۶۰ روز) + نمایش قیمت ماهانه"),
+        "longterm_per_month": dict(page="sales13", type="num", label="درصد تخفیف به‌ازای هر ماه اضافه", min=0, max=20),
+        "longterm_max": dict(page="sales13", type="num", label="سقف تخفیف بلندمدت (٪)", min=0, max=50),
+        "social_week_on": dict(page="sales13", type="toggle", label="«این هفته X نفر خرید کردن» (از آمار واقعی)"),
+        "social_week_min": dict(page="sales13", type="num", label="حداقل تعداد برای نمایش", min=1, max=10000),
+        "hh_on": dict(page="sales13", type="toggle", label="ساعت تخفیف روزانه (Happy Hour)"),
+        "hh_from": dict(page="sales13", type="num", label="شروع ساعت تخفیف (۰ تا ۲۳)", min=0, max=23),
+        "hh_to": dict(page="sales13", type="num", label="پایان ساعت تخفیف (۱ تا ۲۴)", min=1, max=24),
+        "hh_percent": dict(page="sales13", type="num", label="درصد تخفیف ساعت تخفیف", min=1, max=50),
+        "rebuy_disc_on": dict(page="sales13", type="toggle", label="کد تخفیف بازگشت + دکمه‌ی «تمدید دوباره» وقتی حجم تموم شد"),
+        "rebuy_disc_percent": dict(page="sales13", type="num", label="درصد تخفیف بازگشت", min=1, max=50),
+        "rebuy_disc_days": dict(page="sales13", type="num", label="اعتبار کد بازگشت (روز)", min=1, max=30),
+        "webapp_on": dict(page="sales13", type="toggle", label="مینی‌اپ وب وضعیت سرویس (نیاز به آدرس https عمومی: PUBLIC_URL)"),
+        "agent_on": dict(page="sales13", type="toggle", label="کد معرف نماینده با کمیسیون ثابت (/agent_add)"),
+        "trialend_on": dict(page="sales13", type="toggle", label="تخفیف ۲۴ ساعته بعد از پایان سرویس تست"),
+        "trialend_percent": dict(page="sales13", type="num", label="درصد تخفیف بعد از تست", min=1, max=50),
+        "admin_yday_on": dict(page="sales13", type="toggle", label="مقایسه با دیروز در خلاصه‌ی پنل ادمین"),
+    }
+)
+for _gk, _gt, _gp in SETTING_GROUPS:
+    if _gk == "msg" and "ui13" not in _gp:
+        _gp.append("ui13")
+    if _gk == "sales" and "sales13" not in _gp:
+        _gp.append("sales13")
+
+GROWTH_CONDS.update({"bartheme": "bartheme_on", "autorenew": "autorenew_on", "giftsvc": "gift_on"})
+UB_ITEMS["svc"].insert(-2, dict(key="theme", label="🎨 تم نوار", cb="bth_{id}", cond="bartheme"))
+UB_ITEMS["svc"].insert(-2, dict(key="autorenew", label="♻️ تمدید خودکار", cb="ar_{id}", cond="autorenew"))
+UB_ITEMS["account"].insert(1, dict(key="giftsvc", label="🎁 هدیه دادن سرویس", cb="gsvc_start", wide=True, cond="giftsvc"))
+UB_ITEMS["main"].append(dict(key="giftsvc", label="🎁 هدیه دادن سرویس", cb="gsvc_start", wide=True, cond="giftsvc", hide_default=True))
+_st = ub_item("main", "statuspage")
+if _st:  # دکمه‌ی وضعیت سرورها به‌صورت پیش‌فرض برای کاربر دیده شود
+    _st["label"] = "🟢 وضعیت سرورها"
+    _st.pop("hide_default", None)
+
+# ---------------------------------------------------------------------------
+# ابزارهای کوچک
+# ---------------------------------------------------------------------------
+def greeting_text():
+    h = now_iran().hour
+    if 5 <= h < 12:
+        return "صبح بخیر ☀️"
+    if 12 <= h < 17:
+        return "ظهر بخیر 🌤"
+    if 17 <= h < 21:
+        return "عصر بخیر 🌇"
+    return "شب بخیر 🌙"
+
+
+async def send_typing(bot, chat_id, action="typing"):
+    if not get_bool("typing_on"):
+        return
+    try:
+        await bot.send_chat_action(chat_id=chat_id, action=action)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def sbtn(text, style=None, **kw):
+    """دکمه‌ی شیشه‌ای؛ اگر کتابخانه/Bot API از رنگ پشتیبانی کند و ادمین روشن کرده باشد رنگی می‌شود."""
+    if style and _STYLE_OK and get_bool("btn_colors_on"):
+        try:
+            return InlineKeyboardButton(text=text, style=style, **kw)
+        except Exception:  # noqa: BLE001
+            pass
+    return InlineKeyboardButton(text=text, **kw)
+
+
+def _fx_kwargs():
+    if get_bool("celebrate_on"):
+        return {"message_effect_id": (get_setting("celebrate_effect") or "5046509860389126442").strip()}
+    return {}
+
+
+async def send_with_fx(method, **kw):
+    """ارسال با افکت جشن؛ اگر نسخه‌ی aiogram/تلگرام نپذیرفت، بدون افکت می‌فرستد."""
+    fx = _fx_kwargs()
+    if fx:
+        try:
+            return await method(**kw, **fx)
+        except TypeError:
+            pass
+        except TelegramBadRequest as e:
+            if "effect" not in str(e).lower():
+                raise
+        except Exception as e:  # noqa: BLE001
+            logging.info("effect send failed, retrying plain: %s", e)
+    return await method(**kw)
+
+
+# --- تم نوار حجم (انتخاب کاربر) ---
+BAR_THEMES = {
+    "sq": dict(ok="🟩", mid="🟨", bad="🟥", empty="⬜", name="🟩 مربعی رنگی"),
+    "ci": dict(ok="🟢", mid="🟡", bad="🔴", empty="⚪", name="🟢 دایره‌ای رنگی"),
+    "bl": dict(ok="▰", mid="▰", bad="▰", empty="▱", name="▰ ساده"),
+    "sh": dict(ok="█", mid="█", bad="█", empty="░", name="█ بلوکی"),
+}
+_BAR_THEME = contextvars.ContextVar("bar_theme", default="sq")
+
+
+def user_bar_theme(uid):
+    if not get_bool("bartheme_on"):
+        return "sq"
+    t = get_setting(f"bth_{uid}")
+    return t if t in BAR_THEMES else "sq"
+
+
+@dp.callback_query(F.data.regexp(r"^bth_\d+$"))
+async def bth_cycle(call: types.CallbackQuery):
+    cid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        cfg = s.get(UserConfig, cid)
+        if cfg is None or cfg.user_id != call.from_user.id:
+            await call.answer("سرویس یافت نشد.", show_alert=True)
+            return
+    order = list(BAR_THEMES)
+    cur = user_bar_theme(call.from_user.id)
+    nxt = order[(order.index(cur) + 1) % len(order)]
+    set_setting(f"bth_{call.from_user.id}", nxt)
+    await call.answer(f"تم نوار: {BAR_THEMES[nxt]['name']}")
+    await _render_cfg_detail(call, cid, answered=True)
+
+
+# --- وضعیت سرویس از روی کش مصرف (بدون درخواست شبکه) ---
+def cached_usage(details, max_age=7200):
+    try:
+        url = find_sub_url(details or "")
+        if not url:
+            return None
+        hit = _usage_cache.get(url)
+        if hit and time.time() - hit[0] < max_age:
+            u = hit[1]
+            if u.get("ok") and u.get("has_info"):
+                return u
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def svc_status(left, u):
+    """(ایموجی وضعیت, درصد مصرف یا None)"""
+    pct = None
+    if u and u.get("total", 0) > 0:
+        pct = min(100, int(u["used"] * 100 / u["total"]))
+    if left is not None and left < 0:
+        return "🔴", pct
+    if pct is not None and pct >= 100:
+        return "🔴", pct
+    warn = get_int("usage_warn_percent") or 80
+    if (left is not None and left <= get_int("reminder_days")) or (pct is not None and pct >= warn):
+        return "🟡", pct
+    return "🟢", pct
+
+
+def _days_left(exp):
+    if not exp:
+        return None
+    try:
+        return (date.fromisoformat(exp) - today_iran()).days
+    except ValueError:
+        return None
+
+
+def _fit_label(text_, tail="", limit=64):
+    avail = limit - len(tail)
+    if len(text_) > avail:
+        text_ = text_[: max(1, avail - 1)] + "…"
+    return text_ + tail
+
+
+# --- مینی‌نمودار مصرف ۷ روز اخیر ---
+SPARKS = "▁▂▃▄▅▆▇█"
+
+
+def usage_hist_record(cid, u):
+    if not get_bool("usage_hist_on") or not u or not u.get("ok") or not u.get("has_info"):
+        return
+    try:
+        key = f"uh_{cid}"
+        raw = get_setting(key)
+        try:
+            d = json.loads(raw) if raw else {}
+        except ValueError:
+            d = {}
+        today = today_iran().isoformat()
+        now = time.time()
+        if today in d and now - float(d.get("_t", 0)) < 7200:
+            return
+        d[today] = int(u.get("used", 0))
+        d["_t"] = now
+        days = sorted(k for k in d if k != "_t")
+        for k in days[:-10]:
+            d.pop(k, None)
+        set_setting(key, json.dumps(d))
+    except Exception as e:  # noqa: BLE001
+        logging.info("usage hist record failed: %s", e)
+
+
+def usage_spark_text(cid):
+    if not get_bool("usage_hist_on"):
+        return ""
+    raw = get_setting(f"uh_{cid}")
+    if not raw:
+        return ""
+    try:
+        d = json.loads(raw)
+    except ValueError:
+        return ""
+    today = today_iran()
+    series = []
+    for i in range(6, -1, -1):
+        day = (today - timedelta(days=i)).isoformat()
+        prev = (today - timedelta(days=i + 1)).isoformat()
+        if day in d and prev in d:
+            delta = d[day] - d[prev]
+            series.append(d[day] if delta < 0 else delta)  # بعد از تمدید شمارنده صفر می‌شود
+        else:
+            series.append(None)
+    vals = [v for v in series if v is not None]
+    if len(vals) < 2:
+        return ""
+    mx = max(vals) or 1
+    chars = "".join("·" if v is None else SPARKS[min(7, int(v * 7 / mx))] for v in series)
+    return (
+        f"📈 <b>مصرف ۷ روز اخیر</b>\n<code>{chars}</code>\n"
+        f"بیشترین روز: {fmt_bytes(mx)} | میانگین: {fmt_bytes(sum(vals) / len(vals))}\n"
+    )
+
+
+# ---------------------------------------------------------------------------
+# «همه‌ی سرویس‌ها در یک نگاه»
+# ---------------------------------------------------------------------------
+@dp.callback_query(F.data == "svc_glance")
+async def svc_glance_handler(call: types.CallbackQuery):
+    await call.answer()
+    uid = call.from_user.id
+    await send_typing(call.bot, uid)
+    _BAR_THEME.set(user_bar_theme(uid))
+    with SessionLocal() as s:
+        configs = [
+            (c.id, c.config_name, c.expires_at, c.service_id, c.config_details)
+            for c in s.query(UserConfig).filter(UserConfig.user_id == uid).order_by(UserConfig.id).all()
+        ][:15]
+    if not configs:
+        await edit_or_send(call, "❌ فعلاً سرویس فعالی نداری.", back_home_markup())
+        return
+    sem = asyncio.Semaphore(5)
+
+    async def one(det):
+        url = find_sub_url(det or "") if get_bool("usage_on") else None
+        if not url:
+            return None
+        async with sem:
+            try:
+                u = await fetch_usage(url, timeout=5)
+            except Exception:  # noqa: BLE001
+                return None
+        if u.get("ok") and u.get("has_info"):
+            return u
+        return None
+
+    usages = await asyncio.gather(*(one(c[4]) for c in configs))
+    n_ok = n_soon = n_dead = 0
+    lines, renew_rows = [], []
+    b = InlineKeyboardButton
+    for (cid, name, exp, sid, _det), u in zip(configs, usages):
+        left = _days_left(exp)
+        em, pct = svc_status(left, u)
+        if em == "🟢":
+            n_ok += 1
+        elif em == "🟡":
+            n_soon += 1
+        else:
+            n_dead += 1
+        parts = []
+        if left is not None:
+            parts.append(f"⏳ {left} روز" if left >= 0 else "⏳ منقضی")
+        if u and u.get("total", 0) > 0:
+            parts.append(f"📊 {pct}٪ ({fmt_bytes(max(0, u['total'] - u['used']))} مانده)")
+        elif u:
+            parts.append("📊 نامحدود ♾")
+        ln = f"{em} <b>{esc(name or '')}</b>"
+        if parts:
+            ln += "\n" + " | ".join(parts)
+        if u and u.get("total", 0) > 0 and get_bool("bars_on"):
+            ln += "\n" + color_bar(pct, "used")
+        lines.append(ln)
+        if em != "🟢" and sid:
+            renew_rows.append([b(text=_fit_label(f"🔄 تمدید: {name or ''}"), callback_data=f"renew_{cid}")])
+    head = (
+        "🧭 <b>همه‌ی سرویس‌ها در یک نگاه</b>\n"
+        f"🟢 {n_ok} فعال  |  🟡 {n_soon} نزدیک پایان  |  🔴 {n_dead} تمام‌شده\n\n"
+    )
+    text_ = (head + "\n\n".join(lines))[:3900]
+    rows = renew_rows[:6]
+    rows.append([b(text="📦 سرویس‌های من", callback_data="my_services_callback")])
+    rows.append([b(text="🏠 منوی اصلی", callback_data="main_menu")])
+    await edit_or_send(call, text_, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+# ---------------------------------------------------------------------------
+# تمدید خودکار از کیف پول
+# ---------------------------------------------------------------------------
+@dp.callback_query(F.data.regexp(r"^ar_\d+$"))
+async def ar_toggle(call: types.CallbackQuery):
+    cid = int(call.data.split("_")[1])
+    with SessionLocal() as s:
+        cfg = s.get(UserConfig, cid)
+        if cfg is None or cfg.user_id != call.from_user.id:
+            await call.answer("سرویس یافت نشد.", show_alert=True)
+            return
+        sid = cfg.service_id
+        exists = bool(sid and s.get(Service, sid))
+    if not get_bool("autorenew_on"):
+        await call.answer("تمدید خودکار فعلاً غیرفعال است.", show_alert=True)
+        return
+    if not exists:
+        await call.answer("تمدید خودکار برای این سرویس ممکن نیست (پلن دلخواه/حذف‌شده).", show_alert=True)
+        return
+    cur = get_setting(f"autorenew_{cid}") == "1"
+    set_setting(f"autorenew_{cid}", "0" if cur else "1")
+    await call.answer("♻️ تمدید خودکار خاموش شد." if cur else "♻️ تمدید خودکار روشن شد؛ از کیف پولت کم می‌شه.", show_alert=not cur)
+    await _render_cfg_detail(call, cid, answered=True)
+
+
+async def job_autorenew(bot):
+    if not get_bool("autorenew_on"):
+        return
+    days = max(0, get_int("autorenew_days"))
+    with SessionLocal() as s:
+        on_ids = set()
+        for (k,) in s.query(KV.key).filter(KV.key.like("autorenew\\_%", escape="\\"), KV.value == "1").all():
+            tail = k.split("_", 1)[1]
+            if tail.isdigit():
+                on_ids.add(int(tail))
+        if not on_ids:
+            return
+        rows = [
+            (c.id, c.user_id, c.config_name, c.service_id, c.expires_at)
+            for c in s.query(UserConfig)
+            .filter(UserConfig.service_id.isnot(None), UserConfig.expires_at.isnot(None))
+            .all()
+            if c.id in on_ids
+        ]
+    for cid, uid, name, sid, exp in rows:
+        left = _days_left(exp)
+        if left is None or left > days:
+            continue
+        if get_setting(f"arlast_{cid}") == exp:
+            continue
+        set_setting(f"arlast_{cid}", exp)  # قبل از اقدام ثبت می‌شود؛ برای یک انقضا هرگز دوبار تلاش نمی‌شود
+        co = compute_checkout(uid, {"service_id": sid, "renew_cfg_id": cid, "code": None})
+        if co is None:
+            continue
+        done, bal, req_id, req_type = False, 0, None, None
+        async with user_lock(uid):
+            with SessionLocal() as s:
+                user = get_or_create_user(s, uid, lock=True)
+                bal = user.balance or 0
+                if bal >= co["final"]:
+                    try:
+                        req = build_request(s, uid, co, True, "None")
+                    except ValueError:
+                        s.rollback()
+                        req = None
+                    if req is not None:
+                        user.balance = bal - co["final"]
+                        wlog(s, uid, bal, user.balance, "wallet_purchase", req.id)
+                        req_id, req_type = req.id, req.req_type
+                        s.commit()
+                        done = True
+        b = InlineKeyboardButton
+        if done:
+            await gsend(
+                bot, uid,
+                f"♻️ <b>تمدید خودکار انجام شد</b>\n📦 {esc(co['label'])}\n💰 {co['final']:,} تومان از کیف پولت کم شد.\n"
+                "درخواستت ثبت شد و به‌زودی تأیید می‌شه ✅",
+                status_markup(req_id),
+            )
+            try:
+                await notify_staff(
+                    bot,
+                    "♻️ (تمدید خودکار)\n" + request_caption(req_id, types.User(id=uid, is_bot=False, first_name=str(uid)), co, req_type, True),
+                    admin_request_markup(req_id),
+                )
+            except Exception as e:  # noqa: BLE001
+                logging.warning("autorenew staff notify failed: %s", e)
+        else:
+            await gsend(
+                bot, uid,
+                f"♻️ تمدید خودکار «{esc(name or '')}» انجام نشد: موجودی کیف پولت {bal:,} تومانه ولی {co['final']:,} تومان لازمه.\n"
+                "کیف پولت رو شارژ کن (تا فردا دوباره امتحان نمی‌کنم) یا دستی تمدید کن 👇",
+                InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [b(text="💳 شارژ کیف پول", callback_data="wallet_menu")],
+                        [b(text="🔄 تمدید دستی", callback_data=f"renew_{cid}")],
+                    ]
+                ),
+            )
+        await asyncio.sleep(0.1)
+
+
+# ---------------------------------------------------------------------------
+# هدیه دادن سرویس با کد هدیه (از کیف پول؛ گیرنده با /redeem اعتبار می‌گیرد)
+# ---------------------------------------------------------------------------
+@dp.callback_query(F.data == "gsvc_start")
+async def gsvc_start(call: types.CallbackQuery):
+    if not get_bool("gift_on"):
+        await call.answer("هدیه دادن فعلاً غیرفعال است.", show_alert=True)
+        return
+    await call.answer()
+    with SessionLocal() as s:
+        active = {c.key for c in s.query(Category).filter(Category.is_active.is_(True)).all()}
+        svcs = [
+            (x.id, x.name, x.price, x.category)
+            for x in s.query(Service).order_by(Service.category, Service.id).all()
+            if x.category in active and x.category != BTN_CAT
+        ]
+    b = InlineKeyboardButton
+    rows = [
+        [b(text=_fit_label(f"🎁 {cat_label(cat)} - {name} — {price:,} تومان"), callback_data=f"gsvc_pick_{sid}")]
+        for sid, name, price, cat in svcs[:30]
+    ]
+    rows.append([b(text="🏠 منوی اصلی", callback_data="main_menu")])
+    await edit_or_send(
+        call,
+        "🎁 <b>هدیه دادن سرویس</b>\n\nیه پلن انتخاب کن؛ مبلغش از کیف پولت کم می‌شه و یه <b>کد هدیه</b> می‌گیری. "
+        "هر کس کد رو با دستور <code>/redeem کد</code> بزنه، همون مبلغ اعتبار می‌گیره و می‌تونه پلن دلخواهش رو بخره.",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@dp.callback_query(F.data.regexp(r"^gsvc_pick_\d+$"))
+async def gsvc_pick(call: types.CallbackQuery):
+    sid = int(call.data.split("_")[2])
+    with SessionLocal() as s:
+        svc = s.get(Service, sid)
+        user = s.get(User, call.from_user.id)
+        bal = (user.balance if user else 0) or 0
+        if svc is None:
+            await call.answer("این پلن دیگه موجود نیست.", show_alert=True)
+            return
+        name, price, cat = svc.name, svc.price or 0, svc.category
+    await call.answer()
+    b = InlineKeyboardButton
+    out = f"🎁 <b>{esc(cat_label(cat))} - {esc(name)}</b>\n💰 مبلغ هدیه: {price:,} تومان\n💳 موجودی تو: {bal:,} تومان\n\n"
+    rows = []
+    if bal >= price:
+        out += "تأیید کنی، مبلغ از کیف پولت کم و کد هدیه ساخته می‌شه."
+        rows.append([sbtn("✅ بخر و کد هدیه بساز", "success", callback_data=f"gsvc_buy_{sid}")])
+    else:
+        out += f"برای این هدیه {price - bal:,} تومان کم داری؛ اول کیف پولت رو شارژ کن."
+        rows.append([b(text="💳 شارژ کیف پول", callback_data="wallet_menu")])
+    rows.append([b(text="⬅️ انتخاب پلن دیگه", callback_data="gsvc_start")])
+    await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@dp.callback_query(F.data.regexp(r"^gsvc_buy_\d+$"))
+async def gsvc_buy(call: types.CallbackQuery):
+    if not get_bool("gift_on"):
+        await call.answer("هدیه دادن فعلاً غیرفعال است.", show_alert=True)
+        return
+    sid = int(call.data.split("_")[2])
+    uid = call.from_user.id
+    code = None
+    async with user_lock(uid):
+        with SessionLocal() as s:
+            svc = s.get(Service, sid)
+            if svc is None:
+                await call.answer("این پلن دیگه موجود نیست.", show_alert=True)
+                return
+            price, name = svc.price or 0, svc.name
+            user = get_or_create_user(s, uid, lock=True)
+            bal = user.balance or 0
+            if price <= 0 or bal < price:
+                await call.answer("موجودی کیف پولت کافی نیست.", show_alert=True)
+                return
+            for _ in range(8):
+                code = "GF" + secrets.token_hex(4).upper()
+                if not s.query(GiftCode.id).filter(GiftCode.code == code).first():
+                    break
+            s.add(
+                GiftCode(
+                    code=code, amount=price, max_uses=1, used_count=0, is_active=True,
+                    expires_at=(today_iran() + timedelta(days=max(1, get_int("gift_days")))).isoformat(),
+                )
+            )
+            user.balance = bal - price
+            wlog(s, uid, bal, user.balance, "gift_buy", code)
+            s.commit()
+    await call.answer("🎁 کد هدیه ساخته شد!")
+    link = f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else ""
+    share = (
+        f"🎁 یه هدیه برات دارم!\nکد هدیه: {code}\n"
+        + (f"توی این ربات {link} دستور /redeem {code} رو بزن تا اعتبار بگیری." if link else f"دستور /redeem {code} رو توی ربات بزن.")
+    )
+    b = InlineKeyboardButton
+    await edit_or_send(
+        call,
+        f"✅ <b>کد هدیه‌ات آماده‌ست</b>\n\n🎁 ارزش: {price:,} تومان ({esc(name)})\n🔑 کد: <code>{code}</code>\n"
+        f"⏳ اعتبار: {max(1, get_int('gift_days'))} روز | یک‌بار مصرف\n\n"
+        f"👇 این متن رو برای دوستت فوروارد کن:\n<code>{esc(share)}</code>",
+        InlineKeyboardMarkup(inline_keyboard=[[b(text="🏠 منوی اصلی", callback_data="main_menu")]]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# مسیر راه‌اندازی کاربر جدید: دستگاه ← آموزش ← تست
+# ---------------------------------------------------------------------------
+ONB_DEVICES = {"android": "📱 اندروید", "ios": "🍎 آیفون", "windows": "💻 ویندوز", "mac": "🖥 مک"}
+
+
+def onboarding_needed(user_id):
+    with SessionLocal() as s:
+        u = s.get(User, user_id)
+        if u is not None and not u.is_new_user:
+            return False
+        return s.query(UserConfig.id).filter(UserConfig.user_id == user_id).first() is None
+
+
+@dp.callback_query(F.data == "onb_start")
+async def onb_start(call: types.CallbackQuery):
+    await call.answer()
+    b = InlineKeyboardButton
+    items = list(ONB_DEVICES.items())
+    rows = [[b(text=lbl, callback_data=f"onb_dev_{k}") for k, lbl in items[i : i + 2]] for i in range(0, len(items), 2)]
+    rows.append([b(text="🏠 منوی اصلی", callback_data="main_menu")])
+    await edit_or_send(
+        call, "🚀 <b>راه‌اندازی سریع</b> | قدم ۱ از ۳\n\nاز چه دستگاهی استفاده می‌کنی؟", InlineKeyboardMarkup(inline_keyboard=rows)
+    )
+
+
+@dp.callback_query(F.data.regexp(r"^onb_dev_(android|ios|windows|mac)$"))
+async def onb_device(call: types.CallbackQuery):
+    await call.answer()
+    k = call.data.split("_")[2]
+    guide = esc((get_setting(f"guide_{k}") or "").strip() or DEFAULTS.get(f"guide_{k}", ""))
+    b = InlineKeyboardButton
+    rows = [
+        [b(text="➡️ قدم ۳: تست سرویس", callback_data="onb_test")],
+        [b(text="⬅️ تغییر دستگاه", callback_data="onb_start")],
+        [b(text="🏠 منوی اصلی", callback_data="main_menu")],
+    ]
+    await edit_or_send(
+        call, "🚀 <b>راه‌اندازی سریع</b> | قدم ۲ از ۳\n\n" + guide, InlineKeyboardMarkup(inline_keyboard=rows)
+    )
+
+
+@dp.callback_query(F.data == "onb_test")
+async def onb_test(call: types.CallbackQuery):
+    await call.answer()
+    b = InlineKeyboardButton
+    rows = []
+    if trial_available(call.from_user.id):
+        out = "🚀 <b>راه‌اندازی سریع</b> | قدم ۳ از ۳\n\nیه سرویس تست رایگان بگیر و همین الان امتحان کن 🎁"
+        rows.append([sbtn("🎁 دریافت سرویس تست", "success", callback_data="trial_request")])
+    else:
+        out = "🚀 <b>راه‌اندازی سریع</b> | قدم ۳ از ۳\n\nپلن مناسبت رو انتخاب کن؛ بعد از پرداخت، سرویس در چند دقیقه تحویل می‌شه 🛒"
+        rows.append([sbtn("🛒 مشاهده تعرفه و خرید", "primary", callback_data="main_buy")])
+        if get_bool("pick_on"):
+            rows.append([b(text="🤔 نمی‌دونم کدوم رو بخرم؟", callback_data="pk_start")])
+    rows.append([b(text="🏠 منوی اصلی", callback_data="main_menu")])
+    await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+# ---------------------------------------------------------------------------
+# پیام زنده‌ی وضعیت سفارش (دریافت ← بررسی ← ساخت ← تحویل)
+# ---------------------------------------------------------------------------
+def pending_card(req_id, label, price, wallet=False):
+    if not get_bool("receipt_card_on"):
+        return ""
+    return (
+        "🧾 <b>رسید ثبت سفارش</b>\n"
+        f"🔢 شماره‌ی پیگیری: <code>SW-{req_id:06d}</code>\n"
+        f"📦 {esc(label)}\n"
+        f"💰 مبلغ: {price:,} تومان ({'کیف پول' if wallet else 'کارت‌به‌کارت'})\n"
+        f"📅 تاریخ ثبت: {jalali_today().strftime('%Y/%m/%d')}\n"
+        "🗓 تاریخ پایان سرویس: بعد از تحویل اعلام می‌شود"
+    )
+
+
+def live_render(stage, base, frame=None):
+    if stage == 1:
+        lines = "🟢 رسید دریافت شد\n⚪ بررسی\n⚪ تحویل"
+    elif stage == 2:
+        lines = "🟢 رسید دریافت شد\n🟡 در حال بررسی…\n⚪ تحویل"
+    elif stage == 3:
+        n = max(0, min(4, frame or 0))
+        lines = f"🟢 رسید دریافت شد\n🟢 بررسی شد\n🛠 در حال ساخت سرویس {'▰' * n}{'▱' * (4 - n)}"
+    elif stage == 4:
+        lines = "🟢 رسید دریافت شد\n🟢 بررسی شد\n🎉 <b>تحویل شد!</b> سرویست رو توی پیام بعدی گذاشتم 👇"
+    else:
+        lines = "🟢 رسید دریافت شد\n🔴 درخواست تأیید نشد (جزئیات توی پیام بعدی)"
+    return f"{base}\n\n{lines}"
+
+
+def live_register(req_id, msg, base):
+    if not get_bool("live_status_on") or msg is None:
+        return
+    try:
+        set_setting(
+            f"live_{req_id}",
+            json.dumps({"c": msg.chat.id, "m": msg.message_id, "b": base[:3000]}, ensure_ascii=False),
+        )
+    except Exception as e:  # noqa: BLE001
+        logging.info("live register failed: %s", e)
+
+
+def _live_info(req_id):
+    raw = get_setting(f"live_{req_id}")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None
+
+
+async def _live_edit(bot, req_id, info, stage, frame=None):
+    try:
+        await bot.edit_message_text(
+            chat_id=info["c"], message_id=info["m"], text=live_render(stage, info["b"], frame),
+            reply_markup=status_markup(req_id),
+        )
+    except TelegramBadRequest as e:
+        if "not modified" not in str(e).lower():
+            logging.info("live edit skipped: %s", e)
+    except Exception as e:  # noqa: BLE001
+        logging.info("live edit failed: %s", e)
+
+
+async def live_progress(bot, req_id):
+    await asyncio.sleep(8)
+    info = _live_info(req_id)
+    if not info:
+        return
+    with SessionLocal() as s:
+        r = s.get(Request, req_id)
+        if r is None or r.status != "unanswered":
+            return
+    await _live_edit(bot, req_id, info, 2)
+
+
+async def live_finish(bot, req_id, ok=True):
+    info = _live_info(req_id)
+    if not info:
+        return
+    try:
+        if ok:
+            for fr in range(1, 5):
+                await _live_edit(bot, req_id, info, 3, fr)
+                await asyncio.sleep(0.9)
+            await _live_edit(bot, req_id, info, 4)
+        else:
+            await _live_edit(bot, req_id, info, -1)
+    finally:
+        try:
+            set_setting(f"live_{req_id}", "")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+# ---------------------------------------------------------------------------
+# فروش: ساعت تخفیف، برچسب پلن‌ها، آمار هفته، نوار باشگاه
+# ---------------------------------------------------------------------------
+def happy_percent_now():
+    if not get_bool("hh_on"):
+        return 0
+    h, a, z = now_iran().hour, get_int("hh_from"), get_int("hh_to")
+    inside = (a <= h < z) if a < z else (h >= a or h < z)
+    return get_int("hh_percent") if inside else 0
+
+
+def happy_line():
+    if not get_bool("hh_on"):
+        return ""
+    a, z = get_int("hh_from"), get_int("hh_to")
+    if happy_percent_now():
+        return f"⏰ ساعت تخفیف فعاله! {get_int('hh_percent')}٪ تخفیف تا ساعت {z}"
+    return f"⏰ ساعت تخفیف امروز: {a} تا {z} ({get_int('hh_percent')}٪ تخفیف)"
+
+
+def plan_tags(services, best):
+    """{service_id: برچسب}؛ services = [(id, name, price)]"""
+    tags = {}
+    if best is not None:
+        tags[best] = (get_setting("bestseller_label").strip() or "⭐ پرفروش")
+    if not get_bool("plan_tags_on"):
+        return tags
+    sized = [(sid, _plan_gb(name), price) for sid, name, price in services if _plan_gb(name) and price]
+    if len(sized) >= 2:
+        eco = min(sized, key=lambda t: (t[2] / t[1], t[0]))[0]
+        big = max(sized, key=lambda t: (t[1], -t[2]))[0]
+        eco_l = (get_setting("tag_eco_label").strip() or DEFAULTS["tag_eco_label"])
+        big_l = (get_setting("tag_big_label").strip() or DEFAULTS["tag_big_label"])
+        for sid, label in ((eco, eco_l), (big, big_l)):
+            tags[sid] = (tags[sid] + " " + label) if sid in tags else label
+    return tags
+
+
+def club_tier_bar(count):
+    """نوار پیشرفت تا سطح بعدی باشگاه (برچسب سطح فعلی ◂ نوار ▸ سطح بعدی)."""
+    tiers = sorted(LOYALTY_TIERS, key=lambda t: t[0])  # صعودی: برنزی، نقره‌ای، طلایی
+    cur = next((t for t in reversed(tiers) if count >= t[0]), None)
+    nxt = next((t for t in tiers if t[0] > count), None)
+    lo = cur[0] if cur else 0
+    if nxt is None:
+        return f"{cur[2] if cur else ''} ▰▰▰▰▰▰▰▰▰▰ (بالاترین سطح 🎉)\n"
+    span = max(1, nxt[0] - lo)
+    filled = max(0, min(10, round(10 * (count - lo) / span)))
+    left_lbl = cur[2] if cur else "شروع"
+    return f"{left_lbl} {'▰' * filled}{'▱' * (10 - filled)} {nxt[2]}\n"
+
+
+# ---------------------------------------------------------------------------
+# تخفیف بازگشت، تخفیف بعد از تست، کمیسیون نماینده
+# ---------------------------------------------------------------------------
+def make_comeback_code(uid):
+    with SessionLocal() as s:
+        code = make_personal_code(
+            s, get_int("rebuy_disc_percent") or 10, max(1, get_int("rebuy_disc_days") or 2), "RB"
+        )
+        s.commit()
+    return code
+
+
+async def job_trial_end(bot):
+    if not get_bool("trialend_on"):
+        return
+    today = today_iran()
+    since = (today - timedelta(days=3)).isoformat()
+    with SessionLocal() as s:
+        rows = [
+            (c.user_id, c.expires_at)
+            for c in s.query(UserConfig)
+            .filter(
+                UserConfig.service_id.is_(None), UserConfig.config_name == TRIAL_PLAN_NAME,
+                UserConfig.expires_at.isnot(None), UserConfig.expires_at <= today.isoformat(),
+                UserConfig.expires_at >= since,
+            )
+            .all()
+        ]
+    for uid, _exp in rows:
+        with SessionLocal() as s:
+            u = s.get(User, uid)
+            if u is None or not u.is_new_user or glog_has(s, uid, "trialend"):
+                continue
+            pct = get_int("trialend_percent") or 20
+            code = make_personal_code(s, pct, 1, "TE")
+            glog_add(s, uid, "trialend")
+            s.commit()
+        await gsend(
+            bot, uid,
+            f"⏰ سرویس تستت تموم شد. اگه راضی بودی، تا <b>۲۴ ساعت</b> آینده {pct}٪ تخفیف ویژه داری:\n"
+            f"🏷 <code>{code}</code>\nموقع پرداخت «🏷 کد تخفیف دارم» رو بزن.",
+            InlineKeyboardMarkup(inline_keyboard=[[sbtn("🛒 مشاهده تعرفه و خرید", "primary", callback_data="main_buy")]]),
+        )
+        await asyncio.sleep(0.1)
+
+
+_AGENT_NOTICE = {}
+
+
+def agent_commission(s, user, price):
+    """کمیسیون ثابت نماینده بابت هر خرید/تمدید زیرمجموعه (داخل همان تراکنش ثبت می‌شود)."""
+    if not get_bool("agent_on") or not user.referred_by or (price or 0) <= 0:
+        return
+    amt = get_int(f"agc_{user.referred_by}")
+    if amt <= 0:
+        return
+    ref = s.get(User, user.referred_by, with_for_update=True)
+    if ref is None:
+        return
+    b0 = ref.balance or 0
+    ref.balance = min(MAX_BALANCE, b0 + amt)
+    wlog(s, ref.user_id, b0, ref.balance, "agent_commission", user.user_id)
+    _AGENT_NOTICE[user.user_id] = (ref.user_id, amt)
+
+
+@dp.message(Command("agent_add"), MainAdmin())
+async def agent_add_cmd(message: types.Message, command: CommandObject):
+    parts = (command.args or "").split()
+    if len(parts) != 2 or not parts[0].lstrip("-").isdigit() or not parts[1].isdigit() or int(parts[1]) <= 0:
+        await message.answer("استفاده: <code>/agent_add آیدی_عددی مبلغ_کمیسیون</code>\nمثال: <code>/agent_add 123456 15000</code>")
+        return
+    uid, amt = int(parts[0]), int(parts[1])
+    with SessionLocal() as s:
+        if s.get(User, uid) is None:
+            await message.answer("این کاربر در ربات پیدا نشد.")
+            return
+    set_setting(f"agc_{uid}", str(amt))
+    link = f"https://t.me/{BOT_USERNAME}?start=ref_{uid}" if BOT_USERNAME else ""
+    await message.answer(
+        f"✅ کاربر <code>{uid}</code> نماینده شد؛ کمیسیون هر خرید/تمدید زیرمجموعه: {amt:,} تومان.\n"
+        + (f"🔗 لینک نماینده: {link}" if link else "")
+    )
+    await gsend(
+        message.bot, uid,
+        f"💼 شما نماینده‌ی ما شدید! به‌ازای هر خرید و تمدید کسانی که با لینک اختصاصی‌تان بیایند، {amt:,} تومان کمیسیون به کیف پولتان اضافه می‌شود."
+        + (f"\n🔗 {link}" if link else ""),
+    )
+
+
+@dp.message(Command("agent_del"), MainAdmin())
+async def agent_del_cmd(message: types.Message, command: CommandObject):
+    arg = (command.args or "").strip()
+    if not arg.isdigit():
+        await message.answer("استفاده: <code>/agent_del آیدی_عددی</code>")
+        return
+    set_setting(f"agc_{int(arg)}", "0")
+    await message.answer("✅ نمایندگی حذف شد.")
+
+
+@dp.message(Command("agents"), MainAdmin())
+async def agents_cmd(message: types.Message):
+    with SessionLocal() as s:
+        agents = []
+        for k, v in s.query(KV.key, KV.value).filter(KV.key.like("agc\\_%", escape="\\")).all():
+            tail = k.split("_", 1)[1]
+            if tail.isdigit() and (v or "").isdigit() and int(v) > 0:
+                agents.append((int(tail), int(v)))
+        if not agents:
+            await message.answer("هنوز نماینده‌ای ثبت نشده. با <code>/agent_add آیدی مبلغ</code> اضافه کن.")
+            return
+        lines = ["💼 <b>نمایندگان</b>\n"]
+        for uid, amt in agents:
+            invited = s.query(func.count(User.user_id)).filter(User.referred_by == uid).scalar() or 0
+            earned = (
+                s.query(func.coalesce(func.sum(WalletTx.delta), 0))
+                .filter(WalletTx.user_id == uid, WalletTx.reason == "agent_commission")
+                .scalar()
+                or 0
+            )
+            lines.append(f"• <code>{uid}</code> | کمیسیون {amt:,} | زیرمجموعه {invited} | درآمد کل {int(earned):,} تومان")
+    await message.answer("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# ارقام فارسی در همه‌ی پیام‌ها (اختیاری)؛ داخل <code>، <pre>، لینک و @username دست نمی‌خورد
+# ---------------------------------------------------------------------------
+_FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+_FA_SKIP = re.compile(
+    r"(<(?:code|pre)\b[^>]*>.*?</(?:code|pre)>|<a\b[^>]*>.*?</a>|<[^>]+>|https?://\S+|@\w+|SW-\d+)", re.S | re.I
+)
+
+
+def to_fa_text(s_):
+    parts = _FA_SKIP.split(s_)
+    return "".join(p if i % 2 else p.translate(_FA_DIGITS) for i, p in enumerate(parts))
+
+
+try:
+    from aiogram.client.session.middlewares.base import BaseRequestMiddleware
+
+    class FaDigitsMiddleware(BaseRequestMiddleware):
+        async def __call__(self, make_request, bot, method):
+            if get_bool("fa_digits_on"):
+                try:
+                    for attr in ("text", "caption"):
+                        v = getattr(method, attr, None)
+                        if isinstance(v, str) and v:
+                            setattr(method, attr, to_fa_text(v))
+                except Exception:  # noqa: BLE001
+                    pass
+            return await make_request(bot, method)
+
+except Exception as _e:  # noqa: BLE001
+    FaDigitsMiddleware = None
+    logging.info("FaDigitsMiddleware unavailable: %s", _e)
+
+
+# ---------------------------------------------------------------------------
+# مینی‌اپ وب وضعیت سرویس (Telegram WebApp)
+# ---------------------------------------------------------------------------
+def webapp_base():
+    for k in ("PUBLIC_URL", "RENDER_EXTERNAL_URL"):
+        v = os.environ.get(k, "").strip().rstrip("/")
+        if v.startswith("https://"):
+            return v
+    d = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    return ("https://" + d) if d else ""
+
+
+def webapp_url():
+    base = webapp_base()
+    return (base + "/app") if (base and WebAppInfo is not None and get_bool("webapp_on")) else ""
+
+
+def verify_init_data(init_data, max_age=86400):
+    try:
+        pairs = dict(parse_qsl(init_data, keep_blank_values=True))
+        h = pairs.pop("hash", None)
+        if not h:
+            return None
+        dcs = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
+        secret = hmac.new(b"WebAppData", TOKEN.encode(), hashlib.sha256).digest()
+        calc = hmac.new(secret, dcs.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(calc, h):
+            return None
+        if time.time() - int(pairs.get("auth_date", "0")) > max_age:
+            return None
+        return json.loads(pairs.get("user", "{}"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_wa_hits = {}
+
+WEBAPP_HTML = """<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>وضعیت سرویس‌ها</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:#fff;--fg:#1c1c1e;--card:#f2f2f7;--mut:#6d6d72;--ok:#34c759;--mid:#ffcc00;--bad:#ff3b30}
+@media(prefers-color-scheme:dark){:root{--bg:#1c1c1e;--fg:#fff;--card:#2c2c2e;--mut:#9a9aa0}}
+body{margin:0;padding:14px;font-family:system-ui,-apple-system,Tahoma,sans-serif;background:var(--tg-theme-bg-color,var(--bg));color:var(--tg-theme-text-color,var(--fg))}
+h1{font-size:18px;margin:4px 0 12px}.card{background:var(--tg-theme-secondary-bg-color,var(--card));border-radius:14px;padding:12px 14px;margin-bottom:10px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px}.name{font-weight:600}.mut{color:var(--tg-theme-hint-color,var(--mut));font-size:13px;margin-top:6px}
+.bar{height:10px;border-radius:6px;background:rgba(128,128,128,.25);overflow:hidden;margin-top:8px}.bar>i{display:block;height:100%;border-radius:6px}
+.dot{width:12px;height:12px;border-radius:50%;display:inline-block}button{width:100%;padding:12px;border:0;border-radius:12px;font-size:15px;background:var(--tg-theme-button-color,#2481cc);color:var(--tg-theme-button-text-color,#fff)}
+</style></head><body><h1>📡 وضعیت سرویس‌های من</h1><div id="list">در حال بارگذاری…</div><button id="r">🔄 به‌روزرسانی</button>
+<script>
+const tg=window.Telegram&&Telegram.WebApp;if(tg){tg.ready();tg.expand();}
+const col={ok:'var(--ok)',mid:'var(--mid)',bad:'var(--bad)'};
+async function load(){const L=document.getElementById('list');
+try{const r=await fetch('/app/api',{method:'POST',body:(tg&&tg.initData)||''});
+if(!r.ok){L.textContent=r.status==429?'کمی صبر کن و دوباره بزن.':'دسترسی نامعتبر؛ از داخل ربات باز کن.';return;}
+const d=await r.json();L.textContent='';
+if(!d.items.length){L.textContent='سرویس فعالی نداری.';return;}
+d.items.forEach(it=>{const c=document.createElement('div');c.className='card';
+const top=document.createElement('div');top.className='row';
+const n=document.createElement('span');n.className='name';n.textContent=it.name;
+const dot=document.createElement('span');dot.className='dot';dot.style.background=col[it.state];
+top.appendChild(n);top.appendChild(dot);c.appendChild(top);
+const m=document.createElement('div');m.className='mut';
+m.textContent=(it.left===null?'':(it.left>=0?it.left+' روز مانده':'منقضی'))+(it.exp?' | پایان: '+it.exp:'');c.appendChild(m);
+if(it.pct!==null){const b=document.createElement('div');b.className='bar';const i=document.createElement('i');
+i.style.width=it.pct+'%';i.style.background=col[it.pct>=90?'bad':(it.pct>=70?'mid':'ok')];b.appendChild(i);c.appendChild(b);
+const u=document.createElement('div');u.className='mut';u.textContent=it.used+' از '+it.total+' ('+it.pct+'٪)';c.appendChild(u);}
+else if(it.used){const u=document.createElement('div');u.className='mut';u.textContent='مصرف: '+it.used+' (نامحدود)';c.appendChild(u);}
+L.appendChild(c);});
+}catch(e){L.textContent='خطا در بارگذاری.';}}
+document.getElementById('r').onclick=load;load();
+</script></body></html>"""
+
+
+async def webapp_page(request):
+    return web.Response(text=WEBAPP_HTML, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+async def webapp_api(request):
+    try:
+        raw = (await request.read()).decode("utf-8", "ignore")[:4000]
+    except Exception:  # noqa: BLE001
+        return web.json_response({"error": "bad"}, status=400)
+    user = verify_init_data(raw)
+    if not user or not user.get("id"):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    uid = int(user["id"])
+    now = time.time()
+    if now - _wa_hits.get(uid, 0) < 3:
+        return web.json_response({"error": "slow down"}, status=429)
+    _wa_hits[uid] = now
+    if len(_wa_hits) > 5000:
+        _wa_hits.clear()
+    with SessionLocal() as s:
+        configs = [
+            (c.config_name, c.expires_at, c.config_details)
+            for c in s.query(UserConfig).filter(UserConfig.user_id == uid).order_by(UserConfig.id).all()
+        ][:20]
+    sem = asyncio.Semaphore(5)
+
+    async def one(det):
+        url = find_sub_url(det or "") if get_bool("usage_on") else None
+        if not url:
+            return None
+        async with sem:
+            try:
+                u = await fetch_usage(url, timeout=5)
+            except Exception:  # noqa: BLE001
+                return None
+        return u if (u.get("ok") and u.get("has_info")) else None
+
+    usages = await asyncio.gather(*(one(c[2]) for c in configs))
+    items = []
+    for (name, exp, _det), u in zip(configs, usages):
+        left = _days_left(exp)
+        em, pct = svc_status(left, u)
+        items.append(
+            dict(
+                name=name or "", left=left, exp=jalali_from_iso(exp) if exp else "",
+                state={"🟢": "ok", "🟡": "mid", "🔴": "bad"}[em], pct=pct,
+                used=fmt_bytes(u["used"]) if u else "", total=fmt_bytes(u["total"]) if (u and u.get("total", 0) > 0) else "",
+            )
+        )
+    return web.json_response({"items": items})
+
+
+# ---------------------------------------------------------------------------
+# دستورهای کوتاه و «درباره‌ی ربات»
+# ---------------------------------------------------------------------------
+async def apply_bot_profile(bot):
+    from aiogram.types import BotCommandScopeChat
+
+    base = [
+        BotCommand(command="start", description="🏠 منوی اصلی"),
+        BotCommand(command="buy", description="🛒 خرید سرویس"),
+        BotCommand(command="my", description="📦 سرویس‌های من"),
+        BotCommand(command="wallet", description="💳 کیف پول"),
+        BotCommand(command="status", description="🟢 وضعیت سرورها"),
+        BotCommand(command="support", description="🎧 پشتیبانی"),
+    ]
+    await bot.set_my_commands(base)
+    try:
+        await bot.set_my_commands(
+            base + [BotCommand(command="admin", description="⚙️ پنل ادمین")], scope=BotCommandScopeChat(chat_id=ADMIN_ID)
+        )
+    except Exception as e:  # noqa: BLE001
+        logging.info("admin command scope failed: %s", e)
+    if get_bool("about_on"):
+        desc = (get_setting("bot_description") or "").strip()[:512]
+        short = (get_setting("bot_short_description") or "").strip()[:120]
+        sig = hashlib.sha1((desc + "|" + short).encode()).hexdigest()
+        if get_setting("about_sig") != sig:  # فقط وقتی متن عوض شده؛ از محدودیت تلگرام جلوگیری می‌کند
+            try:
+                if desc:
+                    await bot.set_my_description(description=desc)
+                if short:
+                    await bot.set_my_short_description(short_description=short)
+                set_setting("about_sig", sig)
+            except Exception as e:  # noqa: BLE001
+                logging.info("set bot description failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# خلاصه‌ی امروز برای ادمین (مقایسه با دیروز)
+# ---------------------------------------------------------------------------
+def _cmp(a, b_):
+    if b_ <= 0:
+        return "—" if a <= 0 else "🆕"
+    p = int((a - b_) * 100 / b_)
+    return f"▲ {p}٪" if p > 0 else (f"▼ {abs(p)}٪" if p < 0 else "▬ بدون تغییر")
+
+
+def admin_yday_block(n):
+    if not get_bool("admin_yday_on"):
+        return ""
+    try:
+        yj = (jalali_today() - timedelta(days=1)).strftime("%Y/%m/%d")
+        yi = (today_iran() - timedelta(days=1)).isoformat()
+        with SessionLocal() as s:
+            conds = (
+                Request.status == "answered", Request.req_type.in_(list(SALE_TYPES)), *_excl(),
+                Request.answered_at.like(f"{yj}%"),
+            )
+            y_rev = int(s.query(func.coalesce(func.sum(Request.price), 0)).filter(*conds).scalar() or 0)
+            y_cnt = int(s.query(func.count(Request.id)).filter(*conds).scalar() or 0)
+            y_new = int(s.query(func.count(User.user_id)).filter(User.joined_at == yi).scalar() or 0)
+            oldest = (
+                s.query(func.min(Request.created_iso))
+                .filter(Request.status == "unanswered", Request.req_type.in_(("buy", "renew", "charge")))
+                .scalar()
+            )
+        out = (
+            "\n\n📊 <b>مقایسه با دیروز</b>\n"
+            f"💰 فروش: {n['day_rev']:,} (دیروز {y_rev:,}) {_cmp(n['day_rev'], y_rev)}\n"
+            f"🛒 سفارش: {n['day_sales']} (دیروز {y_cnt}) {_cmp(n['day_sales'], y_cnt)}\n"
+            f"👥 کاربر جدید: {n['new_today']} (دیروز {y_new}) {_cmp(n['new_today'], y_new)}"
+        )
+        if oldest:
+            try:
+                mins = int((now_iran().replace(tzinfo=None) - datetime.strptime(oldest, TS_FMT)).total_seconds() // 60)
+                out += f"\n⏳ قدیمی‌ترین رسید در انتظار: {fmt_minutes(max(1, mins))}"
+            except ValueError:
+                pass
+        return out
+    except Exception as e:  # noqa: BLE001
+        logging.warning("yday block failed: %s", e)
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# زمان‌بندی v13
+# ---------------------------------------------------------------------------
+_v13_last = {"ar": 0.0, "te": 0.0}
+
+
+async def job_v13_tick(bot):
+    now = time.time()
+    if now - _v13_last["ar"] >= 900:
+        _v13_last["ar"] = now
+        try:
+            await job_autorenew(bot)
+        except Exception as e:  # noqa: BLE001
+            logging.error("autorenew job failed: %s", e)
+    if now - _v13_last["te"] >= 3600:
+        _v13_last["te"] = now
+        try:
+            await job_trial_end(bot)
+        except Exception as e:  # noqa: BLE001
+            logging.error("trial-end job failed: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # وب‌سرور سلامت و اجرای ربات
 # ---------------------------------------------------------------------------
@@ -18118,12 +19500,7 @@ async def health_check(request):
 
 
 async def update_bot_commands(bot):
-    await bot.set_my_commands(
-        [
-            BotCommand(command="start", description="منوی اصلی"),
-            BotCommand(command="admin", description="پنل ادمین"),
-        ]
-    )
+    await apply_bot_profile(bot)
 
 
 async def run_web_server(app, port):
@@ -18185,10 +19562,18 @@ async def main():
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
+    if FaDigitsMiddleware is not None:
+        try:
+            bot.session.middleware(FaDigitsMiddleware())
+        except Exception as e:  # noqa: BLE001
+            logging.warning("fa digits middleware not installed: %s", e)
+
     # وب‌سرور اول بالا میاد تا Render پورت را ببیند، حتی اگر تلگرام کند باشد
     app = web.Application()
     app.router.add_get("/", health_check)
     app.router.add_post("/sms/{secret}", sms_webhook)
+    app.router.add_get("/app", webapp_page)
+    app.router.add_post("/app/api", webapp_api)
     set_growth_bot(bot)
     port = int(os.environ.get("PORT", 8080))
     runner = await run_web_server(app, port)
