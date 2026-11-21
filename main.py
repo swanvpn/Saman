@@ -3423,7 +3423,14 @@ async def _render_cfg_detail(call, cfg_id, answered=False):
         "copy_text": link if 0 < len(link) <= 256 else "",
     }
     rows = ub_build_rows("svc", call.from_user.id, ctx)
-    await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=rows))
+    try:
+        await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=rows))
+    except Exception as e:  # noqa: BLE001
+        # اگر دکمه‌ی کپی واقعی/تم/... از سمت تلگرام رد شد، بدون دکمه‌ی کپی واقعی دوباره می‌فرستیم
+        logging.warning("cfg detail send failed (%s); retrying with plain buttons", e)
+        ctx["copy_text"] = ""
+        rows = ub_build_rows("svc", call.from_user.id, ctx)
+        await edit_or_send(call, out, InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 # ---------------------------------------------------------------------------
@@ -18343,7 +18350,7 @@ DEFAULTS.update(
         "rebuy_disc_on": "1",
         "rebuy_disc_percent": "10",
         "rebuy_disc_days": "2",
-        "webapp_on": "1",
+        "webapp_on": "0",
         "agent_on": "1",
         "trialend_on": "1",
         "trialend_percent": "20",
@@ -19264,12 +19271,11 @@ except Exception as _e:  # noqa: BLE001
 # مینی‌اپ وب وضعیت سرویس (Telegram WebApp)
 # ---------------------------------------------------------------------------
 def webapp_base():
-    for k in ("PUBLIC_URL", "RENDER_EXTERNAL_URL"):
-        v = os.environ.get(k, "").strip().rstrip("/")
-        if v.startswith("https://"):
-            return v
-    d = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
-    return ("https://" + d) if d else ""
+    """فقط با PUBLIC_URL صریح (https و دامنه‌ی معتبر)؛ حدس‌زدن آدرس باعث BUTTON_URL_INVALID می‌شد."""
+    v = os.environ.get("PUBLIC_URL", "").strip().rstrip("/")
+    if re.fullmatch(r"https://[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(:\d+)?", v):
+        return v
+    return ""
 
 
 def webapp_url():
