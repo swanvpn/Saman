@@ -2243,13 +2243,16 @@ def shop_view(user_id, cat_key=None):
         keyboard.extend(tabs[i : i + 3] for i in range(0, len(tabs), 3))
     best = bestseller_id()
     badge = get_setting("bestseller_label").strip() or "⭐ پرفروش"
+    plan_btns = []
     for sid, name, price in services:
         final = price_with_percent(price, total)
         is_best = best is not None and sid == best
         out += price_line(name, price, final, badge if is_best else "")
-        keyboard.append(
-            [b(text=f"🛒 {name} — {final:,} تومان" + (f" {badge}" if is_best else ""), callback_data=f"buy_{sid}")]
+        plan_btns.append(
+            b(text=f"🛒 {name} — {final:,} تومان" + (f" {badge}" if is_best else ""), callback_data=f"buy_{sid}")
         )
+    pat = parse_layout(get_setting("upat_shop2"))
+    keyboard.extend(apply_layout(plan_btns, pat) if pat else [[x] for x in plan_btns])
     if not services:
         out += "فعلاً پلنی در این دسته وجود ندارد.\n"
     if get_bool("loyalty_on"):
@@ -2288,7 +2291,8 @@ def shop_panels_view(user_id, with_plans, counts, mins):
         name = f"{em} {label}".strip()
         out += f"• <b>{esc(name)}</b> — {counts.get(key, 0)} پلن، از {start:,} تومان\n"
         btns.append(b(text=name, callback_data=f"shop_{key}"))
-    keyboard = [btns[i : i + 2] for i in range(0, len(btns), 2)]
+    pat = parse_layout(get_setting("upat_shop1"))
+    keyboard = apply_layout(btns, pat) if pat else [btns[i : i + 2] for i in range(0, len(btns), 2)]
     if get_bool("custom_on") and get_int("custom_price_per_gb") > 0:
         keyboard.append(
             [b(text=f"✨ پلن دلخواه (هر گیگ {get_int('custom_price_per_gb'):,} تومان)", callback_data="custom_start")]
@@ -2404,24 +2408,24 @@ def checkout_view(co, balance=0):
         out += breakdown_text(co["percent"], co["parts"], extra) + "\n"
     out += f"\n💳 موجودی کیف پولت: {balance:,} تومان\n"
     b = InlineKeyboardButton
-    rows = []
+    btns = []
     if balance >= co["final"]:
         out += "\nروش پرداخت رو انتخاب کن:"
-        rows.append([b(text="💳 پرداخت از کیف پول (سریع‌تر)", callback_data="pay_with_wallet")])
-        rows.append([b(text="🏦 کارت‌به‌کارت", callback_data="confirm_payment")])
+        btns.append(b(text="💳 پرداخت از کیف پول (سریع‌تر)", callback_data="pay_with_wallet"))
+        btns.append(b(text="🏦 کارت‌به‌کارت", callback_data="confirm_payment"))
     else:
         shortage = co["final"] - balance
         out += f"\nفقط {shortage:,} تومان کم داری! با یه شارژ سریع، خریدت تموم میشه 💪\nروش پرداخت رو انتخاب کن:"
-        rows.append([b(text=f"➕ شارژ و خرید ({shortage:,} تومان کم)", callback_data="short_charge")])
-        rows.append([b(text="🏦 کارت‌به‌کارت", callback_data="confirm_payment")])
-    rows.append(
-        [
-            b(text="❌ حذف کد تخفیف", callback_data="remove_code")
-            if co["code"]
-            else b(text="🏷 کد تخفیف دارم", callback_data="use_code")
-        ]
+        btns.append(b(text=f"➕ شارژ و خرید ({shortage:,} تومان کم)", callback_data="short_charge"))
+        btns.append(b(text="🏦 کارت‌به‌کارت", callback_data="confirm_payment"))
+    btns.append(
+        b(text="❌ حذف کد تخفیف", callback_data="remove_code")
+        if co["code"]
+        else b(text="🏷 کد تخفیف دارم", callback_data="use_code")
     )
-    rows.append([b(text="⬅️ انصراف و بازگشت", callback_data="main_buy")])
+    btns.append(b(text="⬅️ انصراف و بازگشت", callback_data="main_buy"))
+    pat = parse_layout(get_setting("upat_shop3"))
+    rows = apply_layout(btns, pat) if pat else [[x] for x in btns]
     return out + trust_footer(), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -9584,6 +9588,7 @@ async def ub_home(call: types.CallbackQuery, state: FSMContext):
     await state.clear()
     b = InlineKeyboardButton
     rows = [[b(text=v["title"], callback_data=f"ubs_{k}")] for k, v in SCREENS.items()]
+    rows.append([b(text="🛒 مراحل خرید (چیدمان دکمه‌ها)", callback_data="ubshop")])
     rows.append([b(text="⌨️ کیبورد پایین صفحه (همیشه در دسترس)", callback_data="kbh")])
     rows.append([b(text="🔙 بازگشت به پنل", callback_data="admin_home")])
     await edit_or_send(
@@ -9594,6 +9599,60 @@ async def ub_home(call: types.CallbackQuery, state: FSMContext):
         "ℹ️ کیبورد پایین صفحه جداگانه (دکمه‌ی ⌨️ بالا) و پلن‌ها از «مدیریت پلن‌ها» ویرایش می‌شوند.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
+
+
+SHOP_STEPS = {
+    "1": "مرحله ۱ — انتخاب نوع پنل",
+    "2": "مرحله ۲ — انتخاب حجم/پلن",
+    "3": "مرحله ۳ — روش پرداخت",
+}
+
+
+def _shop_lay_view(n):
+    return layout_menu_view(f"upat_shop{n}", f"slset_{n}_{{code}}", f"slcus_{n}", "ubshop", SHOP_STEPS[n])
+
+
+@dp.callback_query(F.data == "ubshop", MainAdmin())
+async def ub_shop_home(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    b = InlineKeyboardButton
+    rows = []
+    for n, title in SHOP_STEPS.items():
+        cur = layout_text(parse_layout(get_setting(f"upat_shop{n}"))) or "پیش‌فرض"
+        rows.append([b(text=f"{title} ({cur})", callback_data=f"slay_{n}")])
+    rows.append([b(text="🔙 بازگشت", callback_data="ubh")])
+    await edit_or_send(
+        call,
+        "🛒 <b>چیدمان دکمه‌های مراحل خرید</b>\n\nبرای هر مرحله‌ی خرید می‌توانید تعداد دکمه در هر ردیف را دستی تعیین کنید "
+        "(مثلاً <code>1 2 2</code>). مرحله‌ی ۱ فقط روی دکمه‌های پنل‌ها، مرحله‌ی ۲ روی دکمه‌های پلن و مرحله‌ی ۳ روی دکمه‌های پرداخت اثر دارد.",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@dp.callback_query(F.data.regexp(r"^slay_[123]$"), MainAdmin())
+async def shop_lay_menu(call: types.CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    await edit_or_send(call, *_shop_lay_view(call.data.split("_")[1]))
+
+
+@dp.callback_query(F.data.regexp(r"^slset_[123]_\d+$"), MainAdmin())
+async def shop_lay_set(call: types.CallbackQuery):
+    _, n, code = call.data.split("_")
+    set_setting(f"upat_shop{n}", "" if code == "0" else layout_text(parse_layout(" ".join(code))))
+    log_action(call.from_user.id, f"چیدمان مرحله‌ی خرید {n} ← {code}")
+    await call.answer("چیدمان ذخیره شد ✅")
+    await edit_or_send(call, *_shop_lay_view(n))
+
+
+@dp.callback_query(F.data.regexp(r"^slcus_[123]$"), MainAdmin())
+async def shop_lay_custom(call: types.CallbackQuery, state: FSMContext):
+    n = call.data.split("_")[1]
+    await call.answer()
+    await state.set_state(PaymentState.layout_pattern)
+    await state.update_data(pat_key=f"upat_shop{n}", pat_back=f"slay_{n}")
+    await edit_or_send(call, LAYOUT_ASK, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="انصراف", callback_data=f"slay_{n}")]]))
 
 
 @dp.callback_query(F.data.regexp(rf"^ubs_{UB_SCREEN_RE}$"), MainAdmin())
